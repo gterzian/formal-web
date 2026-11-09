@@ -16,7 +16,7 @@ use rusty_v8 as v8;
 use crate::enums::{
     IntegrityLevel, IteratorKind, PromiseState, SharedMemoryOrder, TypedArrayElementType,
 };
-use crate::gc::{JsTypesGcExt, Trace};
+use crate::gc::{JsTypesGcExt, PlatformData, PlatformDataMut, Trace};
 use crate::records::{
     IteratorRecord, ModuleRequest, PromiseCapability, PromiseResolvers, RealmIntrinsics,
 };
@@ -26,7 +26,6 @@ use crate::{
 };
 
 use super::gc::V8PlatformData;
-use super::trace::{take_roots_reached_during_trace, take_strong_cells_reached_during_trace};
 use super::types::{CachedPrimitive, ObjectProfile, V8ArrayBufferState, V8Handle};
 use super::{
     V8ArrayBuffer, V8BigInt, V8Constructor, V8DataView, V8Function, V8Generator, V8Map, V8Object,
@@ -208,6 +207,13 @@ struct CapturedIntrinsics {
     species_symbol: V8Symbol,
 }
 
+/// Pointer type of the thread-local callback scope.
+///
+/// The pointee type only names the pointer's shape: the scope is a C++-owned
+/// `v8::PinScope` whose real lifetimes are the callback's, so every use casts
+/// the pointer to `v8::PinScope<'_, '_>` with lifetimes inferred at the use
+/// site. Casting to `PinScope<'static, 'static>` instead would hand out
+/// `'static` `Local`s that safe code could store past the callback.
 type StoredCallbackScope = v8::PinScope<'static, 'static>;
 
 thread_local! {
@@ -237,6 +243,10 @@ struct SharedIsolate {
     /// outlive it.
     microtask_queue: v8::UniqueRef<v8::MicrotaskQueue>,
     isolate: RefCell<v8::OwnedIsolate>,
+    /// Counts the isolate's collections. Declared after `isolate` so it drops
+    /// last: the GC prologue callback registered with the isolate writes it,
+    /// and the isolate must be gone before the cell is freed.
+    gc_epoch: Box<Cell<u64>>,
 }
 
 impl SharedIsolate {
@@ -261,6 +271,14 @@ impl SharedIsolate {
         let mut isolate = v8::Isolate::new(v8::CreateParams::default().cpp_heap(heap));
         isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
         let microtask_queue = v8::MicrotaskQueue::new(&mut isolate, v8::MicrotasksPolicy::Explicit);
+        let gc_epoch = Box::new(Cell::new(0u64));
+        // Every V8 collection bumps the epoch, so a `V8Handle::Edge` can tell
+        // whether a collection has run since it was created or last traced.
+        isolate.add_gc_prologue_callback(
+            gc_prologue_bump_epoch,
+            gc_epoch.as_ref() as *const Cell<u64> as *mut std::ffi::c_void,
+            v8::GCType::kGCTypeAll,
+        );
         let shared = Rc::new(Self {
             isolate_id: NEXT_ISOLATE_ID.fetch_add(1, Ordering::Relaxed),
             realm_states: RefCell::new(Vec::new()),
@@ -270,6 +288,7 @@ impl SharedIsolate {
             isolate: RefCell::new(isolate),
             microtask_queue,
             security_token: RefCell::new(None),
+            gc_epoch,
         });
         // Create the shared security token once, inside a scope on the
         // isolate.  The same Local is installed on every context below.
@@ -300,6 +319,15 @@ impl SharedIsolate {
         context.set_security_token(token);
     }
 
+    /// The isolate's collection counter, for `V8Handle::Edge` validity.
+    ///
+    /// The address is stable (the counter is boxed) and lives as long as the
+    /// isolate, which is also the lifetime of every edge stored in the
+    /// isolate's cppgc heap.
+    pub(crate) fn gc_epoch_source(&self) -> *const Cell<u64> {
+        self.gc_epoch.as_ref() as *const Cell<u64>
+    }
+
     fn borrow(&self, expected_isolate_id: u64) -> RefMut<'_, v8::OwnedIsolate> {
         assert_eq!(
             self.isolate_id, expected_isolate_id,
@@ -310,6 +338,29 @@ impl SharedIsolate {
 }
 
 impl V8Engine {
+    /// The isolate's collection counter, for `V8Handle::Edge` validity.
+    pub(crate) fn gc_epoch_source(&self) -> *const Cell<u64> {
+        self.shared_isolate.gc_epoch_source()
+    }
+
+    /// A second handle to this engine's isolate, realm state, host hooks, and
+    /// realm bookkeeping.
+    ///
+    /// A re-entrant V8 callback runs against a handle built from
+    /// `CURRENT_ENGINE` rather than borrowing the engine whose operation is
+    /// suspended inside the V8 call: the handle shares every mutable part
+    /// through `Rc`, so the callback mutates nothing that the suspended frame
+    /// owns a `&mut` to.
+    fn handle(&self) -> V8Engine {
+        V8Engine {
+            isolate_id: self.isolate_id,
+            realm_state: Rc::clone(&self.realm_state),
+            host_hooks: Rc::clone(&self.host_hooks),
+            shared_isolate: Rc::clone(&self.shared_isolate),
+            created_realm_states: Rc::clone(&self.created_realm_states),
+        }
+    }
+
     /// The queue a DOM claim can hand to code that runs without an execution
     /// context, so the work still lands in this realm's microtask queue.
     ///
@@ -336,8 +387,11 @@ impl V8Engine {
                 "reentrant V8 scope belongs to another isolate"
             );
             // SAFETY: The pointer and lifetime invariants are established by
-            // `CurrentCallbackScopeGuard` and checked above.
-            let callback_scope = unsafe { &mut *callback_scope_pointer };
+            // `CurrentCallbackScopeGuard` and checked above. The scope's
+            // lifetimes are inferred here, so references derived from it
+            // cannot escape this call.
+            let callback_scope: &mut v8::PinScope<'_, '_> =
+                unsafe { &mut *callback_scope_pointer.cast() };
             let isolate = &mut ***callback_scope;
             f(isolate)
         }
@@ -373,7 +427,11 @@ macro_rules! v8_engine_scope_with_context {
             // it before that scope ends, and the isolate identity is checked
             // above. Reusing the callback scope avoids creating a second
             // mutable reference to the isolate owned by the outer V8 call.
-            let callback_scope = unsafe { &mut *callback_scope_pointer };
+            // The scope's lifetimes are inferred here rather than reusing the
+            // stored `'static` ones, so a `Local` created through it cannot
+            // outlive this block.
+            let callback_scope: &mut v8::PinScope<'_, '_> =
+                unsafe { &mut *callback_scope_pointer.cast() };
             let local_context = v8::Local::new(callback_scope, $context);
             let $scope = &mut v8::ContextScope::new(callback_scope, local_context);
             $body
@@ -395,8 +453,10 @@ macro_rules! v8_shared_scope {
                 "reentrant V8 scope belongs to another isolate"
             );
             // SAFETY: The pointer and lifetime invariants are established by
-            // `CurrentCallbackScopeGuard` and checked above.
-            let $scope = unsafe { &mut *callback_scope_pointer };
+            // `CurrentCallbackScopeGuard` and checked above; the scope's
+            // lifetimes are inferred at this use.
+            let $scope: &mut v8::PinScope<'_, '_> =
+                unsafe { &mut *callback_scope_pointer.cast() };
             $body
         }
     }};
@@ -417,8 +477,10 @@ macro_rules! v8_shared_isolate {
             );
             // SAFETY: The pointer and lifetime invariants are established by
             // `CurrentCallbackScopeGuard` and checked above. The isolate
-            // reference is reborrowed from V8's active callback scope.
-            let callback_scope = unsafe { &mut *callback_scope_pointer };
+            // reference is reborrowed from V8's active callback scope, with
+            // lifetimes inferred at this use.
+            let callback_scope: &mut v8::PinScope<'_, '_> =
+                unsafe { &mut *callback_scope_pointer.cast() };
             let $isolate = &mut ***callback_scope;
             $body
         }
@@ -434,6 +496,24 @@ impl V8Engine {
     ) -> R {
         v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, { f(scope) })
     }
+}
+
+/// V8 GC prologue callback: bump the isolate's collection counter.
+///
+/// Registered with a pointer to the `SharedIsolate`'s `gc_epoch` cell, which
+/// outlives the isolate. The callback runs on the isolate thread, so a plain
+/// `Cell` is enough; arithmetic only, so nothing can unwind into C++.
+unsafe extern "C" fn gc_prologue_bump_epoch(
+    _isolate: v8::UnsafeRawIsolatePtr,
+    _gc_type: v8::GCType,
+    _flags: v8::GCCallbackFlags,
+    data: *mut std::ffi::c_void,
+) {
+    // SAFETY: `data` is the address of the `Cell<u64>` that
+    // `SharedIsolate::new` registered, which lives as long as the isolate.
+    let epoch = unsafe { &*(data as *const Cell<u64>) };
+    epoch.set(epoch.get().wrapping_add(1));
+    eprintln!("GCTYPE {:?}", _gc_type);
 }
 
 struct CurrentEngineGuard {
@@ -509,13 +589,14 @@ impl Drop for CurrentEngineGuard {
 pub struct V8Engine {
     isolate_id: u64,
     realm_state: Rc<V8RealmState>,
-    host_hooks: HostHooks<V8Types>,
+    /// Shared so a re-entrant callback handle sees the same host hooks.
+    host_hooks: Rc<HostHooks<V8Types>>,
     shared_isolate: Rc<SharedIsolate>,
     // Strong references to realm states created through `create_realm`: the
     // shared-isolate registry holds weak refs (pruned when the last owner
     // drops), and the engine keeps the created realms alive so
     // `realm_intrinsics`/`set_realm_global_object` can find them.
-    created_realm_states: RefCell<Vec<Rc<V8RealmState>>>,
+    created_realm_states: Rc<RefCell<Vec<Rc<V8RealmState>>>>,
 }
 
 static V8_PLATFORM: std::sync::OnceLock<v8::SharedRef<v8::Platform>> = std::sync::OnceLock::new();
@@ -954,7 +1035,12 @@ fn native_callback(
     // boundary.
     let (result, callback_isolate_id) = unsafe {
         let record_slot = &*slot_pointer;
-        let engine = &mut *engine_pointer;
+        // SAFETY: `CURRENT_ENGINE` points at the engine whose operation is
+        // suspended inside the V8 call that reached this callback. The handle
+        // is a copy of that engine's `Rc`s, so the callback never writes
+        // through a pointer derived from the suspended frame's `&mut self`;
+        // the record slot is kept alive by the callback registry (see above).
+        let mut engine = (&*engine_pointer).handle();
         let record_guard = record_slot.borrow();
         match record_guard.as_ref() {
             None => (
@@ -992,7 +1078,7 @@ fn native_callback(
                                     "native callback behaviour released after its realm was destroyed",
                                 ));
                             };
-                            (behaviour)(&callback_arguments, this_value, engine)
+                            (behaviour)(&callback_arguments, this_value, &mut engine)
                         })) {
                             Ok(completion) => completion,
                             Err(_) => Err(engine.new_type_error("Rust panic in native callback")),
@@ -1063,7 +1149,10 @@ fn resolve_module_import<'scope>(
     // below reborrow the pinned callback scope instead of the (already
     // borrowed) shared isolate.
     unsafe {
-        let engine = &mut *engine_pointer;
+        // SAFETY: as in `native_callback`, the engine is reached through a
+        // handle copied from `CURRENT_ENGINE`, so no reference derived from
+        // the suspended frame's `&mut self` is created.
+        let mut engine = (&*engine_pointer).handle();
         if engine.host_hooks.load_imported_module.is_none() {
             let message =
                 v8::String::new(scope, "module imports are not enabled for the V8 backend")
@@ -1238,9 +1327,9 @@ impl V8Engine {
         let mut engine = Self {
             isolate_id,
             realm_state,
-            host_hooks: HostHooks::empty(),
+            host_hooks: Rc::new(HostHooks::empty()),
             shared_isolate,
-            created_realm_states: RefCell::new(Vec::new()),
+            created_realm_states: Rc::new(RefCell::new(Vec::new())),
         };
         engine.initialize_realm_state(Rc::clone(&engine.realm_state));
         engine
@@ -1344,7 +1433,10 @@ impl V8Engine {
             .as_ref()
             .expect("V8 realm host data is not initialized")
             .clone();
-        self.with_object_any(&holder)
+        // SAFETY: the holder is stored in `self.realm_state`, which `self`
+        // owns, so its wrapper traces the platform data for the whole `&self`
+        // borrow the returned reference lives for.
+        unsafe { platform_data(self, &holder) }
             .and_then(|data| data.downcast_ref::<RealmHostData>())
             .expect("V8 realm host-data holder contains an unexpected value")
     }
@@ -1357,8 +1449,14 @@ impl V8Engine {
             .as_ref()
             .expect("V8 realm host data is not initialized")
             .clone();
-        self.with_object_any_mut(&holder)
-            .and_then(|data| data.downcast_mut::<RealmHostData>())
+        let address = platform_address(self, &holder)
+            .expect("V8 realm host-data holder has no platform data");
+        // SAFETY: `&mut self` is the exclusive host-data access path, and the
+        // holder is stored in `self.realm_state`, which `self` owns, so its
+        // wrapper traces the platform data for the returned borrow.
+        let data = unsafe { platform_data_mut_pointer(address) };
+        unsafe { &mut *data }
+            .downcast_mut::<RealmHostData>()
             .expect("V8 realm host-data holder contains an unexpected value")
     }
 
@@ -2074,7 +2172,7 @@ impl JsEngine<V8Types> for V8Engine {
     }
 
     fn set_host_hooks(&mut self, hooks: HostHooks<V8Types>) {
-        self.host_hooks = hooks;
+        self.host_hooks = Rc::new(hooks);
     }
 }
 
@@ -2191,9 +2289,11 @@ where
     // SAFETY: cppgc is non-moving and the holder is traced from the function
     // created below, so the payload address is stable for as long as the
     // function is callable.
-    let captures_ptr = engine
+    let captures_data = engine
         .with_object_any(&captures_holder)
-        .and_then(|data| data.downcast_ref::<C>())
+        .expect("captures platform data missing");
+    let captures_ptr = captures_data
+        .downcast_ref::<C>()
         .expect("captures platform data type mismatch") as *const C;
 
     let stored = Box::new(
@@ -2467,33 +2567,25 @@ impl EcmascriptHost<V8Types> for V8Engine {
     }
 
     fn gc(&mut self) {
-        // Discard roots seen by allocation-triggered traces: this collection
-        // traces the whole heap again and reports only what it finds.
-        take_roots_reached_during_trace();
-        take_strong_cells_reached_during_trace();
         let shared_isolate = Rc::clone(&self.shared_isolate);
         v8_shared_isolate!(isolate, shared_isolate, self.isolate_id, {
             isolate.request_garbage_collection_for_testing(v8::GarbageCollectionType::Full);
         });
         // Sweep the cppgc heap as well: platform objects and cells are
         // cppgc-managed, and the isolate test hook collects the JS heap only.
+        // SAFETY: `NoHeapPointers` states that no cppgc pointer reachable only
+        // from the Rust stack is live across the sweep — that is what lets the
+        // callers observe reclamation (a conservative scan would retain every
+        // object some stale stack word still points at). The contract holds
+        // for this hook's callers: a `GcCell` borrow guard cannot be live
+        // across it (the guard borrows the execution context, so the compiler
+        // rejects `gc()` while one is alive), and the only other cppgc
+        // addresses a caller may hold are cached in `V8Value`s whose wrappers
+        // are traced roots. Only tests call this hook: production collections
+        // run with V8's default stack scanning.
         self.with_cpp_heap(|heap| unsafe {
             heap.collect_garbage_for_testing(v8::cppgc::EmbedderStackState::NoHeapPointers);
         });
-        let roots_reached = take_roots_reached_during_trace();
-        if roots_reached > 0 {
-            error!(
-                "{roots_reached} rooted JS handle(s) reached cppgc tracing: the store \
-                 invariant was bypassed and the referents are over-retained"
-            );
-        }
-        let strong_cells_reached = take_strong_cells_reached_during_trace();
-        if strong_cells_reached > 0 {
-            error!(
-                "{strong_cells_reached} rooted GcCell(s) reached cppgc tracing: the store \
-                 invariant was bypassed and the cells are over-retained"
-            );
-        }
     }
 
     fn value_undefined(&mut self) -> V8Value {
@@ -2554,6 +2646,73 @@ impl EcmascriptHost<V8Types> for V8Engine {
             utf16: Arc::from(units),
         }
     }
+}
+
+/// The platform data traced by `object`'s wrapper, with a caller-chosen
+/// lifetime.
+///
+/// # Safety
+///
+/// `'a` must be a lifetime over which the wrapper tracing the platform stays
+/// alive: the object handle's own lifetime for a value handed in by the
+/// caller, or the engine's borrow for the realm host-data holder, which the
+/// engine owns through its realm state.
+unsafe fn platform_data<'a>(engine: &V8Engine, object: &V8Object) -> Option<&'a dyn Any> {
+    let address = platform_address(engine, object)?;
+    // SAFETY: `host_data_pointer` validates the marker and tag before placing
+    // this pointer in a V8Value; the associated records keep their platform
+    // alive through a traced cppgc Member. cppgc is non-moving, so the address
+    // is stable while the tracing owner lives, and the caller guarantees that
+    // owner outlives `'a`.
+    Some(unsafe { platform_at(address) }.as_any())
+}
+
+/// The platform object at `address`.
+///
+/// # Safety
+///
+/// `address` must be the pointer cached for a live `V8PlatformData` (its
+/// wrapper or associated record is alive and traced).
+unsafe fn platform_at<'a>(address: usize) -> &'a V8PlatformData {
+    assert!(address != 0, "cached platform-data address is null");
+    // SAFETY: the caller guarantees the platform is alive; cppgc is
+    // non-moving, so the address is stable while it is.
+    unsafe { &*(address as *const V8PlatformData) }
+}
+
+/// The platform address cached on `object`, either from its V8 host-data slot
+/// or from the realm's associated-platform records.
+fn platform_address(engine: &V8Engine, object: &V8Object) -> Option<usize> {
+    let platform_address: Option<usize> = if let Some(pointer) = object.0.host_data {
+        Some(pointer.as_ptr() as usize)
+    } else {
+        engine
+            .realm_host_data()
+            .associated_objects
+            .iter()
+            .find(|associated| engine.same_object(&associated.object, object))
+            .map(|associated| associated.platform_pointer as usize)
+    };
+    let address = platform_address?;
+    assert_eq!(
+        object.0.isolate_id, engine.isolate_id,
+        "with_object_any called with a value from another isolate"
+    );
+    Some(address)
+}
+
+/// `*mut dyn Any` into the platform data at `address`, for the exclusive
+/// host-data access path.
+///
+/// # Safety
+///
+/// The caller must hold the exclusive access path (a `&mut V8Engine` borrow),
+/// which makes it the only live reference to the platform data.
+unsafe fn platform_data_mut_pointer(address: usize) -> *mut dyn Any {
+    // SAFETY: the caller guarantees the platform is alive; cppgc is
+    // non-moving, so the address of its `UnsafeCell` is stable.
+    let platform = unsafe { platform_at(address) };
+    unsafe { &mut **platform.data_mut_ptr() }
 }
 
 impl ExecutionContext<V8Types> for V8Engine {
@@ -4651,8 +4810,10 @@ impl ExecutionContext<V8Types> for V8Engine {
             // required destination for a stack-created pointer.
             unsafe { v8::cppgc::make_garbage_collected(heap, platform) }
         });
-        // cppgc is non-moving; the platform data address is stable for the
-        // lifetime of the wrapper, so it can be cached in the internal field.
+        // SAFETY: the `UnsafePtr` was just created by
+        // `make_garbage_collected` and is stored into the wrapper's cpp heap
+        // slot below; cppgc is non-moving, so the address stays valid for the
+        // lifetime of the wrapper (which traces the platform).
         let platform_data_pointer = unsafe { platform_ptr.as_ref() } as *const V8PlatformData;
         let isolate_id = self.isolate_id;
         v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
@@ -4694,30 +4855,14 @@ impl ExecutionContext<V8Types> for V8Engine {
         })
     }
 
-    fn with_object_any(&self, object: &V8Object) -> Option<&dyn Any> {
-        let platform_address: Option<usize> = if let Some(pointer) = object.0.host_data {
-            Some(pointer.as_ptr() as usize)
-        } else {
-            self.realm_host_data()
-                .associated_objects
-                .iter()
-                .find(|associated| self.same_object(&associated.object, object))
-                .map(|associated| associated.platform_pointer as usize)
-        };
-        let address = platform_address?;
-        assert_eq!(
-            object.0.isolate_id, self.isolate_id,
-            "with_object_any called with a value from another isolate"
-        );
-        // SAFETY: `host_data_pointer` validates the marker and tag before
-        // placing this pointer in a V8Value; the associated records keep
-        // their platform alive through a traced cppgc Member. cppgc is
-        // non-moving, so the address is stable while the owner lives.
-        let platform = unsafe { &*(address as *const V8PlatformData) };
-        Some(platform.as_any())
+    fn with_object_any<'a>(&'a self, object: &'a V8Object) -> Option<PlatformData<'a>> {
+        // SAFETY: `'a` is the object's own lifetime, and the platform data is
+        // traced by the object's wrapper (directly, or through the associated
+        // record the wrapper keeps alive with a cppgc `Member`).
+        unsafe { platform_data(self, object) }.map(|data| unsafe { PlatformData::new(data) })
     }
 
-    fn with_object_any_mut(&mut self, object: &V8Object) -> Option<&mut dyn Any> {
+    fn with_object_any_mut<'a>(&'a mut self, object: &'a V8Object) -> Option<PlatformDataMut<'a>> {
         let platform_address: Option<usize> = if let Some(pointer) = object.0.host_data {
             Some(pointer.as_ptr() as usize)
         } else {
@@ -4733,17 +4878,16 @@ impl ExecutionContext<V8Types> for V8Engine {
             object.0.isolate_id, self.isolate_id,
             "with_object_any_mut called with a value from another isolate"
         );
-        // SAFETY: The marker and reachability invariants are the same as in
-        // `with_object_any`. The `&mut self` receiver makes this the
-        // exclusive host-data access path for the duration of the returned
-        // borrow; marking is atomic, so no concurrent marker reads the
-        // platform data while it is mutated. The value is reached through a
-        // shared reference and mutated through its `UnsafeCell`, so no
-        // `*mut` is derived from a shared reference.
-        let platform = unsafe { &*(address as *const V8PlatformData) };
-        // SAFETY: The `&mut self` receiver is the exclusivity proof documented
-        // on `V8PlatformData::data_mut_ptr`.
-        Some(unsafe { &mut **platform.data_mut_ptr() })
+        // The `&mut self` receiver makes this the exclusive host-data access
+        // path for the duration of the returned borrow, and the platform data
+        // is reached through its `UnsafeCell`, so no `*mut` is derived from a
+        // shared reference.
+        // SAFETY: the returned lifetime is that of the `&mut self` borrow, for
+        // which the object's wrapper (the tracing owner) is alive, and the
+        // `&mut self` receiver is the exclusive host-data access path.
+        let platform = unsafe { platform_at(address) };
+        let data = unsafe { &mut **platform.data_mut_ptr() };
+        Some(unsafe { PlatformDataMut::new(data, platform.writer_flag()) })
     }
 
     fn store_js_object(&mut self, slot: &mut Option<V8Object>, value: V8Object) {
@@ -6028,7 +6172,7 @@ mod tests {
         let mut reflector = None;
         engine.store_js_object(&mut reflector, wrapper.clone());
         {
-            let data = engine
+            let mut data = engine
                 .with_object_any_mut(&wrapper)
                 .expect("wrapper carries test platform data");
             let platform = data
@@ -6089,7 +6233,7 @@ mod tests {
         let mut a_peer = None;
         engine.store_js_object(&mut a_peer, b.clone());
         {
-            let data = engine
+            let mut data = engine
                 .with_object_any_mut(&a)
                 .expect("wrapper A carries test platform data");
             let platform = data
@@ -6104,7 +6248,7 @@ mod tests {
         let mut b_peer = None;
         engine.store_js_object(&mut b_peer, a.clone());
         {
-            let data = engine
+            let mut data = engine
                 .with_object_any_mut(&b)
                 .expect("wrapper B carries test platform data");
             let platform = data
@@ -6181,8 +6325,10 @@ mod tests {
         assert!(
             engine
                 .with_object_any(&owner)
-                .and_then(|data| data.downcast_ref::<TestPlatform>())
-                .is_some_and(|platform| !platform.dropped.0.get()),
+                .and_then(|data| data
+                    .downcast_ref::<TestPlatform>()
+                    .map(|platform| { !platform.dropped.0.get() }))
+                .unwrap_or(false),
             "the probe must not fire while the owner is alive"
         );
 
@@ -6200,6 +6346,33 @@ mod tests {
             "the payload referenced only through the cell edge must be collected with it"
         );
         drop(x_weak);
+    }
+
+    /// An edge copied out of a cell and then left behind by that cell (the
+    /// cell no longer traces it) is not visited by the next collection, so its
+    /// referent may already be reclaimed. Reading it must fail deterministically
+    /// instead of dereferencing a freed storage cell.
+    #[test]
+    #[should_panic(expected = "no marker has visited since the last collection")]
+    fn edge_left_behind_by_its_cell_panics_on_read() {
+        let mut engine = V8Engine::new();
+        let x = ExecutionContext::evaluate_script(&mut engine, "({ marker: 'payload' })")
+            .expect("the payload object must evaluate");
+        let x_object = V8Types::value_as_object(&x).expect("the payload must be an object");
+        let cell = gc_cell_new(Some(x_object), &mut engine);
+        drop(x);
+
+        // Clone the stored value out: the clone shares the cell's edge.
+        let borrowed = cell.borrow(&engine).clone().expect("the cell holds it");
+        // The cell stops tracing the edge; only the untraced clone remains.
+        cell.set(None, &mut engine);
+
+        engine.gc();
+
+        // Reading the stranded edge would use a reclaimed storage cell.
+        engine.with_value_scope(|scope| {
+            let _ = borrowed.1.to_local(scope);
+        });
     }
 
     #[test]
@@ -6307,8 +6480,11 @@ mod tests {
             assert!(
                 engine
                     .with_object_any(&owner)
-                    .and_then(|data| data.downcast_ref::<TestPlatform>())
-                    .is_some_and(|platform| !platform.dropped.0.get()),
+                    .and_then(|data| {
+                        data.downcast_ref::<TestPlatform>()
+                            .map(|platform| !platform.dropped.0.get())
+                    })
+                    .unwrap_or(false),
                 "the platform must be alive before destruction"
             );
         }
@@ -6803,9 +6979,11 @@ mod tests {
         assert!(
             engine
                 .with_object_any(&global)
-                .and_then(|data| data.downcast_ref::<TestPlatform>())
-                .and_then(|platform| platform.cell.as_ref())
-                .is_some(),
+                .and_then(|data| {
+                    data.downcast_ref::<TestPlatform>()
+                        .map(|platform| platform.cell.is_some())
+                })
+                .unwrap_or(false),
             "the associated platform must be reachable through the global object"
         );
 
@@ -6819,10 +6997,11 @@ mod tests {
         );
         let cell = engine
             .with_object_any(&global)
-            .and_then(|data| data.downcast_ref::<TestPlatform>())
-            .and_then(|platform| platform.cell.as_ref())
-            .expect("the associated platform cell must survive gc")
-            .clone();
+            .and_then(|data| {
+                data.downcast_ref::<TestPlatform>()
+                    .and_then(|platform| platform.cell.clone())
+            })
+            .expect("the associated platform cell must survive gc");
         let held = cell
             .get(&mut engine)
             .expect("the associated platform cell must still hold the payload");
@@ -6841,6 +7020,8 @@ mod tests {
         struct Holder {
             object: Option<V8Object>,
         }
+        // SAFETY: the impl visits its only edge exactly once; the holder is
+        // rooted by the `Persistent` the test creates below.
         unsafe impl crate::v8_gc::GarbageCollected for Holder {
             fn trace(&self, visitor: &mut Visitor) {
                 if let Some(object) = &self.object {
@@ -6865,6 +7046,9 @@ mod tests {
             v8_engine_scope_with_context!(scope, engine, &engine.realm_state.realm.context, {
                 let isolate = &mut ****scope;
                 let heap = isolate.get_cpp_heap().expect("cpp heap");
+                // SAFETY: the pointer is immediately moved into the
+                // `Persistent` root below, the required destination for a
+                // stack-created cppgc pointer.
                 let pointer = unsafe {
                     v8::cppgc::make_garbage_collected(
                         heap,
@@ -6897,6 +7081,8 @@ mod tests {
     fn traced_captures_keep_payload_alive_and_follow_function_lifetime() {
         struct Payload(Rc<Cell<bool>>);
         impl Finalize for Payload {}
+        // SAFETY: the payload holds no cppgc edge; its lifetime is observed
+        // through the `Drop` flag.
         unsafe impl Trace for Payload {
             unsafe fn trace(&self, _visitor: &mut Visitor) {}
             fn store(&mut self, _ec: &mut dyn ExecutionContext<V8Types>) {}

@@ -861,26 +861,18 @@ pub(crate) fn readable_stream_default_tee_cancel1_algorithm(
     reason: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
-    let (source_stream, cancel_promise, canceled2, reason1, reason2, cancel_resolvers) = {
-        // Step 14.1: "Set canceled1 to true."
-        tee_state.borrow_mut(ec).canceled1 = true;
+    // Step 14.1: "Set canceled1 to true."
+    tee_state.borrow_mut(ec).canceled1 = true;
 
-        // Step 14.2: "Set reason1 to reason."
-        tee_state.borrow(ec).reason1.set(reason.clone(), ec);
-        (
-            tee_state.borrow(ec).source_stream.clone(),
-            tee_state
-                .borrow(ec)
-                .cancel_promise
-                .borrow(ec)
-                .clone()
-                .unwrap(),
-            tee_state.borrow(ec).canceled2,
-            tee_state.borrow(ec).reason1.borrow(ec).clone(),
-            tee_state.borrow(ec).reason2.borrow(ec).clone(),
-            tee_state.borrow(ec).cancel_resolvers.clone(),
-        )
-    };
+    // Step 14.2: "Set reason1 to reason."
+    let tee = tee_state.get(ec);
+    tee.reason1.set(reason.clone(), ec);
+    let source_stream = tee.source_stream.clone();
+    let cancel_promise = tee.cancel_promise.borrow(ec).clone().unwrap();
+    let canceled2 = tee.canceled2;
+    let reason1 = tee.reason1.get(ec);
+    let reason2 = tee.reason2.get(ec);
+    let cancel_resolvers = tee.cancel_resolvers.clone();
 
     // Step 14.3: "If canceled2 is true,"
     if canceled2 {
@@ -910,26 +902,18 @@ pub(crate) fn readable_stream_default_tee_cancel2_algorithm(
     reason: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
-    let (source_stream, cancel_promise, canceled1, reason1, reason2, cancel_resolvers) = {
-        // Step 15.1: "Set canceled2 to true."
-        tee_state.borrow_mut(ec).canceled2 = true;
+    // Step 15.1: "Set canceled2 to true."
+    tee_state.borrow_mut(ec).canceled2 = true;
 
-        // Step 15.2: "Set reason2 to reason."
-        tee_state.borrow(ec).reason2.set(reason.clone(), ec);
-        (
-            tee_state.borrow(ec).source_stream.clone(),
-            tee_state
-                .borrow(ec)
-                .cancel_promise
-                .borrow(ec)
-                .clone()
-                .unwrap(),
-            tee_state.borrow(ec).canceled1,
-            tee_state.borrow(ec).reason1.borrow(ec).clone(),
-            tee_state.borrow(ec).reason2.borrow(ec).clone(),
-            tee_state.borrow(ec).cancel_resolvers.clone(),
-        )
-    };
+    // Step 15.2: "Set reason2 to reason."
+    let tee = tee_state.get(ec);
+    tee.reason2.set(reason.clone(), ec);
+    let source_stream = tee.source_stream.clone();
+    let cancel_promise = tee.cancel_promise.borrow(ec).clone().unwrap();
+    let canceled1 = tee.canceled1;
+    let reason1 = tee.reason1.get(ec);
+    let reason2 = tee.reason2.get(ec);
+    let cancel_resolvers = tee.cancel_resolvers.clone();
 
     // Step 15.3: "If canceled1 is true,"
     if canceled1 {
@@ -971,14 +955,10 @@ impl ReadableStreamFromIteratorRecord {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsObject, crate::js::Types> {
-        let iterator_val = <crate::js::Types as JsTypes>::value_from_object(
-            self.iterator.borrow(ec).clone().unwrap(),
-        );
-        let next_result = ec.call(
-            &self.next_method.borrow(ec).clone().unwrap(),
-            &iterator_val,
-            &[],
-        )?;
+        let iterator = self.iterator.get(ec).unwrap();
+        let iterator_val = <crate::js::Types as JsTypes>::value_from_object(iterator);
+        let next_method = self.next_method.get(ec).unwrap();
+        let next_result = ec.call(&next_method, &iterator_val, &[])?;
 
         match self.kind {
             ReadableStreamFromIteratorKind::Async => promise_from_value(next_result, ec),
@@ -994,8 +974,8 @@ impl ReadableStreamFromIteratorRecord {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<Option<JsObject>, crate::js::Types> {
         let return_key = ec.property_key_from_str("return");
-        let return_method_value =
-            ExecutionContext::get(ec, self.iterator.borrow(ec).clone().unwrap(), return_key)?;
+        let iterator = self.iterator.get(ec).unwrap();
+        let return_method_value = ExecutionContext::get(ec, iterator.clone(), return_key)?;
         let return_method = get_optional_callable_method_value(
             return_method_value,
             "ReadableStream.from() iterator.return",
@@ -1005,9 +985,7 @@ impl ReadableStreamFromIteratorRecord {
             return Ok(None);
         };
 
-        let iterator_val = <crate::js::Types as JsTypes>::value_from_object(
-            self.iterator.borrow(ec).clone().unwrap(),
-        );
+        let iterator_val = <crate::js::Types as JsTypes>::value_from_object(iterator);
         let return_result = ec.call(&return_method, &iterator_val, &[reason])?;
         let return_promise = match self.kind {
             ReadableStreamFromIteratorKind::Async => promise_from_value(return_result, ec)?,
@@ -2602,13 +2580,12 @@ pub(crate) fn readable_byte_stream_tee_pull1_algorithm(
     // before `byob_request` runs: it creates interface instances and reads
     // the request `view` property, both allocating engine operations that a
     // cppgc trace must not interleave with a live borrow.
-    let controller = {
-        let tee = tee_state.borrow(ec);
-        tee.branch1
-            .as_ref()
-            .and_then(|branch| branch.controller_slot(ec))
-            .and_then(|controller| controller.as_byte_controller())
-    };
+    let tee = tee_state.get(ec);
+    let branch1 = tee.branch1.clone();
+    let controller = branch1
+        .as_ref()
+        .and_then(|branch| branch.controller_slot(ec))
+        .and_then(|controller| controller.as_byte_controller());
     let byob_request_view = controller
         .as_ref()
         .and_then(|controller| controller.byob_request(ec).ok().flatten())
@@ -2654,13 +2631,12 @@ pub(crate) fn readable_byte_stream_tee_pull2_algorithm(
     // before `byob_request` runs: it creates interface instances and reads
     // the request `view` property, both allocating engine operations that a
     // cppgc trace must not interleave with a live borrow.
-    let controller = {
-        let tee = tee_state.borrow(ec);
-        tee.branch2
-            .as_ref()
-            .and_then(|branch| branch.controller_slot(ec))
-            .and_then(|controller| controller.as_byte_controller())
-    };
+    let tee = tee_state.get(ec);
+    let branch2 = tee.branch2.clone();
+    let controller = branch2
+        .as_ref()
+        .and_then(|branch| branch.controller_slot(ec))
+        .and_then(|controller| controller.as_byte_controller());
     let byob_request_view = controller
         .as_ref()
         .and_then(|controller| controller.byob_request(ec).ok().flatten())
@@ -2685,23 +2661,15 @@ pub(crate) fn readable_byte_stream_tee_cancel1_algorithm(
     reason: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
-    let (source_stream, cancel_promise, canceled2, reason1, reason2, cancel_resolvers) = {
-        tee_state.borrow_mut(ec).canceled1 = true;
-        tee_state.borrow(ec).reason1.set(reason.clone(), ec);
-        (
-            tee_state.borrow(ec).source_stream.clone(),
-            tee_state
-                .borrow(ec)
-                .cancel_promise
-                .borrow(ec)
-                .clone()
-                .unwrap(),
-            tee_state.borrow(ec).canceled2,
-            tee_state.borrow(ec).reason1.borrow(ec).clone(),
-            tee_state.borrow(ec).reason2.borrow(ec).clone(),
-            tee_state.borrow(ec).cancel_resolvers.clone(),
-        )
-    };
+    tee_state.borrow_mut(ec).canceled1 = true;
+    let tee = tee_state.get(ec);
+    tee.reason1.set(reason.clone(), ec);
+    let source_stream = tee.source_stream.clone();
+    let cancel_promise = tee.cancel_promise.borrow(ec).clone().unwrap();
+    let canceled2 = tee.canceled2;
+    let reason1 = tee.reason1.get(ec);
+    let reason2 = tee.reason2.get(ec);
+    let cancel_resolvers = tee.cancel_resolvers.clone();
     if canceled2 {
         let composite_reason_array = ec.create_empty_array();
         ec.array_push(&composite_reason_array, reason1.clone())?;
@@ -2722,23 +2690,15 @@ pub(crate) fn readable_byte_stream_tee_cancel2_algorithm(
     reason: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
-    let (source_stream, cancel_promise, canceled1, reason1, reason2, cancel_resolvers) = {
-        tee_state.borrow_mut(ec).canceled2 = true;
-        tee_state.borrow(ec).reason2.set(reason.clone(), ec);
-        (
-            tee_state.borrow(ec).source_stream.clone(),
-            tee_state
-                .borrow(ec)
-                .cancel_promise
-                .borrow(ec)
-                .clone()
-                .unwrap(),
-            tee_state.borrow(ec).canceled1,
-            tee_state.borrow(ec).reason1.borrow(ec).clone(),
-            tee_state.borrow(ec).reason2.borrow(ec).clone(),
-            tee_state.borrow(ec).cancel_resolvers.clone(),
-        )
-    };
+    tee_state.borrow_mut(ec).canceled2 = true;
+    let tee = tee_state.get(ec);
+    tee.reason2.set(reason.clone(), ec);
+    let source_stream = tee.source_stream.clone();
+    let cancel_promise = tee.cancel_promise.borrow(ec).clone().unwrap();
+    let canceled1 = tee.canceled1;
+    let reason1 = tee.reason1.get(ec);
+    let reason2 = tee.reason2.get(ec);
+    let cancel_resolvers = tee.cancel_resolvers.clone();
     if canceled1 {
         let composite_reason_array = ec.create_empty_array();
         ec.array_push(&composite_reason_array, reason1)?;
@@ -3388,14 +3348,12 @@ impl PipeToState {
             return Ok(());
         }
 
-        let (source, dest, prevent_abort) = {
-            let state = self.0.borrow(ec);
-            (
-                state.reader.stream_slot_value(ec),
-                state.writer.stream_slot_value(ec),
-                state.prevent_abort,
-            )
-        };
+        let state = self.0.get(ec);
+        let (source, dest, prevent_abort) = (
+            state.reader.stream_slot_value(ec),
+            state.writer.stream_slot_value(ec),
+            state.prevent_abort,
+        );
         let Some(source) = source else {
             return Ok(());
         };
@@ -3429,14 +3387,12 @@ impl PipeToState {
             return Ok(());
         }
 
-        let (dest, source, prevent_cancel) = {
-            let state = self.0.borrow(ec);
-            (
-                state.writer.stream_slot_value(ec),
-                state.reader.stream_slot_value(ec),
-                state.prevent_cancel,
-            )
-        };
+        let state = self.0.get(ec);
+        let (dest, source, prevent_cancel) = (
+            state.writer.stream_slot_value(ec),
+            state.reader.stream_slot_value(ec),
+            state.prevent_cancel,
+        );
         let Some(dest) = dest else {
             return Ok(());
         };
@@ -3469,10 +3425,9 @@ impl PipeToState {
             return Ok(());
         }
 
-        let (source, prevent_close) = {
-            let state = self.0.borrow(ec);
-            (state.reader.stream_slot_value(ec), state.prevent_close)
-        };
+        let state = self.0.get(ec);
+        let source = state.reader.stream_slot_value(ec);
+        let prevent_close = state.prevent_close;
         let Some(source) = source else {
             return Ok(());
         };
@@ -3497,14 +3452,12 @@ impl PipeToState {
             return Ok(());
         }
 
-        let (dest, source, prevent_cancel) = {
-            let state = self.0.borrow(ec);
-            (
-                state.writer.stream_slot_value(ec),
-                state.reader.stream_slot_value(ec),
-                state.prevent_cancel,
-            )
-        };
+        let state = self.0.get(ec);
+        let (dest, source, prevent_cancel) = (
+            state.writer.stream_slot_value(ec),
+            state.reader.stream_slot_value(ec),
+            state.prevent_cancel,
+        );
         let Some(dest) = dest else {
             return Ok(());
         };
@@ -3547,17 +3500,15 @@ impl PipeToState {
             }
             self.0.borrow_mut(ec).shutting_down = true;
 
-            let should_wait = {
-                let state = self.0.borrow(ec);
-                state.writer.stream_slot_value(ec).is_some_and(|dest| {
-                    dest.state() == super::WritableStreamState::Writable
-                        && !dest.close_queued_or_in_flight(ec)
-                        && !state.pending_writes.is_empty()
-                })
-            };
+            let state = self.0.get(ec);
+            let should_wait = state.writer.stream_slot_value(ec).is_some_and(|dest| {
+                dest.state() == super::WritableStreamState::Writable
+                    && !dest.close_queued_or_in_flight(ec)
+                    && !state.pending_writes.is_empty()
+            });
             if should_wait {
                 self.0.borrow_mut(ec).state = PipePumpState::ShuttingDownWithPendingWrites(action);
-                let state = self.0.borrow(ec);
+                let state = self.0.get(ec);
                 state
                     .pending_writes
                     .front()
@@ -3592,21 +3543,19 @@ impl PipeToState {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
         self.0.borrow_mut(ec).state = PipePumpState::ShuttingDownPendingAction(action);
-        let (writer, source, dest, error, prevent_abort, prevent_cancel) = {
-            let state = self.0.borrow(ec);
-            (
-                state.writer.clone(),
-                state.reader.stream_slot_value(ec),
-                state.writer.stream_slot_value(ec),
-                state
-                    .shutdown_error
-                    .as_ref()
-                    .map(|cell| cell.borrow(ec).clone())
-                    .unwrap_or_else(|| ec.value_undefined()),
-                state.prevent_abort,
-                state.prevent_cancel,
-            )
-        };
+        let state = self.0.get(ec);
+        let (writer, source, dest, error, prevent_abort, prevent_cancel) = (
+            state.writer.clone(),
+            state.reader.stream_slot_value(ec),
+            state.writer.stream_slot_value(ec),
+            state
+                .shutdown_error
+                .as_ref()
+                .map(|cell| cell.borrow(ec).clone())
+                .unwrap_or_else(|| ec.value_undefined()),
+            state.prevent_abort,
+            state.prevent_cancel,
+        );
 
         let action_promise = match action {
             PipeShutdownAction::AbortDestination => match dest {
@@ -3761,14 +3710,12 @@ impl PipeToState {
             return Ok(action);
         }
 
-        let (source, dest, prevent_cancel) = {
-            let state = self.0.borrow(ec);
-            (
-                state.reader.stream_slot_value(ec),
-                state.writer.stream_slot_value(ec),
-                state.prevent_cancel,
-            )
-        };
+        let state = self.0.get(ec);
+        let (source, dest, prevent_cancel) = (
+            state.reader.stream_slot_value(ec),
+            state.writer.stream_slot_value(ec),
+            state.prevent_cancel,
+        );
 
         let Some(dest) = dest else {
             return Ok(action);
@@ -3822,11 +3769,12 @@ impl PipeToState {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<Option<js_engine::PromiseState<crate::js::Types>>, crate::js::Types> {
-        self.0
-            .borrow(ec)
+        let state = self.0.get(ec);
+        let promise = state
             .shutdown_action_promise
-            .clone()
-            .and_then(|cell| cell.borrow(ec).clone())
+            .as_ref()
+            .and_then(|cell| cell.borrow(ec).clone());
+        promise
             .map(|promise| Ok(ec.promise_state(&promise)?))
             .transpose()
     }
@@ -3934,13 +3882,9 @@ fn pipe_to_on_promise_settled(
     let state_before_checks = state.current_state(ec);
 
     if state_before_checks == PipePumpState::PendingRead {
-        let (source, dest) = {
-            let state_ref = state.0.borrow(ec);
-            (
-                state_ref.reader.stream_slot_value(ec),
-                state_ref.writer.stream_slot_value(ec),
-            )
-        };
+        let pipe_state = state.0.get(ec);
+        let source = pipe_state.reader.stream_slot_value(ec);
+        let dest = pipe_state.writer.stream_slot_value(ec);
 
         if let Some(source) = source {
             if source.state() == ReadableStreamState::Closed {

@@ -39,7 +39,19 @@ pub struct V8PlatformData {
     // cppgc object). Routing the write through `UnsafeCell::get` keeps the
     // write from going through a `*mut` derived from `&`.
     data: UnsafeCell<Box<dyn Any>>,
+    /// SAFETY: bound at construction to the concrete type stored in `data`
+    /// (`new` for a `T`, `noop` for untraceable data), so calling it with
+    /// that same allocation is the only use.
     trace_fn: unsafe fn(&dyn Any, &mut cppgc::Visitor),
+    /// Set while a [`PlatformDataMut`] borrow is live, cleared by its drop.
+    ///
+    /// The exclusivity of `with_object_any_mut` is a `&mut V8Engine` borrow
+    /// that no engine operation may run under, so on the isolate thread a mark
+    /// cannot interleave with it. A mark that does run concurrently (the cppgc
+    /// heap is created with atomic marking) would derive `&` from the data
+    /// through this flag's `trace`; the flag makes that a deterministic abort
+    /// instead of a silent aliasing violation, mirroring `HeapCell`.
+    writer: Cell<bool>,
 }
 
 impl V8PlatformData {
@@ -47,6 +59,7 @@ impl V8PlatformData {
     pub fn new<T: Any + Trace>(data: T) -> Self {
         Self {
             data: UnsafeCell::new(Box::new(data)),
+            writer: Cell::new(false),
             trace_fn: |data, visitor| {
                 // The box holds exactly the `T` this closure was created for.
                 // A mismatch would mean the trace function outlived or was
@@ -66,6 +79,7 @@ impl V8PlatformData {
     pub fn noop(data: Box<dyn Any>) -> Self {
         Self {
             data: UnsafeCell::new(data),
+            writer: Cell::new(false),
             trace_fn: |_data, _visitor| {},
         }
     }
@@ -76,9 +90,18 @@ impl V8PlatformData {
     }
 
     pub fn as_any(&self) -> &dyn Any {
-        // SAFETY: shared access is unique while the caller holds no mutable
-        // borrow; marks are stop-the-world on the isolate thread.
+        assert!(
+            !self.writer.get(),
+            "platform data read while a mutable borrow is live"
+        );
+        // SAFETY: the writer flag is clear, so no `&mut` into the data is
+        // live; the box allocation is stable for the platform's lifetime.
         unsafe { &**self.data.get() }
+    }
+
+    /// The mutable-borrow flag, to be cleared when the borrow ends.
+    pub(crate) fn writer_flag(&self) -> &Cell<bool> {
+        &self.writer
     }
 
     /// Raw pointer to the boxed value, for mutation through the cell.
@@ -100,8 +123,14 @@ impl V8PlatformData {
 // only the trace reads it during stop-the-world marking.
 unsafe impl GarbageCollected for V8PlatformData {
     fn trace(&self, visitor: &mut cppgc::Visitor) {
-        // SAFETY: The trace runs during stop-the-world marking on the isolate
-        // thread; no Rust code mutates the platform data concurrently.
+        // A live `PlatformDataMut` means `&mut` into the data is held; the
+        // marker deriving `&` here would alias it. The trace runs inside V8's
+        // C++ marking visitor, so this aborts instead of unwinding.
+        if self.writer.get() {
+            fatal_invariant!("platform data is mutably borrowed during cppgc marking");
+        }
+        // SAFETY: the writer flag proves no mutable borrow is live, and the
+        // box allocation is stable for the platform's lifetime.
         unsafe { (self.trace_fn)(&**self.data.get(), visitor) }
     }
 
@@ -268,19 +297,18 @@ impl<T: Trace + 'static> V8GcCell<T> {
 
     /// Immutably borrow the wrapped value.
     ///
-    /// The returned guard's lifetime is tied to `&self`, not to the execution
-    /// context, so the compiler does not prevent calling back into the engine
-    /// while a borrow is held — and the borrow discipline forbids it: an
-    /// engine call can allocate and trigger a cppgc trace that reads the cell
-    /// while the borrow is live (see `js_engine/README.md`).  Scope the borrow
-    /// to a non-engine section; to keep a value after the borrow ends, read it
-    /// with `get`/`take`, which return rooted clones.  Cloning the borrowed
-    /// value does not root it: the clone's handles are edges kept alive only by
-    /// the owning cell, so it must not outlive the borrow.
+    /// The returned guard borrows both `&self` and the execution context, so
+    /// the compiler rejects an engine call while the borrow is live: an engine
+    /// call can allocate and trigger a cppgc trace that reads the cell while
+    /// the borrow is live (see `js_engine/README.md`).  Scope the borrow to a
+    /// non-engine section; to keep a value after the borrow ends, read it with
+    /// `get`/`take`, which return rooted clones.  Cloning the borrowed value
+    /// does not root it: the clone's handles are edges kept alive only by the
+    /// owning cell, so it must not outlive the borrow.
     ///
     /// The cell's reference is held for the whole borrow, and the borrow
     /// counter prevents mutable aliasing.
-    pub(crate) fn borrow<'a>(&'a self, _ec: &dyn ExecutionContext<V8Types>) -> V8GcRef<'a, T> {
+    pub(crate) fn borrow<'a>(&'a self, _ec: &'a dyn ExecutionContext<V8Types>) -> V8GcRef<'a, T> {
         let heap_cell = self.heap_cell();
         if heap_cell.writer.get() {
             panic!("GcCell<T> already mutably borrowed");
@@ -348,18 +376,12 @@ impl<T: Trace + 'static> Traced for V8GcCell<T> {
     fn trace(&self, visitor: &mut Visitor) {
         match &self.0 {
             CellLink::Member(member) => visitor.trace(member),
-            CellLink::Strong(_) => {
-                crate::v8::trace::record_strong_cell_reached_during_trace();
-                // Release builds keep running with the cell over-retained and
-                // let `V8Engine::gc` report the count; a debug build aborts
-                // deterministically instead of unwinding across the C++ trace
-                // callback.
-                if cfg!(debug_assertions) {
-                    fatal_invariant!(
-                        "a rooted GcCell reached cppgc tracing: the store invariant was bypassed"
-                    );
-                }
-            }
+            // A rooted cell here means a clone was stored in traced storage
+            // without `Trace::store` converting it back. Abort in every build
+            // instead of unwinding across the C++ trace callback.
+            CellLink::Strong(_) => fatal_invariant!(
+                "a rooted GcCell reached cppgc tracing: the store invariant was bypassed"
+            ),
         }
     }
 }
@@ -378,6 +400,8 @@ impl<T> Deref for V8GcRef<'_, T> {
         // The cell may not be mutably borrowed while a shared guard holds it;
         // a live writer flag here means a `borrow_mut` guard was leaked or the
         // guard was constructed outside `V8GcCell::borrow`.
+        // SAFETY: `cell` points into the heap cell that supplied `value`; it
+        // is kept alive by the originating edge for the guard's lifetime.
         assert!(
             !unsafe { (*self.cell).writer.get() },
             "V8GcRef dereferenced while the cell is mutably borrowed"
@@ -419,6 +443,8 @@ impl<T: Trace + 'static> Deref for V8GcRefMut<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
+        // SAFETY: `cell` is kept alive by the originating edge for the
+        // guard's lifetime (see `V8GcRef::deref`).
         assert!(
             unsafe { (*self.cell).writer.get() },
             "V8GcRefMut used after its mutable borrow ended"
@@ -431,6 +457,8 @@ impl<T: Trace + 'static> Deref for V8GcRefMut<'_, T> {
 
 impl<T: Trace + 'static> DerefMut for V8GcRefMut<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
+        // SAFETY: `cell` is kept alive by the originating edge for the
+        // guard's lifetime (see `V8GcRef::deref`).
         assert!(
             unsafe { (*self.cell).writer.get() },
             "V8GcRefMut used after its mutable borrow ended"

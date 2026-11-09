@@ -13,6 +13,8 @@ use objc2_foundation::{NSString, NSURL};
 pub(crate) fn url_from_string(url: &str) -> Option<Retained<NSURL>> {
     let c_string = CString::new(url).ok()?;
     let ptr = std::ptr::NonNull::new(c_string.as_ptr() as *mut _)?;
+    // SAFETY: `ptr` comes from a `CString` that outlives this call, so it is a
+    // valid NUL-terminated UTF-8 string.
     let ns_string: Retained<NSString> = unsafe { NSString::stringWithUTF8String(ptr)? };
     NSURL::initWithString(NSURL::alloc(), &ns_string)
 }

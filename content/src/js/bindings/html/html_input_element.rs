@@ -61,8 +61,10 @@ fn get_type(
     let err = ec.new_type_error("expected HTMLInputElement");
     let type_ = ec
         .with_object_any(&obj)
-        .and_then(|data| data.downcast_ref::<HTMLInputElement>())
-        .map(|input| input.type_())
+        .and_then(|data| {
+            data.downcast_ref::<HTMLInputElement>()
+                .map(|input| input.type_())
+        })
         .ok_or(err)?;
     Ok(ec.value_from_string(ec.js_string_from_str(&type_)))
 }
@@ -80,12 +82,15 @@ fn set_type(
     let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("expected object"))?;
     let err = ec.new_type_error("expected HTMLInputElement");
-    let input = ec
-        .with_object_any(&obj)
-        .and_then(|data| data.downcast_ref::<HTMLInputElement>())
-        .ok_or(err)?;
+    let undefined = ec.value_undefined();
+    let Some(data) = ec.with_object_any(&obj) else {
+        return Err(err);
+    };
+    let Some(input) = data.downcast_ref::<HTMLInputElement>() else {
+        return Err(err);
+    };
     input.set_type(&value);
-    Ok(ec.value_undefined())
+    Ok(undefined)
 }
 
 fn get_value(
@@ -98,8 +103,10 @@ fn get_value(
     let err = ec.new_type_error("expected HTMLInputElement");
     let value = ec
         .with_object_any(&obj)
-        .and_then(|data| data.downcast_ref::<HTMLInputElement>())
-        .map(|input| input.value())
+        .and_then(|data| {
+            data.downcast_ref::<HTMLInputElement>()
+                .map(|input| input.value())
+        })
         .ok_or(err)?;
     Ok(ec.value_from_string(ec.js_string_from_str(&value)))
 }
@@ -129,10 +136,13 @@ fn set_value(
     let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("expected object"))?;
     let err = ec.new_type_error("expected HTMLInputElement");
-    let input = ec
-        .with_object_any(&obj)
-        .and_then(|data| data.downcast_ref::<HTMLInputElement>())
-        .ok_or(err)?;
+    let undefined = ec.value_undefined();
+    let Some(data) = ec.with_object_any(&obj) else {
+        return Err(err);
+    };
+    let Some(input) = data.downcast_ref::<HTMLInputElement>() else {
+        return Err(err);
+    };
     input.set_value(&value);
-    Ok(ec.value_undefined())
+    Ok(undefined)
 }

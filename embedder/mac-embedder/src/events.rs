@@ -27,6 +27,9 @@ impl UserEventSink for MacEventSink {
     fn send(&self, event: FormalWebUserEvent) -> Result<(), String> {
         let handle = self.handle;
         dispatch::Queue::main().exec_async(move || {
+            // SAFETY: `app_ptr` asserts this block runs on the main thread,
+            // and the harness keeps the `MacApp` alive until the run loop
+            // stops, after which no more events are dispatched.
             let app = unsafe { &mut *handle.app_ptr() };
             app.process_user_event(event);
         });

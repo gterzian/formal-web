@@ -1073,6 +1073,8 @@ impl WindowedApp {
             raw_device.newTextureWithDescriptor_iosurface_plane(&descriptor, surface, 0)?;
         let metal_texture: Retained<ProtocolObject<dyn MTLTexture>> =
             ProtocolObject::from_retained(metal_texture);
+        // SAFETY: the Metal texture was created from this surface and its
+        // format/extent match the descriptor below.
         let hal_texture = unsafe {
             wgpu::hal::metal::Device::texture_from_raw(
                 metal_texture,
@@ -1087,6 +1089,8 @@ impl WindowedApp {
                 },
             )
         };
+        // SAFETY: the hal texture was created on this device and declares the
+        // same format, extent, mip count and sample count as the descriptor.
         let texture = unsafe {
             device.create_texture_from_hal::<wgpu::hal::metal::Api>(
                 hal_texture,

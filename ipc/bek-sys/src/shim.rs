@@ -92,9 +92,13 @@ fn take_error_message(pointer: *mut c_char) -> Option<String> {
     if pointer.is_null() {
         return None;
     }
+    // SAFETY: the pointer was null-checked above; the Swift side `strdup`s
+    // the message, so it is a NUL-terminated string this call owns.
     let message = unsafe { CStr::from_ptr(pointer) }
         .to_string_lossy()
         .into_owned();
+    // SAFETY: the string was `strdup`ed by the shim and is freed exactly once,
+    // here (the copy above no longer borrows it).
     unsafe {
         ffi::bek_free_string(pointer);
     }
@@ -119,6 +123,9 @@ pub fn launch_process(kind: c_int, bundle_id: Option<&str>) -> Result<ProcessHan
         error_message: *mut c_char,
         context: *mut c_void,
     ) {
+        // SAFETY: `context` is the `Box::into_raw` pointer from
+        // `launch_process`; Swift invokes this completion exactly once, so the
+        // box is reclaimed exactly once.
         let result_tx =
             unsafe { Box::from_raw(context as *mut mpsc::Sender<Result<ProcessHandle, String>>) };
         let result = if handle.is_null() {
@@ -138,6 +145,9 @@ pub fn launch_process(kind: c_int, bundle_id: Option<&str>) -> Result<ProcessHan
         .as_ref()
         .map_or(ptr::null(), |cstring| cstring.as_ptr());
 
+    // SAFETY: the arguments are the enum value, a NUL-terminated bundle string
+    // that outlives the call, two `extern "C"` callbacks, and the boxed sender
+    // whose ownership the completion callback takes.
     unsafe {
         ffi::bek_launch_process(kind, bundle_ptr, on_interrupt, on_complete, context);
     }

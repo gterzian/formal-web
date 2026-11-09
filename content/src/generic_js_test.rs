@@ -96,13 +96,12 @@ mod widget_data {
         ec: &mut dyn ExecutionContext<TestTypes>,
         f: impl FnOnce(&TestWidget) -> T,
     ) -> Completion<T, TestTypes> {
-        let data = match ec.with_object_any(obj) {
-            Some(d) => d,
-            None => return Err(ec.new_type_error("receiver is not a TestWidget")),
+        let error = ec.new_type_error("receiver is not a TestWidget");
+        let Some(data) = ec.with_object_any(obj) else {
+            return Err(error);
         };
-        let widget = match data.downcast_ref::<TestWidget>() {
-            Some(w) => w,
-            None => return Err(ec.new_type_error("receiver is not a TestWidget")),
+        let Some(widget) = data.downcast_ref::<TestWidget>() else {
+            return Err(error);
         };
         Ok(f(widget))
     }
@@ -112,13 +111,12 @@ mod widget_data {
         ec: &mut dyn ExecutionContext<TestTypes>,
         f: impl FnOnce(&mut TestWidget) -> T,
     ) -> Completion<T, TestTypes> {
-        let data = match ec.with_object_any_mut(obj) {
-            Some(d) => d,
-            None => return Err(ec.new_type_error("receiver is not a TestWidget")),
+        let error = ec.new_type_error("receiver is not a TestWidget");
+        let Some(mut data) = ec.with_object_any_mut(obj) else {
+            return Err(error);
         };
-        let widget = match data.downcast_mut::<TestWidget>() {
-            Some(w) => w,
-            None => return Err(ec.new_type_error("receiver is not a TestWidget")),
+        let Some(widget) = data.downcast_mut::<TestWidget>() else {
+            return Err(error);
         };
         Ok(f(widget))
     }
@@ -166,7 +164,7 @@ pub(crate) fn widget_or_button_with_mut<T>(
     let obj = TestTypes::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("receiver is not an object"))?;
 
-    if let Some(data) = ec.with_object_any_mut(&obj) {
+    if let Some(mut data) = ec.with_object_any_mut(&obj) {
         // Try the most-specific type first.
         if let Some(button) = data.downcast_mut::<TestButton>() {
             return Ok(f(&mut button.widget));
@@ -1684,13 +1682,17 @@ mod tests {
         let mut button = TestButton::new("ClickMe");
         button.widget.title = "BtnWidget".into();
         let obj = create_button(button, &mut engine);
-        let button = engine
-            .with_object_any_mut(&obj)
-            .and_then(|data| data.downcast_mut::<TestButton>())
-            .expect("the platform object must contain a TestButton");
-        assert_eq!(button.label_value(), "ClickMe");
-        button.set_label("Pressed");
-        assert_eq!(button.label_value(), "Pressed");
+        {
+            let mut data = engine
+                .with_object_any_mut(&obj)
+                .expect("the platform object must contain a TestButton");
+            let button = data
+                .downcast_mut::<TestButton>()
+                .expect("the platform object must contain a TestButton");
+            assert_eq!(button.label_value(), "ClickMe");
+            button.set_label("Pressed");
+            assert_eq!(button.label_value(), "Pressed");
+        }
         let js_obj = TestTypes::value_from_object(obj);
 
         // Through the multi-type helper, we should see the widget fields.
@@ -2391,8 +2393,10 @@ mod tests {
         let obj_ref = TestTypes::value_as_object(&js_obj).unwrap();
         let has_callback = engine
             .with_object_any(&obj_ref)
-            .and_then(|d| d.downcast_ref::<TestWidget>())
-            .map(|w| w.on_change.is_some())
+            .and_then(|d| {
+                d.downcast_ref::<TestWidget>()
+                    .map(|w| w.on_change.is_some())
+            })
             .unwrap();
         assert!(has_callback);
     }
@@ -3084,23 +3088,20 @@ mod tests {
         // Retrieve immutable.
         let title = engine
             .with_object_any(&obj)
-            .and_then(|d| d.downcast_ref::<TestWidget>())
-            .unwrap()
-            .title
-            .clone();
+            .and_then(|d| d.downcast_ref::<TestWidget>().map(|w| w.title.clone()))
+            .unwrap();
         assert_eq!(title, "GC-test");
 
         // Retrieve mutable.
-        engine
-            .with_object_any_mut(&obj)
-            .and_then(|d| d.downcast_mut::<TestWidget>())
-            .unwrap()
-            .count = 99;
+        if let Some(mut data) = engine.with_object_any_mut(&obj)
+            && let Some(widget) = data.downcast_mut::<TestWidget>()
+        {
+            widget.count = 99;
+        }
         let count = engine
             .with_object_any(&obj)
-            .and_then(|d| d.downcast_ref::<TestWidget>())
-            .unwrap()
-            .count;
+            .and_then(|d| d.downcast_ref::<TestWidget>().map(|w| w.count))
+            .unwrap();
         assert_eq!(count, 99);
     }
 
@@ -3135,19 +3136,15 @@ mod tests {
 
         let title = engine
             .with_object_any(&stored_obj)
-            .and_then(|data| data.downcast_ref::<TestWidget>())
-            .unwrap()
-            .title
-            .clone();
+            .and_then(|data| data.downcast_ref::<TestWidget>().map(|w| w.title.clone()))
+            .unwrap();
         assert_eq!(title, "Hosted");
 
         // The original object path should still work too.
         let title2 = engine
             .with_object_any(&obj)
-            .and_then(|data| data.downcast_ref::<TestWidget>())
-            .unwrap()
-            .title
-            .clone();
+            .and_then(|data| data.downcast_ref::<TestWidget>().map(|w| w.title.clone()))
+            .unwrap();
         assert_eq!(title2, "Hosted");
     }
 
@@ -3179,9 +3176,8 @@ mod tests {
         // `ec` may allocate while no platform borrow is live.
         let _ = engine.value_from_string(engine.js_string_from_str("test"));
         // Write the clone back.
-        if let Some(slot) = engine
-            .with_object_any_mut(&obj)
-            .and_then(|data| data.downcast_mut::<TestWidget>())
+        if let Some(mut data) = engine.with_object_any_mut(&obj)
+            && let Some(slot) = data.downcast_mut::<TestWidget>()
         {
             *slot = widget;
         }
@@ -3632,16 +3628,20 @@ mod tests {
         // Read back the rooted callback.
         let has_callback = engine
             .with_object_any(&obj)
-            .and_then(|d| d.downcast_ref::<TestButton>())
-            .map(|b| b.widget.on_change.is_some())
+            .and_then(|d| {
+                d.downcast_ref::<TestButton>()
+                    .map(|b| b.widget.on_change.is_some())
+            })
             .unwrap();
         assert!(has_callback);
 
         // The callback itself should still be callable.
         let root = engine
             .with_object_any(&obj)
-            .and_then(|d| d.downcast_ref::<TestButton>())
-            .and_then(|b| b.widget.on_change.as_ref())
+            .and_then(|d| {
+                d.downcast_ref::<TestButton>()
+                    .and_then(|b| b.widget.on_change.clone())
+            })
             .unwrap();
         let fn_obj = TestTypes::value_as_object(&root.value).unwrap();
         let undef = engine.value_undefined();

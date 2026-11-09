@@ -373,8 +373,7 @@ impl ReadableStreamBYOBRequest {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<ReadableByteStreamController, crate::js::Types> {
         self.controller
-            .borrow(ec)
-            .clone()
+            .get(ec)
             .ok_or_else(|| ec.new_type_error("ReadableStreamBYOBRequest is missing its controller"))
     }
 
@@ -400,7 +399,8 @@ impl ReadableStreamBYOBRequest {
         // Step 1: If this.[[controller]] is undefined, throw a TypeError exception.
         let controller = self.controller_slot(ec)?;
         // Step 2: If ! IsDetachedBuffer(this.[[view]].[[ArrayBuffer]]) is true, throw a TypeError exception.
-        if let Some(view) = self.view.borrow(ec).clone()
+        let view = self.view.get(ec);
+        if let Some(view) = view
             && let Some(buffer) = view_buffer_of_js_object(&view, ec)?
             && ec.array_buffer_data(&buffer).is_none()
         {
@@ -497,8 +497,7 @@ impl ReadableByteStreamController {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<ReadableStream, crate::js::Types> {
         self.stream
-            .borrow(ec)
-            .clone()
+            .get(ec)
             .ok_or_else(|| ec.new_type_error("ReadableByteStreamController is missing its stream"))
     }
 
@@ -1093,9 +1092,14 @@ impl ReadableByteStreamController {
 
         // Step 2: Let firstDescriptor be controller.[[pendingPullIntos]][0].
         let (state, first_view) = {
-            let pending = self.pending_pull_intos.borrow(ec);
-            let first = pending.front().expect("pending pull intos not empty");
-            (self.stream_slot(ec)?.state(), first.view.clone())
+            let first_view = self
+                .pending_pull_intos
+                .borrow(ec)
+                .front()
+                .expect("pending pull intos not empty")
+                .view
+                .clone();
+            (self.stream_slot(ec)?.state(), first_view)
         };
 
         // Step 4: If state is "closed",
@@ -1148,9 +1152,13 @@ impl ReadableByteStreamController {
     ) -> Completion<(), crate::js::Types> {
         // Step 1: Let firstDescriptor be controller.[[pendingPullIntos]][0].
         let (first_descriptor, state) = {
-            let pending = self.pending_pull_intos.borrow(ec);
-            let first = pending.front().expect("pending pull intos not empty");
-            (first.clone(), self.stream_slot(ec)?.state())
+            let first_descriptor = self
+                .pending_pull_intos
+                .borrow(ec)
+                .front()
+                .expect("pending pull intos not empty")
+                .clone();
+            (first_descriptor, self.stream_slot(ec)?.state())
         };
 
         // Step 3: Perform ! ReadableByteStreamControllerInvalidateBYOBRequest(controller).

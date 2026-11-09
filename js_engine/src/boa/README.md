@@ -48,8 +48,25 @@ no weak reflector here.  A cache built on it keeps its wrapper alive; the
 node-wrapper cache (`content/src/html/global_scope.rs`) is therefore weak on
 V8 and strong on Boa.
 
+## Platform data and realm construction
+
+`with_object_any` / `with_object_any_mut` return a `PlatformData` /
+`PlatformDataMut` guard that holds the object's `GcRef` / `GcRefMut` for as
+long as the data is borrowed, so the `GcRefCell` borrow flag stays set: a
+`JsObject::borrow_mut` of the same object (including Boa's own re-entrant VM
+access) fails instead of obtaining a `&mut` that aliases the borrowed data.
+The reference is tied to the object handle, so it cannot outlive the object's
+GC allocation.
+
+`BoaContext::build` creates the realm first (each realm's global object gets
+placeholder platform data from `GlobalObjectHostHooks`), then runs the
+platform-object factory with the context as `&mut` and installs the result
+into the global object's `TraceableBox`.  No factory runs while the realm is
+being created, so nothing aliases the `&mut Context` that `create_realm`
+holds.
+
 ## WPT results
 
-Last recorded: `executed=277 unexpected=0`.
+Last recorded: `executed=280 unexpected=0`.
 
 Wasm tests are excluded from the default WPT run (opt-in `--features wasm`).

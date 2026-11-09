@@ -209,19 +209,19 @@ impl EventTarget {
         // listener's callback, and capture is listener's capture, then
         // append listener to eventTarget's event listener list.
         let listener_id = self.next_listener_id.get().wrapping_add(1);
-        // Test membership under a shared borrow so `equals` can use the
-        // execution context; the mutable borrow is scoped to the append.
-        let duplicate = {
-            let listeners = self.event_listener_list.borrow(ec);
-            listeners.iter().any(|listener| {
-                listener.type_ == type_
-                    && listener.capture == capture
-                    && listener
-                        .callback
-                        .as_ref()
-                        .is_some_and(|existing| existing.equals(&callback, ec))
-            })
-        };
+        // The event listener list slot is `GcCell<Vec<EventListener>>`; the
+        // candidate callbacks are cloned out before `equals` runs an engine
+        // operation.
+        let candidates: Vec<Callback> = self
+            .event_listener_list
+            .get(ec)
+            .iter()
+            .filter(|listener| listener.type_ == type_ && listener.capture == capture)
+            .filter_map(|listener| listener.callback.clone())
+            .collect();
+        let duplicate = candidates
+            .iter()
+            .any(|existing| existing.equals(&callback, ec));
 
         if !duplicate {
             self.next_listener_id.set(listener_id);
@@ -261,21 +261,21 @@ impl EventTarget {
     ) {
         // Step 2: Set listener's removed to true and remove listener from
         // eventTarget's event listener list.
-        let matching_ids: Vec<u64> = {
-            let listeners = self.event_listener_list.borrow(ec);
-            listeners
-                .iter()
-                .filter(|listener| {
-                    listener.type_ == type_
-                        && listener.capture == capture
-                        && listener
-                            .callback
-                            .as_ref()
-                            .is_some_and(|existing| existing.equals(callback, ec))
-                })
-                .map(|listener| listener.id)
-                .collect()
-        };
+        // Clone the list out first: `equals` runs an engine operation, which
+        // must not interleave with a live borrow of the cell.
+        let listeners = self.event_listener_list.get(ec);
+        let matching_ids: Vec<u64> = listeners
+            .iter()
+            .filter(|listener| {
+                listener.type_ == type_
+                    && listener.capture == capture
+                    && listener
+                        .callback
+                        .as_ref()
+                        .is_some_and(|existing| existing.equals(callback, ec))
+            })
+            .map(|listener| listener.id)
+            .collect();
         let mut listeners = self.event_listener_list.borrow_mut(ec);
         for listener in listeners.iter_mut() {
             if matching_ids.contains(&listener.id) {

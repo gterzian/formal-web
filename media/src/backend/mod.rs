@@ -30,14 +30,48 @@ pub struct PixelBufferVideoFrame {
     pub height: u32,
     /// The decoded NV12 pixel buffer; must stay alive while the Metal
     /// textures wrapping its planes are in use.
-    pub pixel_buffer: objc2::rc::Retained<objc2_core_video::CVPixelBuffer>,
+    pixel_buffer: objc2::rc::Retained<objc2_core_video::CVPixelBuffer>,
+    /// The thread that produced the frame.
+    producer: std::thread::ThreadId,
+}
+
+#[cfg(all(
+    any(feature = "backend-avfoundation", avf_default),
+    target_os = "macos"
+))]
+impl PixelBufferVideoFrame {
+    pub fn new(
+        pipeline_id: MediaPipelineId,
+        width: u32,
+        height: u32,
+        pixel_buffer: objc2::rc::Retained<objc2_core_video::CVPixelBuffer>,
+    ) -> Self {
+        Self {
+            pipeline_id,
+            width,
+            height,
+            pixel_buffer,
+            producer: std::thread::current().id(),
+        }
+    }
+
+    /// The decoded pixel buffer, after checking that this is the thread that
+    /// produced the frame.
+    pub fn pixel_buffer(&self) -> &objc2::rc::Retained<objc2_core_video::CVPixelBuffer> {
+        assert_eq!(
+            std::thread::current().id(),
+            self.producer,
+            "pixel buffer frame consumed on a thread other than the one that produced it"
+        );
+        &self.pixel_buffer
+    }
 }
 
 // SAFETY: the pixel buffer is produced by the AVFoundation pipeline and
 // consumed by the graphics event loop on the same thread (the media backend
-// runs inside the graphics process's select loop); it is only ever touched
-// on that thread. The crossbeam channel between them only needs the Send
-// marker.
+// runs inside the graphics process's select loop); `pixel_buffer()` asserts
+// that thread, so the only cross-thread operation left is dropping the frame,
+// which releases the buffer.
 #[cfg(all(
     any(feature = "backend-avfoundation", avf_default),
     target_os = "macos"
@@ -55,7 +89,7 @@ impl std::fmt::Debug for PixelBufferVideoFrame {
             .field("pipeline_id", &self.pipeline_id)
             .field("width", &self.width)
             .field("height", &self.height)
-            .field("pixel_buffer", &(&**self.pixel_buffer as *const _))
+            .field("pixel_buffer", &(&*self.pixel_buffer as *const _))
             .finish()
     }
 }

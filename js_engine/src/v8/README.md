@@ -40,10 +40,13 @@ fields, and JS edges are collected in one pass.
   (its value handle and its typed object handle) and a typed wrapper holds its
   object's edges plus its own; `Trace` visits every one, because an edge
   skipped by the marker has its `TracedReference` storage cell reclaimed and a
-  later read is a use-after-free. A `debug_assert` in the `Trace` impls rejects
-  a `Root` handle or a rooted `GcCell` reached by marking as a store-invariant
-  violation; release builds count both and `V8Engine::gc` logs the counts (the
-  invariant is not compiled out under `--release`).
+  later read is a use-after-free. The `Trace` impls abort in every build on a
+  store-invariant violation (a `Root` handle or a rooted `GcCell` reached by
+  marking), and every edge carries the epoch it was created or last traced in:
+  `V8Handle::to_local`/`make_strong` assert that no collection has run since
+  then, so reading an edge whose referent may already be reclaimed fails
+  deterministically instead of dereferencing a freed storage cell. The isolate
+  bumps the epoch from a V8 GC prologue callback (`gc_prologue_bump_epoch`).
 - Platform objects are allocated on the cppgc heap (`V8PlatformData`, a
   type-erased cppgc object tracing through the concrete type) and linked to
   their JS wrapper with `v8::Object::wrap`, so the unified heap traces
@@ -71,10 +74,16 @@ destruction.
 
 Unsafe blocks follow the repo-wide discipline in `AGENTS.md` ("Unsafe-code
 discipline"). The backend-specific checks are the `GcCell` borrow counters on
-the guard deref/drop paths, strict LIFO drop order for the thread-local engine
-and callback-scope guards, isolate identity on engine entry and
-`with_object_any`, and the non-shared backing store before `array_buffer_data`
-iterates it as `Cell<u8>`. Checks that run inside V8's C++ callbacks (the
+the guard deref/drop paths, the edge epoch check on every handle
+materialization, the platform-data writer flag (a trace or shared read during
+a `with_object_any_mut` borrow aborts), strict LIFO drop order for the
+thread-local engine and callback-scope guards, isolate identity on engine
+entry and `with_object_any`, the null check on cached platform addresses, and
+the non-shared backing store before `array_buffer_data` iterates it as
+`Cell<u8>`.  A re-entrant V8 callback runs against an engine handle copied
+from `CURRENT_ENGINE` (`V8Engine::handle`), never against a `&mut` to the
+suspended engine, so no write goes through a pointer hidden behind that
+frame's `&mut self`. Checks that run inside V8's C++ callbacks (the
 cppgc `trace` functions) use `fatal_invariant!` instead of a panic.
 
 ## Native callback records and realm teardown
@@ -139,7 +148,7 @@ Cargo home directory.
 
 ## WPT results
 
-Last recorded: `executed=277 unexpected=0`.
+Last recorded: `executed=280 unexpected=0`.
 
 ## Remaining work
 
@@ -151,12 +160,20 @@ Last recorded: `executed=277 unexpected=0`.
    which materializes both sides through `same_value`.  The impls remain only
    to satisfy the generic `JsTypes` trait bounds, and are documented as
    approximate.
-2. **Scope-macro `&mut PinScope` reborrow.** The `v8_engine_scope_with_*`
+2. **Scope-macro `&mut PinScope` reborrow, and the stored scope's
+   `'static` lifetimes.** The `v8_engine_scope_with_*`
    macros reborrow the callback scope as `&mut` on each nested engine call
    during a native callback. The references never overlap in use (each is
    created, used for a bounded sequence of C calls, and dropped) and the
    underlying memory is C++-owned, but the pattern is not Stacked-Borrows
-   clean; a Miri run would flag it.
+   clean; a Miri run would flag it.  The stored scope type
+   (`StoredCallbackScope`) is `v8::PinScope<'static, 'static>`, so a `Local`
+   materialized through it carries a `'static` lifetime and code that stored
+   one would keep it past its `HandleScope`; no code stores a `Local` (only
+   `Global`/`TracedReference` handles are kept), so the lifetime is a missing
+   compile-time check rather than a live dangling handle.  Keeping the real
+   lifetimes needs the scopes passed as parameters or a closure-based
+   accessor; neither is implemented.
 3. **The opaque closure path remains on the concrete engines.**
    `create_builtin_fn` / `create_builtin_function` are no longer `JsEngine`
    trait methods, so generic domain code cannot use them; they survive as
@@ -172,17 +189,13 @@ Last recorded: `executed=277 unexpected=0`.
    current tests catch.
 5. **`is_constructor` has no exact check.** See the IsConstructor gap under
    "ArrayBuffer / IsConstructor gaps".
-6. **An `Edge` clone that leaves traced storage is not rooted.**
-   `V8Handle::clone` on an `Edge` shares the `Rc<TracedReference>`; a clone
-   obtained with `cell.borrow(ec).clone()` and then removed from its cell
-   (or whose owning platform is collected) is not visited by any marker, so
-   its `TracedReference` storage cell is reclaimed and a later read is a
-   use-after-free or, if the node is reused, reads a different object. The
-   sanctioned `GcCell::get`/`take`/`pop*` root the copy with
-   `Trace::make_strong` first; `Clone` cannot, because it has no V8 scope.
-   Closing this needs V8's mark epoch (a GC prologue callback bumping a
-   counter, stamped on every traced edge and checked before `to_local`) or a
-   rooted `Clone`; neither is implemented.
+6. **`Trace for Rc<T>` roots nothing on its own.**
+   `store`/`make_strong` on a shared value are no-ops, so a Rust-held `Rc`
+   clone shares whatever edges the traced copy owns and is only valid while
+   that copy keeps tracing them; the epoch check aborts a read once a
+   collection has run without visiting the shared edge. Give a `Rc`-shared
+   value its own root (or store it in a `GcCell`) when it must outlive its
+   traced owner.
 7. **`create_realm` retains every realm state.**
    `V8Engine::created_realm_states` holds a strong `Rc<V8RealmState>` per
    `create_realm` call so the realm state outlives the returned handle. Only
@@ -197,6 +210,13 @@ Last recorded: `executed=277 unexpected=0`.
    call time. Resolving the payload from the function's holder instead would
    remove the raw pointer; the `native_callback` record is read from its
    owning slot rather than a cached pointer.
+9. **`gc()` assumes no cppgc pointers on the Rust stack.**
+   `V8Engine::gc` sweeps with `EmbedderStackState::NoHeapPointers`.  A
+   `GcCell` borrow guard can no longer be live across it (the guard borrows
+   the execution context), but any other cppgc pointer in a caller frame — a
+   `Member` read into a local, a cached platform address — would break the
+   claim and let the sweep reclaim a reachable object.  The hook is
+   test-only.
 
 ### ArrayBuffer / IsConstructor gaps
 

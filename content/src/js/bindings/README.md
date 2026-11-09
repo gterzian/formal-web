@@ -176,13 +176,19 @@ DOM-specific part stays in the domain.
        ec: &mut dyn ExecutionContext<T>,
    ) -> Completion<T::JsValue, T> {
        let obj = T::value_as_object(this).ok_or_else(|| ec.new_type_error("..."))?;
-       let domain = ec.with_object_any(&obj)
-           .and_then(|d| d.downcast_ref::<MyDomainType>())
+       let domain = ec
+           .with_object_any(&obj)
+           .and_then(|d| d.downcast_ref::<MyDomainType>().cloned())
            .ok_or_else(|| ec.new_type_error("..."))?;
        let result = domain.my_method(arg1, arg2);  // call domain method
        Ok(ec.value_from_bool(result))               // wrap return value
    }
    ```
+   `with_object_any` returns a guard that borrows the object *and* the
+   execution context for as long as the platform data is borrowed, so the
+   data is cloned out inside the closure (`.cloned()` above) before any
+   engine call, and `with_object_any_mut` is used for a write-back (see
+   `content/README.md`, "GcCell borrow discipline").
 
 3. **The Web IDL bindings infra is generic — never add domain-specific code to it.**
    Adding a new interface means implementing `WebIdlInterface` in `content/src/js/bindings/<domain>/`

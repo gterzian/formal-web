@@ -43,9 +43,10 @@ fn trace_optional_handle<T>(handle: &Option<V8Handle<T>>, visitor: &mut Visitor)
 fn store_optional_handle<T>(
     handle: &mut Option<V8Handle<T>>,
     scope: &mut v8::PinScope<'_, '_, ()>,
+    epoch_source: *const Cell<u64>,
 ) {
     if let Some(handle) = handle {
-        handle.store_edge(scope);
+        handle.store_edge(scope, epoch_source);
     }
 }
 
@@ -62,56 +63,23 @@ fn make_strong_optional_handle<T>(
 /// Assert that a handle reached by cppgc tracing is an edge, never a strong
 /// root. A root here means a write into traced storage bypassed `store`; the
 /// marker would silently skip it and the referent would be over-retained
-/// instead of collected with its owner. A debug build aborts deterministically
-/// (the trace runs inside V8's C++ marking visitor, so a panic must not unwind);
-/// release builds count the root so `V8Engine::gc` can report it.
-fn debug_assert_stored<T>(handle: &V8Handle<T>) {
+/// instead of collected with its owner.
+///
+/// This runs inside V8's C++ marking visitor, so it aborts instead of
+/// unwinding: a store-invariant violation in any build is a hard failure, not
+/// a silent over-retention.
+fn assert_stored<T>(handle: &V8Handle<T>) {
     if handle.is_root() {
-        record_root_reached_during_trace();
-        if cfg!(debug_assertions) {
-            fatal_invariant!(
-                "a rooted JS handle reached cppgc tracing: the store invariant was bypassed"
-            );
-        }
+        fatal_invariant!(
+            "a rooted JS handle reached cppgc tracing: the store invariant was bypassed"
+        );
     }
 }
 
-thread_local! {
-    /// Strong roots reached by cppgc tracing since the last full collection.
-    /// A nonzero value means a write into traced storage bypassed
-    /// `Trace::store`.
-    static ROOTS_REACHED_DURING_TRACE: Cell<u64> = const { Cell::new(0) };
-    /// Rooted (`Persistent`) cells reached by cppgc tracing since the last
-    /// full collection. A nonzero value means a cloned cell was stored in
-    /// traced storage without `Trace::store` converting it back to an edge.
-    static STRONG_CELLS_REACHED_DURING_TRACE: Cell<u64> = const { Cell::new(0) };
-}
-
-fn record_root_reached_during_trace() {
-    ROOTS_REACHED_DURING_TRACE.with(|count| count.set(count.get() + 1));
-}
-
-/// Reset and return the count of roots reached by tracing, so a collection
-/// can report whether the store invariant was bypassed.
-pub(crate) fn take_roots_reached_during_trace() -> u64 {
-    ROOTS_REACHED_DURING_TRACE.with(|count| count.replace(0))
-}
-
-/// Record that a rooted cell was reached by tracing (see
-/// [`STRONG_CELLS_REACHED_DURING_TRACE`]).
-pub(crate) fn record_strong_cell_reached_during_trace() {
-    STRONG_CELLS_REACHED_DURING_TRACE.with(|count| count.set(count.get() + 1));
-}
-
-/// Reset and return the count of rooted cells reached by tracing.
-pub(crate) fn take_strong_cells_reached_during_trace() -> u64 {
-    STRONG_CELLS_REACHED_DURING_TRACE.with(|count| count.replace(0))
-}
-
 /// Assert that every present handle in an optional pair is an edge.
-fn debug_assert_optional_stored<T>(handle: &Option<V8Handle<T>>) {
+fn assert_optional_stored<T>(handle: &Option<V8Handle<T>>) {
     if let Some(handle) = handle {
-        debug_assert_stored(handle);
+        assert_stored(handle);
     }
 }
 
@@ -119,23 +87,23 @@ fn debug_assert_optional_stored<T>(handle: &Option<V8Handle<T>>) {
 // `store` converts every rooted handle into an edge exactly once.
 unsafe impl Trace for V8Value {
     unsafe fn trace(&self, visitor: &mut Visitor) {
-        debug_assert_stored(&self.handle);
+        assert_stored(&self.handle);
         if let V8Handle::Edge(edge) = &self.handle {
             visitor.trace(&**edge);
         }
         if let Some(profile) = &self.object_profile {
-            debug_assert_stored(&profile.object_handle);
+            assert_stored(&profile.object_handle);
             if let V8Handle::Edge(edge) = &profile.object_handle {
                 visitor.trace(&**edge);
             }
-            debug_assert_optional_stored(&profile.array_buffer_handle);
-            debug_assert_optional_stored(&profile.shared_array_buffer_handle);
-            debug_assert_optional_stored(&profile.typed_array_handle);
-            debug_assert_optional_stored(&profile.data_view_handle);
-            debug_assert_optional_stored(&profile.promise_handle);
-            debug_assert_optional_stored(&profile.function_handle);
-            debug_assert_optional_stored(&profile.map_handle);
-            debug_assert_optional_stored(&profile.set_handle);
+            assert_optional_stored(&profile.array_buffer_handle);
+            assert_optional_stored(&profile.shared_array_buffer_handle);
+            assert_optional_stored(&profile.typed_array_handle);
+            assert_optional_stored(&profile.data_view_handle);
+            assert_optional_stored(&profile.promise_handle);
+            assert_optional_stored(&profile.function_handle);
+            assert_optional_stored(&profile.map_handle);
+            assert_optional_stored(&profile.set_handle);
             trace_optional_handle(&profile.array_buffer_handle, visitor);
             trace_optional_handle(&profile.shared_array_buffer_handle, visitor);
             trace_optional_handle(&profile.typed_array_handle, visitor);
@@ -155,18 +123,19 @@ unsafe impl Trace for V8Value {
             .as_any_mut()
             .downcast_mut::<V8Engine>()
             .expect("V8 value stored with a non-V8 execution context");
+        let epoch_source = engine.gc_epoch_source();
         engine.with_value_scope(|scope| {
-            self.handle.store_edge(scope);
+            self.handle.store_edge(scope, epoch_source);
             if let Some(profile) = &mut self.object_profile {
-                profile.object_handle.store_edge(scope);
-                store_optional_handle(&mut profile.array_buffer_handle, scope);
-                store_optional_handle(&mut profile.shared_array_buffer_handle, scope);
-                store_optional_handle(&mut profile.typed_array_handle, scope);
-                store_optional_handle(&mut profile.data_view_handle, scope);
-                store_optional_handle(&mut profile.promise_handle, scope);
-                store_optional_handle(&mut profile.function_handle, scope);
-                store_optional_handle(&mut profile.map_handle, scope);
-                store_optional_handle(&mut profile.set_handle, scope);
+                profile.object_handle.store_edge(scope, epoch_source);
+                store_optional_handle(&mut profile.array_buffer_handle, scope, epoch_source);
+                store_optional_handle(&mut profile.shared_array_buffer_handle, scope, epoch_source);
+                store_optional_handle(&mut profile.typed_array_handle, scope, epoch_source);
+                store_optional_handle(&mut profile.data_view_handle, scope, epoch_source);
+                store_optional_handle(&mut profile.promise_handle, scope, epoch_source);
+                store_optional_handle(&mut profile.function_handle, scope, epoch_source);
+                store_optional_handle(&mut profile.map_handle, scope, epoch_source);
+                store_optional_handle(&mut profile.set_handle, scope, epoch_source);
             }
         });
     }
@@ -199,7 +168,7 @@ unsafe impl Trace for V8Value {
 // SAFETY: See `V8Value`; both handles are edges to the same object.
 unsafe impl Trace for V8Object {
     unsafe fn trace(&self, visitor: &mut Visitor) {
-        debug_assert_stored(&self.1);
+        assert_stored(&self.1);
         // SAFETY: Delegated to the inner value's trace.
         unsafe { self.0.trace(visitor) }
         // The typed object handle is a distinct edge from the value's own
@@ -220,8 +189,9 @@ unsafe impl Trace for V8Object {
             .as_any_mut()
             .downcast_mut::<V8Engine>()
             .expect("V8 object stored with a non-V8 execution context");
+        let epoch_source = engine.gc_epoch_source();
         engine.with_value_scope(|scope| {
-            self.1.store_edge(scope);
+            self.1.store_edge(scope, epoch_source);
         });
     }
 
@@ -302,7 +272,7 @@ macro_rules! typed_wrapper_trace {
             // SAFETY: See `V8Object`.
             unsafe impl Trace for $name {
                 unsafe fn trace(&self, visitor: &mut Visitor) {
-                    debug_assert_stored(&self.1);
+                    assert_stored(&self.1);
                     // SAFETY: Delegated to the inner object's trace.
                     unsafe { self.0.trace(visitor) }
                     // The typed handle is a distinct edge from the object's
@@ -322,8 +292,9 @@ macro_rules! typed_wrapper_trace {
                         .as_any_mut()
                         .downcast_mut::<V8Engine>()
                         .expect("V8 typed wrapper stored with a non-V8 execution context");
+                    let epoch_source = engine.gc_epoch_source();
                     engine.with_value_scope(|scope| {
-                        self.1.store_edge(scope);
+                        self.1.store_edge(scope, epoch_source);
                     });
                 }
 

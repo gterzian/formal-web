@@ -35,16 +35,27 @@ Every `unsafe` block states the precondition it relies on in a `// SAFETY:`
 comment, and asserts that precondition at the block whenever the check is
 O(1) — a deterministic panic (or abort) is better than undefined behavior.
 
-- A precondition that guards memory safety is checked with `assert!` (not
-  `debug_assert!`), so the release build fails loudly too.
-- A precondition that only diagnoses a latent bug (e.g. a store-invariant
-  violation that over-retains rather than dangles) may use `debug_assert!`
-  plus a release-build counter, as the V8 `Trace` impls do.
-- A check inside an `extern "C"` frame or a cppgc trace callback must not
+- Preconditions are checked with `assert!` (never `debug_assert!`): a release
+  build fails loudly too. An invariant that only diagnoses a latent bug (e.g.
+  a store-invariant violation that over-retains rather than dangles) is still
+  a hard failure, not a release-build counter — a counter means the invariant
+  is only visible in logs nobody reads.
+- A check inside an `extern "C"` frame or a cppgc/GC trace callback must not
   unwind into C++; use `js_engine::fatal_invariant!` (logs and aborts) there.
+- An invariant that cannot be checked at the point of the unsafe operation
+  (the callee has no access to the state that would disprove it) is checked
+  where that state is available instead: a value stamped with the collection
+  epoch it survived, a borrow flag on the borrowed object, a thread id on the
+  handle — so the failure is caught before the memory is dereferenced rather
+  than asserted after it.
 - When a precondition genuinely cannot be checked cheaply (a property of the
   allocator or of V8 internals, not of the call), the `// SAFETY:` comment is
   the enforcement and no assertion is expected.
+- A manual `unsafe impl Send`/`Sync` keeps the bound auto-derivation would
+  impose on every field it wraps (a generic wrapper of `T` keeps `T: Send`),
+  and a thread-affine type asserts its thread at the point where the pointer
+  or handle escapes (`MainThreadHandle::app_ptr` checks
+  `MainThreadMarker::new()`), not only in the impl's comment.
 
 # grep caution
 

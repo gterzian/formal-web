@@ -8,6 +8,7 @@ use crate::enums::{
     IntegrityLevel, IteratorKind, PromiseRejectionOperation, SharedMemoryOrder,
     TypedArrayElementType,
 };
+use crate::gc::{PlatformData, PlatformDataMut};
 use crate::records::{
     IteratorRecord, ModuleRequest, PromiseCapability, PromiseResolvers, RealmIntrinsics,
 };
@@ -752,7 +753,15 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     ) -> T::JsObject;
 
     /// Access data stored via `create_object_with_any` immutably.
-    fn with_object_any(&self, object: &T::JsObject) -> Option<&dyn std::any::Any>;
+    ///
+    /// The returned guard borrows both `object` (the data lives in the
+    /// object's GC allocation on Boa and is traced by the object's wrapper on
+    /// V8) and `ec`, and it holds the backend's borrow of the platform object
+    /// for its lifetime: a later mutable borrow of the same object fails
+    /// instead of aliasing it, and no engine method can run while it is live.
+    /// Clone what is needed into an owned value before calling back into the
+    /// engine.
+    fn with_object_any<'a>(&'a self, object: &'a T::JsObject) -> Option<PlatformData<'a>>;
 
     /// Access data stored via `create_object_with_any` mutably.
     ///
@@ -762,7 +771,15 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     /// the owned clone, then writes the clone back under this method. (On V8
     /// a trace triggered by such an engine call would otherwise read the
     /// platform data through a live `&mut`.)
-    fn with_object_any_mut(&mut self, object: &T::JsObject) -> Option<&mut dyn std::any::Any>;
+    ///
+    /// Like `with_object_any`, the guard borrows `object` and `ec` and holds
+    /// the backend's exclusive borrow of the platform object, so no engine
+    /// method and no other borrow of the same object can run while it is
+    /// alive.
+    fn with_object_any_mut<'a>(
+        &'a mut self,
+        object: &'a T::JsObject,
+    ) -> Option<PlatformDataMut<'a>>;
 
     /// Store a JS object into a traced platform-object slot.
     ///

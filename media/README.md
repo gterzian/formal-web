@@ -128,3 +128,13 @@ Key design decisions:
 - **Seek optimization** — Initial single-keyframe seek is fine.
 - **Live streams** — Not tested.
 - **Text tracks** — Not implemented.
+- **`Send` by thread discipline.**  `AvPlayer`, `AvPlayerItem`,
+  `AvVideoOutput`, and `PixelBufferVideoFrame` are `Send` so they can travel
+  over the backend-to-dispatch-loop channel, but the objects themselves are
+  created and touched only on the thread that pumps AVFoundation's run loop.
+  Each type records the thread that created it and asserts it in its accessor
+  (`inner()`, `pixel_buffer()`), so a cross-thread use — which would move ObjC
+  access and the eventual release — panics instead of racing.
+  `AvPlayer::new` deliberately fabricates a `MainThreadMarker`: AVFoundation
+  needs one thread with a run loop, not the main thread, so the check is a
+  recorded thread id rather than a main-thread assertion.

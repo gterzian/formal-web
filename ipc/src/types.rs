@@ -314,17 +314,14 @@ impl<T: IpcSerialize + IpcDeserialize> IpcSender<T> {
                 let mut dict = xpc_sys::XpcDictionary::new();
                 dict.set_data("_p", &payload);
                 for (key, region) in &shmem_map {
-                    // xpc_shmem_create wraps the region's existing mapping;
-                    // the object is released after the message is sent.
-                    // SAFETY: `region` is a live shared mapping that stays
-                    // alive for the duration of this send.
-                    let shmem = unsafe {
-                        xpc_sys::XpcSharedMemory::wrap(
-                            region.as_slice().as_ptr() as *mut std::ffi::c_void,
-                            region.size(),
-                        )
-                    };
-                    dict.set_shmem(&key.to_string(), &shmem);
+                    // The region is copied into an XPC data object rather than
+                    // wrapped as an XPC shared-memory object: `send_message` is
+                    // asynchronous and the dictionary outlives this call, so a
+                    // shared-memory object would keep a pointer to the caller's
+                    // mapping after `shmem_map` drops it. The XPC data object
+                    // owns its bytes. (The receive side does not map regions
+                    // back yet; see ipc/ARCHITECTURE.md.)
+                    dict.set_data(&key.to_string(), region.as_slice());
                 }
                 connection.send_message(&dict);
                 Ok(())
@@ -373,13 +370,6 @@ impl<T: IpcSerialize + IpcDeserialize> std::fmt::Debug for IpcReceiver<T> {
         }
     }
 }
-
-// SAFETY: wraps a Mach port handle which is trivially Send (ipc-channel), or
-// a crossbeam receiver whose payload type is Send.
-#[cfg(feature = "ipc-channel-backend")]
-unsafe impl<T: IpcSerialize + IpcDeserialize> Send for IpcReceiver<T> {}
-#[cfg(all(not(feature = "ipc-channel-backend"), feature = "bek"))]
-unsafe impl<T: IpcSerialize + IpcDeserialize + Send> Send for IpcReceiver<T> {}
 
 impl<T: IpcSerialize + IpcDeserialize> IpcReceiver<T> {
     fn recv_from_inner(&self) -> Result<IpcIncoming<T>, IpcError> {

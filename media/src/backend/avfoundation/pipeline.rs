@@ -142,12 +142,7 @@ impl PipelineHandle for AvfPipeline {
             let width = super::av_sys::pixel_buffer::pixel_buffer_width(&pixel_buf);
             let height = super::av_sys::pixel_buffer::pixel_buffer_height(&pixel_buf);
             if let Err(send_error) = self.event_tx.send(MediaBackendEvent::PixelBufferFrame(
-                crate::backend::PixelBufferVideoFrame {
-                    pipeline_id: self.id,
-                    width,
-                    height,
-                    pixel_buffer: pixel_buf,
-                },
+                crate::backend::PixelBufferVideoFrame::new(self.id, width, height, pixel_buf),
             )) {
                 log::error!(
                     "[avf] p{}: pixel buffer frame send failed: {send_error}",

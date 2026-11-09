@@ -33,11 +33,14 @@ pub(crate) fn steps_to_fire_beforeunload(
     //         <https://dom.spec.whatwg.org/#concept-event-fire>
     //         Sub-algorithm: fire an event.
     let target_object = ec.global_object();
-    let event_target = ec
-        .with_object_any(&target_object)
-        .and_then(|data| data.downcast_ref::<Window>())
-        .map(|window| window.event_target.clone())
-        .unwrap_or_else(|| EventTarget::new(ec));
+    let event_target = ec.with_object_any(&target_object).and_then(|data| {
+        data.downcast_ref::<Window>()
+            .map(|window| window.event_target.clone())
+    });
+    let event_target = match event_target {
+        Some(event_target) => event_target,
+        None => EventTarget::new(ec),
+    };
 
     // Step 4, sub-step 2: Let event be the result of creating an event given
     //                     eventConstructor, in the relevant realm of target.

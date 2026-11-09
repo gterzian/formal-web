@@ -6,7 +6,7 @@
 - `document_providers.rs` is blitz plumbing, not a spec algorithm: it holds `DocumentProviders`, its `ResourceHooks` impl (which reports blitz's subresource requests), the `AssetRequest` those fetches carry, and `install_resource`, which installs a fetched response into the document.  A function carrying a spec anchor belongs in the module that owns that spec section, not here.
 - `html_dom_tree.rs` holds the document-level iframe post-connection and removing entry points run at document load completion and document destruction; the iframe's HTML element steps do not run from the `MutationHooks` hooks.
 - Keep iframe bindings and iframe processing algorithms together in `content/src/html/html_iframe_element.rs` as free functions over content-process state (`ContentProcess`).
-- Keep helper names aligned with the corresponding HTML algorithm anchors, and prefer explicit error returns or `debug_assert!` plus safe early returns over sentinel ids.
+- Keep helper names aligned with the corresponding HTML algorithm anchors, and prefer explicit error returns over sentinel ids.  `debug_assert!` is for spec-state assertions (`Assert:` steps, DOM bookkeeping) that a release build may skip; an unsafe precondition is asserted in every build (see `AGENTS.md`, "Unsafe-code discipline").
 - Iframe work is driven by the DOM mutation hooks in `dom_trees.rs`: a
   connected, changed or removed iframe records its HTML element steps, and the
   content process runs them at the end of the current operation.  The

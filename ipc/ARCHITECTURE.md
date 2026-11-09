@@ -276,9 +276,14 @@ or Simulator plus the EU/Japan alternative-browser-engine entitlements.
   returns a transport error under `bek` until that reverse direction exists.
 - `grant_capability` call sites in `user_agent`'s dispatch (wrap sends in a
   grant under `bek`, no-op otherwise).
-- Shared-memory receive side: `send_with_shmem_map`'s Xpc arm attaches
-  `xpc_shmem_create` regions to the outgoing dictionary, but the receiving
-  handler does not map them back into `IpcIncoming::shmem_regions` yet.
+- Shared-memory receive side: `send_with_shmem_map`'s Xpc arm sends each
+  region as an XPC data object, but the receiving handler does not decode them
+  into `IpcIncoming::shmem_regions` yet.
+- Shared-memory zero-copy on the Xpc arm: the send path copies each region's
+  bytes into an XPC data object, because `send_message` is asynchronous and a
+  wrapped `xpc_shmem_create` object would outlive the caller's mapping.  A
+  zero-copy path needs a mapping whose lifetime the sender keeps until libxpc
+  has serialized the message.
 - Rendering-extension consolidation: BEK has one rendering category; the
   graphics and media process roles need merging inside it (see the design).
 - JIT entitlements for the JS engine (V8) on iOS.

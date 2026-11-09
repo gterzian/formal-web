@@ -896,8 +896,7 @@ pub(crate) fn resolve_window(
     if let Some(object) = value.as_object() {
         if ec
             .with_object_any(&object)
-            .and_then(|a| a.downcast_ref::<Window>())
-            .is_some()
+            .is_some_and(|a| a.downcast_ref::<Window>().is_some())
         {
             return object;
         }

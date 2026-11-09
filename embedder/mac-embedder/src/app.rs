@@ -118,42 +118,70 @@ define_class!(
     unsafe impl NSWindowDelegate for Delegate {
         #[unsafe(method(windowWillClose:))]
         fn window_will_close(&self, notification: &NSNotification) {
+            // SAFETY: the delegate's ivars hold the app pointer that
+            // `Delegate::new` installed (a live `MacApp` for the delegate's
+            // lifetime); delegates receive AppKit notifications on the main
+            // thread, which is where the app state lives.
             let app = unsafe { &mut *(*self.ivars().app.get()) };
             app.window_will_close(notification);
         }
 
         #[unsafe(method(windowDidResize:))]
         fn window_did_resize(&self, notification: &NSNotification) {
+            // SAFETY: the delegate's ivars hold the app pointer that
+            // `Delegate::new` installed (a live `MacApp` for the delegate's
+            // lifetime); delegates receive AppKit notifications on the main
+            // thread, which is where the app state lives.
             let app = unsafe { &mut *(*self.ivars().app.get()) };
             app.window_did_resize(notification);
         }
 
         #[unsafe(method(windowDidChangeBackingProperties:))]
         fn window_did_change_backing_properties(&self, notification: &NSNotification) {
+            // SAFETY: the delegate's ivars hold the app pointer that
+            // `Delegate::new` installed (a live `MacApp` for the delegate's
+            // lifetime); delegates receive AppKit notifications on the main
+            // thread, which is where the app state lives.
             let app = unsafe { &mut *(*self.ivars().app.get()) };
             app.window_did_change_backing_properties(notification);
         }
 
         #[unsafe(method(windowDidBecomeKey:))]
         fn window_did_become_key(&self, notification: &NSNotification) {
+            // SAFETY: the delegate's ivars hold the app pointer that
+            // `Delegate::new` installed (a live `MacApp` for the delegate's
+            // lifetime); delegates receive AppKit notifications on the main
+            // thread, which is where the app state lives.
             let app = unsafe { &mut *(*self.ivars().app.get()) };
             app.window_did_become_key(notification);
         }
 
         #[unsafe(method(windowDidResignKey:))]
         fn window_did_resign_key(&self, notification: &NSNotification) {
+            // SAFETY: the delegate's ivars hold the app pointer that
+            // `Delegate::new` installed (a live `MacApp` for the delegate's
+            // lifetime); delegates receive AppKit notifications on the main
+            // thread, which is where the app state lives.
             let app = unsafe { &mut *(*self.ivars().app.get()) };
             app.window_did_resign_key(notification);
         }
 
         #[unsafe(method(windowDidMiniaturize:))]
         fn window_did_miniaturize(&self, notification: &NSNotification) {
+            // SAFETY: the delegate's ivars hold the app pointer that
+            // `Delegate::new` installed (a live `MacApp` for the delegate's
+            // lifetime); delegates receive AppKit notifications on the main
+            // thread, which is where the app state lives.
             let app = unsafe { &mut *(*self.ivars().app.get()) };
             app.window_did_miniaturize(notification);
         }
 
         #[unsafe(method(windowDidDeminiaturize:))]
         fn window_did_deminiaturize(&self, _notification: &NSNotification) {
+            // SAFETY: the delegate's ivars hold the app pointer that
+            // `Delegate::new` installed (a live `MacApp` for the delegate's
+            // lifetime); delegates receive AppKit notifications on the main
+            // thread, which is where the app state lives.
             let app = unsafe { &mut *(*self.ivars().app.get()) };
             app.start_display_link_if_animating();
         }
@@ -197,6 +225,10 @@ define_class!(
             item_identifier: &NSToolbarItemIdentifier,
             flag: bool,
         ) -> Option<Retained<NSToolbarItem>> {
+            // SAFETY: the delegate's ivars hold the app pointer that
+            // `Delegate::new` installed (a live `MacApp` for the delegate's
+            // lifetime); delegates receive AppKit notifications on the main
+            // thread, which is where the app state lives.
             let app = unsafe { &mut *(*self.ivars().app.get()) };
             app.make_toolbar_item(toolbar, item_identifier, flag)
         }
@@ -207,12 +239,20 @@ define_class!(
     unsafe impl NSControlTextEditingDelegate for Delegate {
         #[unsafe(method(controlTextDidBeginEditing:))]
         fn control_text_did_begin_editing(&self, _notification: &NSNotification) {
+            // SAFETY: the delegate's ivars hold the app pointer that
+            // `Delegate::new` installed (a live `MacApp` for the delegate's
+            // lifetime); delegates receive AppKit notifications on the main
+            // thread, which is where the app state lives.
             let app = unsafe { &mut *(*self.ivars().app.get()) };
             app.address_field_begin_editing();
         }
 
         #[unsafe(method(controlTextDidEndEditing:))]
         fn control_text_did_end_editing(&self, _notification: &NSNotification) {
+            // SAFETY: the delegate's ivars hold the app pointer that
+            // `Delegate::new` installed (a live `MacApp` for the delegate's
+            // lifetime); delegates receive AppKit notifications on the main
+            // thread, which is where the app state lives.
             let app = unsafe { &mut *(*self.ivars().app.get()) };
             app.address_field_end_editing();
         }
@@ -226,12 +266,20 @@ define_class!(
     impl Delegate {
         #[unsafe(method(quit:))]
         fn quit(&self, _sender: Option<&AnyObject>) {
+            // SAFETY: the delegate's ivars hold the app pointer that
+            // `Delegate::new` installed (a live `MacApp` for the delegate's
+            // lifetime); delegates receive AppKit notifications on the main
+            // thread, which is where the app state lives.
             let app = unsafe { &mut *(*self.ivars().app.get()) };
             app.post_exit();
         }
 
         #[unsafe(method(switchTab:))]
         fn switch_tab(&self, sender: Option<&AnyObject>) {
+            // SAFETY: the delegate's ivars hold the app pointer that
+            // `Delegate::new` installed (a live `MacApp` for the delegate's
+            // lifetime); delegates receive AppKit notifications on the main
+            // thread, which is where the app state lives.
             let app = unsafe { &mut *(*self.ivars().app.get()) };
             let Some(sender) = sender else { return };
             // SAFETY: the sender is one of the tab buttons, which respond
@@ -242,12 +290,20 @@ define_class!(
 
         #[unsafe(method(newTab:))]
         fn new_tab(&self, _sender: Option<&AnyObject>) {
+            // SAFETY: the delegate's ivars hold the app pointer that
+            // `Delegate::new` installed (a live `MacApp` for the delegate's
+            // lifetime); delegates receive AppKit notifications on the main
+            // thread, which is where the app state lives.
             let app = unsafe { &mut *(*self.ivars().app.get()) };
             app.action_new_tab();
         }
 
         #[unsafe(method(navigate:))]
         fn navigate(&self, sender: Option<&AnyObject>) {
+            // SAFETY: the delegate's ivars hold the app pointer that
+            // `Delegate::new` installed (a live `MacApp` for the delegate's
+            // lifetime); delegates receive AppKit notifications on the main
+            // thread, which is where the app state lives.
             let app = unsafe { &mut *(*self.ivars().app.get()) };
             let Some(sender) = sender else { return };
             // SAFETY: the sender is the address field, which responds to
@@ -258,18 +314,30 @@ define_class!(
 
         #[unsafe(method(newWindow:))]
         fn new_window(&self, _sender: Option<&AnyObject>) {
+            // SAFETY: the delegate's ivars hold the app pointer that
+            // `Delegate::new` installed (a live `MacApp` for the delegate's
+            // lifetime); delegates receive AppKit notifications on the main
+            // thread, which is where the app state lives.
             let app = unsafe { &mut *(*self.ivars().app.get()) };
             app.action_new_window();
         }
 
         #[unsafe(method(closeTab:))]
         fn close_tab(&self, _sender: Option<&AnyObject>) {
+            // SAFETY: the delegate's ivars hold the app pointer that
+            // `Delegate::new` installed (a live `MacApp` for the delegate's
+            // lifetime); delegates receive AppKit notifications on the main
+            // thread, which is where the app state lives.
             let app = unsafe { &mut *(*self.ivars().app.get()) };
             app.action_close_tab();
         }
 
         #[unsafe(method(closeTabAt:))]
         fn close_tab_at(&self, sender: Option<&AnyObject>) {
+            // SAFETY: the delegate's ivars hold the app pointer that
+            // `Delegate::new` installed (a live `MacApp` for the delegate's
+            // lifetime); delegates receive AppKit notifications on the main
+            // thread, which is where the app state lives.
             let app = unsafe { &mut *(*self.ivars().app.get()) };
             let Some(sender) = sender else { return };
             // SAFETY: the sender is one of the tab close buttons, which
@@ -280,18 +348,30 @@ define_class!(
 
         #[unsafe(method(closeWindow:))]
         fn close_window(&self, _sender: Option<&AnyObject>) {
+            // SAFETY: the delegate's ivars hold the app pointer that
+            // `Delegate::new` installed (a live `MacApp` for the delegate's
+            // lifetime); delegates receive AppKit notifications on the main
+            // thread, which is where the app state lives.
             let app = unsafe { &mut *(*self.ivars().app.get()) };
             app.action_close_window();
         }
 
         #[unsafe(method(reload:))]
         fn reload(&self, _sender: Option<&AnyObject>) {
+            // SAFETY: the delegate's ivars hold the app pointer that
+            // `Delegate::new` installed (a live `MacApp` for the delegate's
+            // lifetime); delegates receive AppKit notifications on the main
+            // thread, which is where the app state lives.
             let app = unsafe { &mut *(*self.ivars().app.get()) };
             app.action_reload();
         }
 
         #[unsafe(method(focusAddress:))]
         fn focus_address(&self, _sender: Option<&AnyObject>) {
+            // SAFETY: the delegate's ivars hold the app pointer that
+            // `Delegate::new` installed (a live `MacApp` for the delegate's
+            // lifetime); delegates receive AppKit notifications on the main
+            // thread, which is where the app state lives.
             let app = unsafe { &mut *(*self.ivars().app.get()) };
             app.action_focus_address();
         }
@@ -356,7 +436,8 @@ pub(crate) struct MainThreadHandle {
     app: NonNull<MacApp>,
 }
 
-// SAFETY: the pointer is only ever dereferenced on the main thread.
+// SAFETY: the pointer is only ever dereferenced on the main thread;
+// `app_ptr` asserts that precondition before handing the pointer out.
 unsafe impl Send for MainThreadHandle {}
 unsafe impl Sync for MainThreadHandle {}
 
@@ -370,6 +451,13 @@ impl MainThreadHandle {
     /// The app pointer. A method call (rather than field access) so that
     /// closures capture the whole `Send` handle, not the raw field.
     pub(crate) fn app_ptr(self) -> *mut MacApp {
+        // The `Send`/`Sync` impls above are what let the handle travel through
+        // dispatch blocks; the pointer must only cross into a block that runs
+        // on the main thread. Check that here, where the pointer escapes.
+        assert!(
+            MainThreadMarker::new().is_some(),
+            "MainThreadHandle dereferenced off the main thread"
+        );
         self.app.as_ptr()
     }
 }
@@ -390,6 +478,8 @@ unsafe extern "C-unwind" fn display_link_callback(
     _flags_out: NonNull<CVOptionFlags>,
     context: *mut c_void,
 ) -> CVReturn {
+    // SAFETY: the display link was created with this context as its user
+    // data, and it lives until the link is released (the app owns both).
     let context = unsafe { &*context.cast::<DisplayLinkContext>() };
     let handle = context.handle;
     dispatch::Queue::main().exec_async(move || {
@@ -581,6 +671,9 @@ impl MacApp {
         };
         let app_ptr = &mut app as *mut MacApp;
         app.handle = Some(MainThreadHandle::new(app_ptr));
+        // SAFETY: the delegate's `app` ivar is only written here, before the
+        // delegate is installed and before any notification can arrive; it
+        // holds the stack's `MacApp` for the delegate's lifetime.
         unsafe {
             *app.delegate.ivars().app.get() = app_ptr;
         }
@@ -1109,6 +1202,8 @@ impl MacApp {
         let handle = self.handle.expect("app handle must be installed");
         let block: RcBlock<dyn Fn(NonNull<NSEvent>) -> *mut NSEvent> =
             RcBlock::new(move |event: NonNull<NSEvent>| {
+                // SAFETY: `app_ptr` asserts the block runs on the main thread,
+                // and the harness keeps the `MacApp` alive for the run loop.
                 let app = unsafe { &mut *handle.app_ptr() };
                 app.handle_ns_event(event)
             });
@@ -1129,6 +1224,8 @@ impl MacApp {
     /// through to AppKit (the native chrome controls, the titlebar, other
     /// windows).
     fn handle_ns_event(&mut self, event: NonNull<NSEvent>) -> *mut NSEvent {
+        // SAFETY: AppKit passes a live `NSEvent` to the monitor block; the
+        // reference only borrows it for this call.
         let event_ref = unsafe { event.as_ref() };
         let event_type = event_ref.r#type();
         match event_type {
@@ -1619,6 +1716,8 @@ impl MacApp {
                 // Toolbar icons read better at a slightly heavier weight
                 // than the SF Symbol default; keep the system point size
                 // and scale.
+                // SAFETY: `NSFontWeightMedium` is a Core Graphics constant
+                // valid for the process lifetime.
                 let configuration =
                     NSImageSymbolConfiguration::configurationWithPointSize_weight_scale(
                         0.0,
@@ -1846,6 +1945,8 @@ impl MacApp {
             window_state.address_field_focused = true;
             let handle = self.handle.expect("app handle must be installed");
             dispatch::Queue::main().exec_async(move || {
+                // SAFETY: `app_ptr` asserts this block runs on the main thread,
+                // and the harness keeps the `MacApp` alive for the run loop.
                 let app = unsafe { &mut *handle.app_ptr() };
                 app.deferred_address_field_select(window_id);
             });

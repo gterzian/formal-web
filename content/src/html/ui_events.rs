@@ -161,8 +161,10 @@ fn build_event_path(
                 // <https://html.spec.whatwg.org/#links-created-by-a-and-area-elements:activation-behaviour-2>
                 let has_activation_behavior = ec
                     .with_object_any(&object)
-                    .and_then(|data| data.downcast_ref::<HTMLAnchorElement>())
-                    .map(|anchor| anchor.href_attribute().is_some())
+                    .and_then(|data| {
+                        data.downcast_ref::<HTMLAnchorElement>()
+                            .map(|anchor| anchor.href_attribute().is_some())
+                    })
                     .unwrap_or(false);
                 path.push(EventPathItem {
                     invocation_target: event_target.clone(),
@@ -227,8 +229,7 @@ impl EventHandler for BlitzJSEventHandler<'_> {
             let ec = &mut self.settings.realm_execution_context;
             let global_obj = ec.realm_global_object();
             ec.with_object_any(&global_obj)
-                .and_then(|d| d.downcast_ref::<Window>())
-                .map(|w| w.event_target.clone())
+                .and_then(|d| d.downcast_ref::<Window>().map(|w| w.event_target.clone()))
         };
 
         let ec = &mut self.settings.realm_execution_context;
@@ -238,8 +239,10 @@ impl EventHandler for BlitzJSEventHandler<'_> {
             .expect("UIEvent construction must succeed");
         let domain_event: Event = ec
             .with_object_any(&event_object)
-            .and_then(|data| data.downcast_ref::<JsUiEvent>())
-            .map(|uie| uie.event.clone())
+            .and_then(|data| {
+                data.downcast_ref::<JsUiEvent>()
+                    .map(|uie| uie.event.clone())
+            })
             .expect("event_object must wrap a UIEvent");
 
         let path = build_event_path(chain, doc_et, global_et, ec);
@@ -344,8 +347,7 @@ pub(crate) fn dispatch_trusted_click_event(
         )
         .map_err(|error| format!("failed to create trusted click event: {error:?}"))?;
         ec.with_object_any(&event_object)
-            .and_then(|data| data.downcast_ref::<Event>())
-            .cloned()
+            .and_then(|data| data.downcast_ref::<Event>().cloned())
             .ok_or_else(|| String::from("trusted click object does not contain an Event"))?
     };
     let path = {
@@ -501,8 +503,10 @@ mod tests {
             )
             .expect("create UIEvent");
             ec.with_object_any(&event_object)
-                .and_then(|data| data.downcast_ref::<JsUiEvent>())
-                .map(|ui_event| ui_event.event.clone())
+                .and_then(|data| {
+                    data.downcast_ref::<JsUiEvent>()
+                        .map(|ui_event| ui_event.event.clone())
+                })
                 .expect("read embedded Event")
         };
         let path = {
