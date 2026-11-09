@@ -52,16 +52,6 @@ fn split_qualified_name(qualified_name: &str) -> (Option<Prefix>, LocalName) {
     }
 }
 
-fn collect_subtree_node_ids(document: &BaseDocument, node_id: usize, node_ids: &mut Vec<usize>) {
-    let Some(node) = document.get_node(node_id) else {
-        return;
-    };
-    node_ids.push(node_id);
-    for child_id in node.children.iter().copied() {
-        collect_subtree_node_ids(document, child_id, node_ids);
-    }
-}
-
 /// <https://dom.spec.whatwg.org/#interface-element>
 #[gc_struct]
 pub struct Element {
@@ -149,21 +139,15 @@ impl Element {
     /// <https://html.spec.whatwg.org/#dom-element-innerhtml>
     pub(crate) fn set_inner_html(&self, html: &str) {
         let mut document = self.node.document.borrow_mut();
+        let child_ids = document
+            .get_node(self.node.node_id)
+            .map(|node| node.children.clone())
+            .unwrap_or_default();
         let mut mutator = document.mutate();
-        mutator.set_inner_html(self.node.node_id, html);
-    }
-
-    pub(crate) fn child_subtree_node_ids(&self) -> Vec<usize> {
-        let document = self.node.document.borrow();
-        let Some(node) = document.get_node(self.node.node_id) else {
-            return Vec::new();
-        };
-
-        let mut node_ids = Vec::new();
-        for child_id in node.children.iter().copied() {
-            collect_subtree_node_ids(&document, child_id, &mut node_ids);
+        for child_id in child_ids {
+            mutator.remove_node(child_id);
         }
-        node_ids
+        mutator.set_inner_html(self.node.node_id, html);
     }
 
     /// <https://dom.spec.whatwg.org/#dom-element-matches>

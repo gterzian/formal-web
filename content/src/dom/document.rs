@@ -9,16 +9,6 @@ use crate::infra::strip_and_collapse_ascii_whitespace;
 use crate::js::Types;
 use js_engine::{ExecutionContext, gc_struct};
 
-fn collect_subtree_node_ids(document: &BaseDocument, node_id: usize, node_ids: &mut Vec<usize>) {
-    let Some(node) = document.get_node(node_id) else {
-        return;
-    };
-    node_ids.push(node_id);
-    for child_id in node.children.iter().copied() {
-        collect_subtree_node_ids(document, child_id, node_ids);
-    }
-}
-
 fn canonical_document_dir(value: &str) -> &str {
     if value.eq_ignore_ascii_case("ltr") {
         "ltr"
@@ -197,19 +187,12 @@ impl Document {
     }
 
     /// <https://html.spec.whatwg.org/#document.title>
-    pub(crate) fn title_subtree_node_ids(&self) -> Vec<usize> {
-        let title_node_id = {
-            let document = self.node.document.borrow();
-            document.find_title_node().map(|node| node.id)
-        };
-        let Some(title_node_id) = title_node_id else {
-            return Vec::new();
-        };
-
+    pub(crate) fn title_child_node_ids(&self) -> Vec<usize> {
         let document = self.node.document.borrow();
-        let mut node_ids = Vec::new();
-        collect_subtree_node_ids(&document, title_node_id, &mut node_ids);
-        node_ids
+        document
+            .find_title_node()
+            .map(|node| node.children.clone())
+            .unwrap_or_default()
     }
 
     /// <https://html.spec.whatwg.org/multipage/dom.html#dom-document-dir>

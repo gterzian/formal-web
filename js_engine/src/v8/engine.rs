@@ -1383,6 +1383,21 @@ impl V8Engine {
         })
     }
 
+    pub(crate) fn create_weak_object_with_finalizer(
+        &mut self,
+        object: &V8Object,
+        on_collect: Box<dyn FnOnce()>,
+    ) -> Rc<v8::Weak<v8::Object>> {
+        let isolate_id = self.isolate_id;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            let local = local_object(scope, isolate_id, object)
+                .expect("reflector creation received a non-object or cross-isolate handle");
+            Rc::new(v8::Weak::with_guaranteed_finalizer(
+                scope, local, on_collect,
+            ))
+        })
+    }
+
     pub(crate) fn upgrade_weak_object(&mut self, weak: &v8::Weak<v8::Object>) -> Option<V8Object> {
         let isolate_id = self.isolate_id;
         v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
@@ -2076,6 +2091,18 @@ impl JsTypesGcExt for V8Types {
             .downcast_mut::<V8Engine>()
             .expect("V8 reflector created with a non-V8 execution context")
             .create_weak_object(object)
+    }
+
+    fn create_reflector_with_finalizer(
+        context: &mut dyn ExecutionContext<V8Types>,
+        object: &V8Object,
+        on_collect: Box<dyn FnOnce() + 'static>,
+    ) -> Self::Reflector {
+        context
+            .as_any_mut()
+            .downcast_mut::<V8Engine>()
+            .expect("V8 reflector created with a non-V8 execution context")
+            .create_weak_object_with_finalizer(object, on_collect)
     }
 
     fn upgrade_reflector(
@@ -4878,7 +4905,7 @@ mod tests {
 
     use rusty_v8 as v8;
 
-    use crate::gc::{Finalize, GcCell, Trace, gc_cell_new};
+    use crate::gc::{Finalize, GcCell, JsTypesGcExt, Trace, gc_cell_new};
     use crate::v8_gc::Visitor;
     use crate::{
         EcmascriptHost, ExecutionContext, HostHooks, JsEngine, JsTypes, PropertyDescriptor,
@@ -5788,6 +5815,33 @@ mod tests {
 
         assert!(host_object_dropped.get());
         assert!(callback_dropped.get());
+    }
+
+    #[test]
+    fn reflector_finalizer_observes_wrapper_collection() {
+        let mut engine = V8Engine::new();
+        let object = engine.create_plain_object(None);
+        let collected = Rc::new(Cell::new(false));
+        let flag = Rc::clone(&collected);
+        let reflector = V8Types::create_reflector_with_finalizer(
+            &mut engine,
+            &object,
+            Box::new(move || flag.set(true)),
+        );
+        assert!(
+            V8Types::upgrade_reflector(&mut engine, &reflector).is_some(),
+            "the reflector must upgrade while the wrapper is alive"
+        );
+
+        drop(object);
+        engine.gc();
+
+        assert!(collected.get(), "the finalizer must observe the collection");
+        assert!(
+            V8Types::upgrade_reflector(&mut engine, &reflector).is_none(),
+            "the reflector must not upgrade after the wrapper is collected"
+        );
+        drop(reflector);
     }
 
     /// `GcCell::get` roots the copy's JS edges, so a value cloned out of a

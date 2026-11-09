@@ -25,6 +25,16 @@ layer is the outer half of is documented once, in
   by hand (`create_plain_object` + `create_builtin_fn`) instead of
   `WebIdlNamespace` + `register_namespace_spec`; migrate them.
 
+## Node wrapper lifetime
+
+`GlobalScope::cache_node_object` installs a reflector whose finalizer appends
+the node id to the realm's collected queue.  The callback runs during garbage
+collection, so it must only push the id: no document borrow, no allocation,
+and no engine call.  `ContentProcess::drain_detached_nodes` (see
+`content/src/html/README.md`) consumes that queue and owns every wrapper-cache
+removal for a dropped node.  Domain and binding code must not delete cache
+entries or free Blitz nodes directly.
+
 ## Conventions for the domain/bindings boundary
 
 Rules specific to code living under or touching this crate:
