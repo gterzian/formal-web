@@ -12,8 +12,7 @@ use crate::html::{
     HTMLMediaElement, HTMLVideoElement,
 };
 use crate::js::platform_objects::{
-    collect_child_subtree_node_ids, document_object, invalidate_cached_node_ids,
-    object_for_existing_node,
+    document_object, object_for_existing_node, queue_detached_candidates,
 };
 use crate::webidl::bindings::{
     AttributeDef, ConstantDef, InterfaceDefinition, OperationDef, WebIdlInterface,
@@ -481,21 +480,16 @@ fn set_text_content(
     } else {
         Some(ec.to_rust_string(first.unwrap().clone())?)
     };
-    let dropped_node_ids = try_with_node_ref(this, ec, |node| {
-        let should_invalidate = {
-            let document = node.document.borrow();
-            document
-                .get_node(node.node_id)
-                .is_some_and(|current| matches!(current.data, NodeData::Element(_)))
-        };
-        if should_invalidate {
-            collect_child_subtree_node_ids(&node.document, node.node_id)
-        } else {
-            Vec::new()
-        }
+    let detached_node_ids = try_with_node_ref(this, ec, |node| {
+        let document = node.document.borrow();
+        document
+            .get_node(node.node_id)
+            .filter(|current| matches!(current.data, NodeData::Element(_)))
+            .map(|current| current.children.clone())
+            .unwrap_or_default()
     })?;
-    invalidate_cached_node_ids(ec, &dropped_node_ids)?;
     try_with_node_ref(this, ec, |node| node.set_text_content(text.as_deref()))?;
+    queue_detached_candidates(&detached_node_ids, ec)?;
     Ok(ec.value_undefined())
 }
 
@@ -552,7 +546,10 @@ fn remove_child(
         .unwrap_or_else(|| ec.value_undefined());
     let child = appendable_node(&child_val, ec)?;
     match try_with_node_ref(this, ec, |node| node.remove_child(&child))? {
-        Ok(()) => Ok(child_val),
+        Ok(()) => {
+            queue_detached_candidates(&[child.node_id], ec)?;
+            Ok(child_val)
+        }
         Err(error_msg) => Err(ec.new_type_error(&error_msg)),
     }
 }
@@ -627,7 +624,14 @@ fn remove(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    try_with_node_ref(this, ec, Node::remove)?;
+    let detached_node_id = try_with_node_ref(this, ec, |node| {
+        let parent = node.parent_node();
+        node.remove();
+        parent.map(|_| node.node_id)
+    })?;
+    if let Some(node_id) = detached_node_id {
+        queue_detached_candidates(&[node_id], ec)?;
+    }
     Ok(ec.value_undefined())
 }
 

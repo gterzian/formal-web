@@ -6,7 +6,7 @@ type JsValue = <crate::js::Types as JsTypes>::JsValue;
 use crate::dom::Document;
 use crate::js::bindings::html::global_event_handlers::define_global_event_handlers;
 use crate::js::platform_objects::{
-    document_object, invalidate_cached_node_ids, resolve_element_object,
+    document_object, queue_detached_candidates, resolve_element_object,
     resolve_or_create_text_node_object,
 };
 use crate::webidl::bindings::{
@@ -367,11 +367,10 @@ fn set_title(
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
     let title = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
-    let dropped_node_ids = try_with_document(this, ec, |document, _ec| {
-        Document::title_subtree_node_ids(document)
-    })?;
-    invalidate_cached_node_ids(ec, &dropped_node_ids)?;
+    let detached_node_ids =
+        try_with_document(this, ec, |document, _ec| document.title_child_node_ids())?;
     try_with_document(this, ec, |document, ec| document.set_title(&title, ec))?;
+    queue_detached_candidates(&detached_node_ids, ec)?;
     Ok(ec.value_undefined())
 }
 

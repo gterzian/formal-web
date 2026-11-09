@@ -26,6 +26,12 @@ Two categories of abstraction:
 | `ExecutionContext<T>` | Interface for ECMA-262 operations that reference the surrounding agent's running execution context |
 | `JsTypesGcExt` | Cycle-safe reflector link between Rust domain objects and their JS wrappers |
 
+`JsTypesGcExt::create_reflector_with_finalizer` installs a callback that runs
+when the engine collects the wrapper.  V8 builds a `v8::Weak` with a
+guaranteed finalizer; Boa returns its strong reflector and never invokes the
+callback.  The callback runs during collection, so it must not allocate,
+borrow application state, or call back into the engine.
+
 ### Module layout
 
 | Module | Contents |

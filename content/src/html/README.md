@@ -13,6 +13,31 @@
   document-load scan remains the synchronous path for parser insertions.
 - Use the `web-standards` skill with `https://html.spec.whatwg.org/` to read the HTML spec.
 
+## Detached node reclamation
+
+`ContentProcess::drain_detached_nodes` frees the Blitz slab entries of detached
+subtrees once no node in them has a live wrapper.  It runs at the end of every
+operation that also runs `drain_pending_iframe_steps`, with no outstanding
+borrow of a Blitz document, and it is the only place content frees nodes.
+
+`remove`, `removeChild`, `textContent =`, `innerHTML =`, and `document.title =`
+detach with `DocumentMutator::remove_node` and record each detached root with
+`queue_detached_candidates`; they must not delete wrapper-cache entries or free
+nodes.  For the two bulk replacements the detach loop runs before the
+replacement children are built, so Blitz's `set_inner_html` finds no children
+left to drop.
+
+Every table keyed by a node id must be cleared in the drain for the dropped
+ids before the mutator frees them.  The drain currently clears the image
+element ids, the canvas and video paint registries, the ended-video set, the
+pending subresource handlers whose `AssetRequest` names a dropped node, the
+per-document iframe container state, pending iframe steps, and the realm's
+`window_proxies` entries carrying an `iframe_node_id`.  A removed node keeps
+its id until the drain, and the slab reuses the id afterwards, so a stale entry
+would alias the next node.  The Blitz-side id-keyed sets (`changed_nodes`,
+`sub_document_nodes`, `controls_to_form`, focus/hover/active/mousedown ids) are
+cleared by `DocumentMutator::drop_detached_subtree`.
+
 ## Common microsyntaxes (`common_microsyntaxes/`)
 
 The micro-parsers for the data types HTML content attributes accept (the
@@ -223,10 +248,11 @@ process yet; the domain methods (`Window::name_value`, `opener_value`,
 annotations until that state is sent to the content process or forwarded.
 
 **6. Boa keeps node wrappers alive.**  The node-wrapper cache stores a weak
-reflector on V8, so a dropped wrapper is collected; Boa's
-`JsTypesGcExt::Reflector` is a strong `JsObject`, so Boa retains a wrapper
-until its node is invalidated (removed or the document is torn down).  See
-`js_engine/src/boa/README.md`.
+reflector on V8, so a dropped wrapper is collected and its finalizer reports the
+node id; Boa's `JsTypesGcExt::Reflector` is a strong `JsObject`, so Boa never
+reports a collected wrapper.  A detached subtree therefore survives on Boa
+until document teardown unless no wrapper was ever created for a node in it.
+See `js_engine/src/boa/README.md`.
 
 **7. Cross-origin co-located access has no end-to-end test.**  Agent clusters
 are keyed by site (scheme, host and port) and `is_platform_object_same_origin`

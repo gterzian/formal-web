@@ -8,6 +8,23 @@
 - `content/src/js/bindings` delegates DOM algorithms here — bindings never embed DOM logic.
 - Use the `web-standards` skill with `https://dom.spec.whatwg.org/` to read the DOM spec.  For single-sentence spec definitions, quote the defining sentence instead of inventing `Step N:` comments.
 
+## Node lifetime
+
+The Blitz document owns every node, and a wrapper (`Node`, `Element`, the HTML
+element types) holds the document plus a node id rather than the node.  Removing
+a node detaches its subtree but keeps its slab entries, so a wrapper script
+still holds keeps addressing a valid node: `parentNode` becomes null, node data
+still reads, and the node can be reinserted.  A detached subtree is freed only
+when no node in it has a live wrapper (`ContentProcess::drain_detached_nodes`,
+see `content/src/html/README.md`), and only then is its slab id handed out
+again.
+
+An operation that detaches nodes must not free them or delete wrapper-cache
+entries.  Detach with `DocumentMutator::remove_node`, and record each detached
+root with `queue_detached_candidates` (the binding layer owns the execution
+context this needs).  The drain, not the operation, clears the registries keyed
+by node id.
+
 ## Event dispatch
 
 The dispatch algorithm and its data types live in `dispatch.rs` and `event.rs`, each function and field carrying its spec anchor and verbatim `// Step N:` comments; the step-by-step mapping lives there, not here.  Two module conventions are not visible from the code alone:

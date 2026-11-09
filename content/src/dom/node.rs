@@ -575,23 +575,24 @@ impl Node {
 /// <https://dom.spec.whatwg.org/#string-replace-all>
 fn string_replace_all(document: &Rc<RefCell<BaseDocument>>, parent_node_id: usize, string: &str) {
     let mut document = document.borrow_mut();
-    if document.get_node(parent_node_id).is_none() {
-        // Note: Removed nodes are dropped from BaseDocument, so there is no parent to mutate.
+    let Some(parent) = document.get_node(parent_node_id) else {
         return;
-    }
+    };
+    let child_ids = parent.children.clone();
 
     // Step 1: "Let node be null."
     let mut replacement_node_id = None;
 
-    // Step 2: "If string is not the empty string, then set node to a new Text node whose data is string and node document is parent’s node document."
-    let mut mutator = document.mutate();
+    // Step 2: "If string is not the empty string, then set node to the result of creating a text node given parent’s node document and string."
     if !string.is_empty() {
-        replacement_node_id = Some(mutator.create_text_node(string));
+        replacement_node_id = Some(document.create_text_node(string));
     }
 
     // Step 3: "Replace all with node within parent."
-    // DocumentMutator: clear current children, then append replacement if present.
-    mutator.remove_and_drop_all_children(parent_node_id);
+    let mut mutator = document.mutate();
+    for child_id in child_ids {
+        mutator.remove_node(child_id);
+    }
     if let Some(replacement_node_id) = replacement_node_id {
         mutator.append_children(parent_node_id, &[replacement_node_id]);
     }

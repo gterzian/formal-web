@@ -8,6 +8,8 @@ pub mod infra;
 pub mod js;
 pub mod testutils;
 
+#[cfg(test)]
+mod detached_nodes_test;
 pub mod dom;
 #[cfg(test)]
 mod generic_js_test;
@@ -1179,6 +1181,7 @@ impl ContentProcess {
         }
         // The same scripts may have inserted, changed or removed an iframe.
         self.drain_pending_iframe_steps();
+        self.drain_detached_nodes();
 
         let content_document = self
             .documents
@@ -1799,6 +1802,7 @@ impl ContentProcess {
         }
         // The same scripts may have inserted, changed or removed an iframe.
         self.drain_pending_iframe_steps();
+        self.drain_detached_nodes();
 
         result
     }
@@ -2150,6 +2154,7 @@ impl ContentProcess {
             }
             // The same script may have inserted, changed or removed an iframe.
             self.drain_pending_iframe_steps();
+            self.drain_detached_nodes();
         }
 
         Ok(())
@@ -2330,6 +2335,7 @@ impl ContentProcess {
             }
             // The same script may have inserted, changed or removed an iframe.
             self.drain_pending_iframe_steps();
+            self.drain_detached_nodes();
         }
 
         Ok(())
@@ -3537,6 +3543,98 @@ impl ContentProcess {
         }
     }
 
+    /// Drops the detached subtrees whose wrappers the engine collected, and
+    /// the subtrees detaching operations recorded during the current task.
+    /// Runs after the current operation's iframe steps, with no outstanding
+    /// borrow of a Blitz document.
+    fn drain_detached_nodes(&mut self) {
+        let document_ids: Vec<DocumentId> = self.documents.keys().copied().collect();
+        for document_id in document_ids {
+            self.drain_detached_nodes_for_document(document_id);
+        }
+    }
+
+    fn drain_detached_nodes_for_document(&mut self, document_id: DocumentId) {
+        let droppable = {
+            let Some(content_document) = self.documents.get_mut(&document_id) else {
+                return;
+            };
+            let result = with_global_scope(
+                &mut content_document.settings.realm_execution_context,
+                |global_scope, ec| Ok(global_scope.take_detached_root_subtrees(ec)),
+            );
+            match result {
+                Ok(droppable) => droppable,
+                Err(error) => {
+                    error!(
+                        "failed to resolve collected node wrappers for document {document_id}: {}",
+                        error.display()
+                    );
+                    return;
+                }
+            }
+        };
+        if droppable.is_empty() {
+            return;
+        }
+
+        {
+            let mut image_registry = self.image_registry.borrow_mut();
+            let mut canvas_registry = self.canvas_registry.borrow_mut();
+            let mut video_paint_registry = self.video_paint_registry.borrow_mut();
+            for (_, node_ids) in &droppable {
+                for node_id in node_ids.iter().copied() {
+                    image_registry.forget_element(document_id, node_id);
+                    canvas_registry.remove(&(document_id, node_id));
+                    video_paint_registry.remove(&(document_id, node_id));
+                    self.ended_video_nodes.remove(&(document_id, node_id));
+                }
+            }
+        }
+
+        let dropped_node_ids: HashSet<usize> = droppable
+            .iter()
+            .flat_map(|(_, node_ids)| node_ids.iter().copied())
+            .collect();
+        {
+            let mut local_state = self.local_state.borrow_mut();
+            local_state.pending_iframe_steps.retain(|step| {
+                step.document_id != document_id || !dropped_node_ids.contains(&step.iframe_node_id)
+            });
+            local_state.pending_handlers.retain(|_, handler| {
+                let PendingNetworkHandler::Asset {
+                    document_id: handler_document_id,
+                    request,
+                } = handler
+                else {
+                    return true;
+                };
+                if *handler_document_id != document_id {
+                    return true;
+                }
+                let node_id = match request {
+                    AssetRequest::Stylesheet { node_id, .. }
+                    | AssetRequest::DecodedImage { node_id, .. } => Some(*node_id),
+                    AssetRequest::StylesheetImport { .. } | AssetRequest::Font { .. } => None,
+                };
+                !node_id.is_some_and(|node_id| dropped_node_ids.contains(&node_id))
+            });
+        }
+
+        let Some(content_document) = self.documents.get_mut(&document_id) else {
+            return;
+        };
+        content_document
+            .navigable_container_states
+            .retain(|iframe_node_id, _| !dropped_node_ids.contains(iframe_node_id));
+
+        let mut document = content_document.document.borrow_mut();
+        let mut mutator = document.mutate();
+        for (root_id, _) in droppable {
+            mutator.drop_detached_subtree(root_id);
+        }
+    }
+
     /// Writes the "prepare an image for presentation" state the processing
     /// model produced to the documents' blitz trees.  This is model state, not
     /// a queued task: a DOM hook runs while blitz holds the document mutably
@@ -3978,6 +4076,7 @@ impl ContentProcess {
         }
         // The same scripts may have inserted, changed or removed an iframe.
         self.drain_pending_iframe_steps();
+        self.drain_detached_nodes();
         Ok(())
     }
 
@@ -4172,6 +4271,7 @@ impl ContentProcess {
         // Run the iframe DOM mutation steps the command's DOM work recorded,
         // before the task checkpoint and the microtasks see the result.
         self.drain_pending_iframe_steps();
+        self.drain_detached_nodes();
         if let Err(error) = self.apply_pending_image_presentation() {
             error!("failed to apply pending image presentation after a command: {error}");
         }
@@ -4289,6 +4389,7 @@ impl ContentProcess {
 
         // Run the iframe DOM mutation steps the task's DOM work recorded.
         self.drain_pending_iframe_steps();
+        self.drain_detached_nodes();
 
         // Image mutations observed by the DOM hooks produce presentation state;
         // write it as part of the task that caused it.
@@ -4487,6 +4588,7 @@ impl ContentProcess {
         }
         // A promise job may have inserted, changed or removed an iframe.
         self.drain_pending_iframe_steps();
+        self.drain_detached_nodes();
         Ok(())
     }
 

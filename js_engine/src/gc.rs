@@ -101,6 +101,16 @@ pub trait JsTypesGcExt: JsTypes + JsTypesWithRealm + Sized + 'static {
         context: &mut dyn ExecutionContext<Self>,
         obj: &Self::JsObject,
     ) -> Self::Reflector;
+
+    /// Creates a reflector that invokes `on_collect` when the engine collects
+    /// the wrapper. Backends without weak reflectors return their strong
+    /// reflector and never invoke the callback.
+    fn create_reflector_with_finalizer(
+        context: &mut dyn ExecutionContext<Self>,
+        obj: &Self::JsObject,
+        on_collect: Box<dyn FnOnce() + 'static>,
+    ) -> Self::Reflector;
+
     fn upgrade_reflector(
         context: &mut dyn ExecutionContext<Self>,
         reflector: &Self::Reflector,
@@ -724,6 +734,13 @@ mod boa_gc_impl {
         fn create_reflector(
             _context: &mut dyn ExecutionContext<BoaTypes>,
             obj: &Self::JsObject,
+        ) -> Self::Reflector {
+            obj.clone()
+        }
+        fn create_reflector_with_finalizer(
+            _context: &mut dyn ExecutionContext<BoaTypes>,
+            obj: &Self::JsObject,
+            _on_collect: Box<dyn FnOnce() + 'static>,
         ) -> Self::Reflector {
             obj.clone()
         }

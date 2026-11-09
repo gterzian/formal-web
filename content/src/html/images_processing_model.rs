@@ -481,6 +481,17 @@ impl ImageRegistry {
         std::mem::take(&mut self.pending_presentation)
     }
 
+    /// Forget the element at `node_id`: its DOM node is being freed, so the
+    /// id may address a different element later.
+    pub(crate) fn forget_element(&mut self, document_id: DocumentId, node_id: usize) {
+        let Some(element_id) = self.element_ids.remove(&(document_id, node_id)) else {
+            return;
+        };
+        self.elements.remove(&element_id);
+        self.pending_presentation
+            .retain(|presentation| presentation.node_id != node_id);
+    }
+
     /// Forget a destroyed document's element state, including its list of
     /// available images: the list belongs to the Document that owned it.
     /// Returns the image identifiers the document registered, so the content

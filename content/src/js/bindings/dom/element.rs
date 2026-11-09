@@ -6,7 +6,7 @@ use crate::html::{
     HTMLInputElement, HTMLMediaElement, HTMLVideoElement,
 };
 use crate::js::bindings::html::global_event_handlers::define_global_event_handlers;
-use crate::js::platform_objects::{invalidate_cached_node_ids, resolve_element_object};
+use crate::js::platform_objects::{queue_detached_candidates, resolve_element_object};
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
 };
@@ -285,9 +285,10 @@ fn set_inner_html(
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
     let html = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
-    let dropped_node_ids = try_with_element_ref(this, ec, Element::child_subtree_node_ids)?;
-    invalidate_cached_node_ids(ec, &dropped_node_ids)?;
+    let detached_node_ids =
+        try_with_element_ref(this, ec, |element| element.node.child_node_ids())?;
     try_with_element_ref(this, ec, |element| element.set_inner_html(&html))?;
+    queue_detached_candidates(&detached_node_ids, ec)?;
     Ok(ec.value_undefined())
 }
 

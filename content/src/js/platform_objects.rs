@@ -120,33 +120,6 @@ pub(crate) fn with_global_scope<R>(
     f(&gs, ec)
 }
 
-fn collect_node_subtree_ids(document: &BaseDocument, node_id: usize, node_ids: &mut Vec<usize>) {
-    let Some(node) = document.get_node(node_id) else {
-        return;
-    };
-
-    node_ids.push(node_id);
-    for child_id in node.children.iter().copied() {
-        collect_node_subtree_ids(document, child_id, node_ids);
-    }
-}
-
-pub(crate) fn collect_child_subtree_node_ids(
-    document: &Rc<RefCell<BaseDocument>>,
-    parent_node_id: usize,
-) -> Vec<usize> {
-    let document = document.borrow();
-    let Some(parent) = document.get_node(parent_node_id) else {
-        return Vec::new();
-    };
-
-    let mut node_ids = Vec::new();
-    for child_id in parent.children.iter().copied() {
-        collect_node_subtree_ids(&document, child_id, &mut node_ids);
-    }
-    node_ids
-}
-
 pub(crate) fn document_object(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<<crate::js::Types as JsTypes>::JsObject, crate::js::Types> {
@@ -156,12 +129,15 @@ pub(crate) fn document_object(
     })
 }
 
-pub(crate) fn invalidate_cached_node_ids(
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
+pub(crate) fn queue_detached_candidates(
     node_ids: &[usize],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(), crate::js::Types> {
-    with_global_scope(ec, |global_scope, ec| {
-        global_scope.invalidate_cached_node_ids(node_ids, ec);
+    if node_ids.is_empty() {
+        return Ok(());
+    }
+    with_global_scope(ec, |global_scope, _ec| {
+        global_scope.queue_detached_candidates(node_ids);
         Ok(())
     })
 }

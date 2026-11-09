@@ -61,6 +61,16 @@ fn timer_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
 }
 
+fn collect_subtree_node_ids(document: &BaseDocument, node_id: usize, node_ids: &mut Vec<usize>) {
+    let Some(node) = document.get_node(node_id) else {
+        return;
+    };
+    node_ids.push(node_id);
+    for child_id in node.children.iter().copied() {
+        collect_subtree_node_ids(document, child_id, node_ids);
+    }
+}
+
 fn log_timer_debug(message: impl AsRef<str>) {
     if timer_debug_enabled() {
         debug!("[timer-debug][global] {}", message.as_ref());
@@ -223,6 +233,15 @@ pub struct GlobalScope {
 
     /// <https://webidl.spec.whatwg.org/#dfn-platform-object>
     node_objects: GcCell<Vec<CachedNodeObject>>,
+
+    /// Node ids whose wrapper the engine collected, shared with every
+    /// reflector finalizer this realm installs.
+    #[ignore_trace]
+    collected_node_ids: Rc<RefCell<Vec<usize>>>,
+
+    /// Node ids an operation detached from this realm's document.
+    #[ignore_trace]
+    detached_candidates: Rc<RefCell<Vec<usize>>>,
 
     /// <https://html.spec.whatwg.org/#animation-frame-callback-identifier>
     #[ignore_trace]
@@ -428,6 +447,8 @@ impl GlobalScope {
             location_object: gc_cell_new(None, ec),
             window_proxies: gc_cell_new(Vec::new(), ec),
             node_objects: gc_cell_new(Vec::new(), ec),
+            collected_node_ids: Rc::new(RefCell::new(Vec::new())),
+            detached_candidates: Rc::new(RefCell::new(Vec::new())),
             animation_frame_callback_identifier: Cell::new(0),
             animation_frame_callbacks: gc_cell_new(Vec::new(), ec),
             timer_callback_identifier: Cell::new(0),
@@ -512,6 +533,8 @@ impl GlobalScope {
         *self.document.borrow_mut() = document;
         self.document_object.borrow_mut(ec).replace(document_object);
         self.node_objects.borrow_mut(ec).clear();
+        self.collected_node_ids.borrow_mut().clear();
+        self.detached_candidates.borrow_mut().clear();
         self.location_object.borrow_mut(ec).take();
         self.document_id.borrow_mut().replace(document_id);
         self.creation_url.borrow_mut().replace(creation_url);
@@ -1084,7 +1107,12 @@ impl GlobalScope {
         object: JsObject,
         ec: &mut dyn ExecutionContext<Types>,
     ) {
-        let reflector = <Types as JsTypesGcExt>::create_reflector(ec, &object);
+        let collected_node_ids = Rc::clone(&self.collected_node_ids);
+        let reflector = <Types as JsTypesGcExt>::create_reflector_with_finalizer(
+            ec,
+            &object,
+            Box::new(move || collected_node_ids.borrow_mut().push(node_id)),
+        );
         let mut entries = self.node_objects.borrow_mut(ec);
         let entry = CachedNodeObject { node_id, reflector };
         match entries.binary_search_by_key(&node_id, |entry| entry.node_id) {
@@ -1093,19 +1121,110 @@ impl GlobalScope {
         }
     }
 
-    pub(crate) fn invalidate_cached_node_ids(
+    pub(crate) fn queue_detached_candidates(&self, node_ids: &[usize]) {
+        self.detached_candidates
+            .borrow_mut()
+            .extend_from_slice(node_ids);
+    }
+
+    fn cached_node_reflector(
         &self,
-        node_ids: &[usize],
+        node_id: usize,
         ec: &mut dyn ExecutionContext<Types>,
-    ) {
-        if node_ids.is_empty() {
-            return;
+    ) -> Option<NodeReflector> {
+        let entries = self.node_objects.borrow(ec);
+        let index = entries
+            .binary_search_by_key(&node_id, |entry| entry.node_id)
+            .ok()?;
+        Some(entries[index].reflector.clone())
+    }
+
+    /// Resolves the collected and detached candidates into detached subtrees
+    /// whose nodes no live wrapper reaches, clears their cache entries, and
+    /// returns the roots with the subtree ids the caller must clear from
+    /// content-level registries before dropping them.
+    pub(crate) fn take_detached_root_subtrees(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Vec<(usize, Vec<usize>)> {
+        let collected = std::mem::take(&mut *self.collected_node_ids.borrow_mut());
+        let detached = std::mem::take(&mut *self.detached_candidates.borrow_mut());
+
+        for node_id in collected.iter().copied() {
+            let Some(reflector) = self.cached_node_reflector(node_id, ec) else {
+                continue;
+            };
+            if <Types as JsTypesGcExt>::upgrade_reflector(ec, &reflector).is_none() {
+                self.node_objects
+                    .borrow_mut(ec)
+                    .retain(|entry| entry.node_id != node_id);
+            }
         }
 
-        let node_ids = node_ids.iter().copied().collect::<HashSet<_>>();
-        self.node_objects
-            .borrow_mut(ec)
-            .retain(|entry| !node_ids.contains(&entry.node_id));
+        let document = self.document();
+        let mut roots = Vec::new();
+        let mut seen_roots = HashSet::new();
+        {
+            let document = document.borrow();
+            for node_id in collected.into_iter().chain(detached) {
+                if document.get_node(node_id).is_none() {
+                    continue;
+                }
+                let mut root_id = node_id;
+                while let Some(parent_id) = document.get_node(root_id).and_then(|node| node.parent)
+                {
+                    root_id = parent_id;
+                }
+                if root_id != 0 && seen_roots.insert(root_id) {
+                    roots.push(root_id);
+                }
+            }
+        }
+
+        let mut droppable = Vec::new();
+        let mut dropped_node_ids = HashSet::new();
+        for root_id in roots {
+            let subtree_ids = {
+                let document = document.borrow();
+                let mut subtree_ids = Vec::new();
+                collect_subtree_node_ids(&document, root_id, &mut subtree_ids);
+                subtree_ids
+            };
+
+            let mut live_wrapper_found = false;
+            for node_id in subtree_ids.iter().copied() {
+                let Some(reflector) = self.cached_node_reflector(node_id, ec) else {
+                    continue;
+                };
+                if <Types as JsTypesGcExt>::upgrade_reflector(ec, &reflector).is_some() {
+                    live_wrapper_found = true;
+                    break;
+                }
+            }
+            if live_wrapper_found {
+                continue;
+            }
+
+            dropped_node_ids.extend(subtree_ids.iter().copied());
+            droppable.push((root_id, subtree_ids));
+        }
+
+        if !dropped_node_ids.is_empty() {
+            self.node_objects
+                .borrow_mut(ec)
+                .retain(|entry| !dropped_node_ids.contains(&entry.node_id));
+            let mut entries = self.window_proxies.borrow_mut(ec);
+            for entry in entries.iter_mut() {
+                if entry
+                    .iframe_node_id
+                    .is_some_and(|node_id| dropped_node_ids.contains(&node_id))
+                {
+                    entry.iframe_node_id = None;
+                }
+            }
+        }
+
+        droppable
     }
 
     /// Clone every cached node wrapper out of the cache, for teardown walks
