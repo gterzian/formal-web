@@ -46,7 +46,11 @@ fields, and JS edges are collected in one pass.
   `V8Handle::to_local`/`make_strong` assert that no collection has run since
   then, so reading an edge whose referent may already be reclaimed fails
   deterministically instead of dereferencing a freed storage cell. The isolate
-  bumps the epoch from a V8 GC prologue callback (`gc_prologue_bump_epoch`).
+  bumps the epoch from a V8 GC prologue callback (`gc_prologue_bump_epoch`)
+  registered for `kGCTypeMarkSweepCompact` only: a scavenge or minor
+  mark-sweep keeps young referents alive through V8's own young-generation
+  bookkeeping without invoking the embedder's trace, so counting those would
+  mark live edges stale.
 - Platform objects are allocated on the cppgc heap (`V8PlatformData`, a
   type-erased cppgc object tracing through the concrete type) and linked to
   their JS wrapper with `v8::Object::wrap`, so the unified heap traces

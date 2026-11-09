@@ -272,12 +272,18 @@ impl SharedIsolate {
         isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
         let microtask_queue = v8::MicrotaskQueue::new(&mut isolate, v8::MicrotasksPolicy::Explicit);
         let gc_epoch = Box::new(Cell::new(0u64));
-        // Every V8 collection bumps the epoch, so a `V8Handle::Edge` can tell
-        // whether a collection has run since it was created or last traced.
+        // A full collection bumps the epoch, so a `V8Handle::Edge` can tell
+        // whether a collection that can reclaim its referent has run since it
+        // was created or last traced. Only mark-compact counts: a scavenge or
+        // a minor mark-sweep keeps young referents alive through V8's own
+        // young-generation bookkeeping without invoking the embedder's trace,
+        // so bumping on those would mark live edges stale. (Verified: with
+        // every GC type registered, a scavenge between two reads made a live
+        // canvas context's edge look stale.)
         isolate.add_gc_prologue_callback(
             gc_prologue_bump_epoch,
             gc_epoch.as_ref() as *const Cell<u64> as *mut std::ffi::c_void,
-            v8::GCType::kGCTypeAll,
+            v8::GCType::kGCTypeMarkSweepCompact,
         );
         let shared = Rc::new(Self {
             isolate_id: NEXT_ISOLATE_ID.fetch_add(1, Ordering::Relaxed),
@@ -498,11 +504,13 @@ impl V8Engine {
     }
 }
 
-/// V8 GC prologue callback: bump the isolate's collection counter.
+/// V8 GC prologue callback: bump the isolate's full-collection counter.
 ///
 /// Registered with a pointer to the `SharedIsolate`'s `gc_epoch` cell, which
-/// outlives the isolate. The callback runs on the isolate thread, so a plain
-/// `Cell` is enough; arithmetic only, so nothing can unwind into C++.
+/// outlives the isolate, and filtered to `kGCTypeMarkSweepCompact` (the
+/// collection that can reclaim an old-space referent). The callback runs on
+/// the isolate thread, so a plain `Cell` is enough; arithmetic only, so
+/// nothing can unwind into C++.
 unsafe extern "C" fn gc_prologue_bump_epoch(
     _isolate: v8::UnsafeRawIsolatePtr,
     _gc_type: v8::GCType,
@@ -513,7 +521,6 @@ unsafe extern "C" fn gc_prologue_bump_epoch(
     // `SharedIsolate::new` registered, which lives as long as the isolate.
     let epoch = unsafe { &*(data as *const Cell<u64>) };
     epoch.set(epoch.get().wrapping_add(1));
-    eprintln!("GCTYPE {:?}", _gc_type);
 }
 
 struct CurrentEngineGuard {
