@@ -460,7 +460,10 @@ pub fn gc_struct_v8(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
                 impl #impl_generics ::js_engine::gc::Finalize for #ident #ty_generics #where_clause {}
 
+                // SAFETY: the derive resolved the traced fields just above,
+                // and the generated statements visit each one exactly once.
                 unsafe impl #impl_generics ::js_engine::gc::Trace for #ident #ty_generics #where_clause {
+                    // SAFETY: called once per reachable value by the marker.
                     unsafe fn trace(&self, visitor: &mut ::js_engine::v8_gc::Visitor) {
                         #(#trace_statements)*
                     }
@@ -518,7 +521,10 @@ pub fn gc_struct_v8(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
                 impl #impl_generics ::js_engine::gc::Finalize for #ident #ty_generics #where_clause {}
 
+                // SAFETY: the derive resolved the traced variant fields just
+                // above, and the generated arms visit each one exactly once.
                 unsafe impl #impl_generics ::js_engine::gc::Trace for #ident #ty_generics #where_clause {
+                    // SAFETY: called once per reachable value by the marker.
                     unsafe fn trace(&self, visitor: &mut ::js_engine::v8_gc::Visitor) {
                         match self {
                             #(#trace_arms)*

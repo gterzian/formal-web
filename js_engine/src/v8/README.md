@@ -82,7 +82,9 @@ Unsafe blocks follow the repo-wide discipline in `AGENTS.md` ("Unsafe-code
 discipline"). The backend-specific checks are the `GcCell` borrow counters on
 the guard deref/drop paths, the edge epoch check on every handle
 materialization and on the cached platform address `with_object_any`
-dereferences, the platform-data writer flag (a trace or shared read during a
+dereferences, the prologue callback's `fatal_invariant!` when V8 reports a
+collection type the epoch does not track, the platform-data writer flag (a
+trace or shared read during a
 `with_object_any_mut` borrow aborts) and reader count (a mutable borrow fails
 while a shared guard held by another engine handle over the same isolate is
 live), strict LIFO drop order for the thread-local engine and callback-scope

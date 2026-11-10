@@ -61,6 +61,9 @@ pub const CAPABILITY_SUSPENDED: c_int = 2;
 mod ffi {
     use super::*;
 
+    // SAFETY: the declarations mirror the `bek_*` functions implemented by
+    // the linked Swift shim; callback pointers and contexts are the caller's
+    // to keep alive for as long as the process handle is live.
     unsafe extern "C" {
         pub fn bek_launch_process(
             kind: c_int,

@@ -472,6 +472,10 @@ struct DisplayLinkContext {
     handle: MainThreadHandle,
 }
 
+/// # Safety
+///
+/// CoreVideo calls this on the display-link thread with the context pointer
+/// installed at creation, which the app keeps alive with the link.
 unsafe extern "C-unwind" fn display_link_callback(
     _link: NonNull<CVDisplayLink>,
     _now: NonNull<CVTimeStamp>,

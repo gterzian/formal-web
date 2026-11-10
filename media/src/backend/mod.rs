@@ -76,6 +76,8 @@ impl PixelBufferVideoFrame {
     any(feature = "backend-avfoundation", avf_default),
     target_os = "macos"
 ))]
+// SAFETY: see above; the buffer is only read through `pixel_buffer()`, which
+// asserts the producing thread, and dropping a `CFType` is thread-safe.
 unsafe impl Send for PixelBufferVideoFrame {}
 
 #[cfg(all(
@@ -192,3 +194,52 @@ pub mod gstreamer;
     any(target_os = "macos", target_os = "ios")
 ))]
 pub mod avfoundation;
+
+#[cfg(all(
+    test,
+    any(feature = "backend-avfoundation", avf_default),
+    target_os = "macos"
+))]
+mod tests {
+    use std::sync::mpsc;
+
+    use std::ptr::NonNull;
+
+    use ipc_messages::media::{MediaPipelineId, VideoPaintId};
+    use objc2::rc::Retained;
+    use objc2_core_video::{CVBuffer, CVPixelBufferCreate};
+
+    use super::PixelBufferVideoFrame;
+
+    fn pixel_buffer() -> Retained<CVBuffer> {
+        let mut buffer: *mut CVBuffer = std::ptr::null_mut();
+        // SAFETY: the allocator and attributes are optional (null), both
+        // dimensions are non-zero, and `buffer` is a live out-parameter.
+        let status = unsafe {
+            CVPixelBufferCreate(None, 4, 4, 0x4247_5241, None, NonNull::from(&mut buffer))
+        };
+        assert_eq!(status, 0, "CVPixelBufferCreate failed with {status}");
+        // SAFETY: a successful `CVPixelBufferCreate` returns a +1 reference in
+        // `buffer`, and `from_raw` takes ownership of that reference.
+        unsafe { Retained::from_raw(buffer) }.expect("CVPixelBufferCreate returned null")
+    }
+
+    #[test]
+    #[should_panic(expected = "consumed on a thread other than the one that produced it")]
+    fn pixel_buffer_frame_is_thread_affine() {
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let frame = PixelBufferVideoFrame::new(
+                MediaPipelineId(VideoPaintId::new().0),
+                4,
+                4,
+                pixel_buffer(),
+            );
+            sender.send(frame).expect("receiver alive");
+        })
+        .join()
+        .expect("producer thread");
+        let frame = receiver.recv().expect("frame delivered");
+        let _ = frame.pixel_buffer();
+    }
+}

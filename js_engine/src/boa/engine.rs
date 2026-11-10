@@ -2512,6 +2512,8 @@ impl TraceableBox {
     /// The `Trace` bound implies `boa_gc::Trace` (its supertrait on the Boa
     /// backend), which supplies the tracing used by the stored vtables.
     pub fn new<T: std::any::Any + crate::gc::Trace>(data: T) -> Self {
+        // SAFETY: the vtable is built for this same `T` (see below), and the
+        // downcast checks the pairing before tracing.
         unsafe fn trace_impl<T: boa_gc::Trace + 'static>(
             data: &dyn std::any::Any,
             tracer: &mut boa_gc::Tracer,

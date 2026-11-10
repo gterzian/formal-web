@@ -17,6 +17,8 @@ pub type dispatch_queue_t = *mut c_void;
 // XPC type constants for runtime type checks.
 // Comparing xpc_get_type() result against these avoids API misuse (calling
 // dictionary functions on connection/error objects).
+// SAFETY: these libxpc type constants are exported by the linked framework;
+// the declarations state their types.
 unsafe extern "C" {
     static _xpc_type_connection: c_void;
     static _xpc_type_error: c_void;
@@ -25,10 +27,20 @@ unsafe extern "C" {
     static _xpc_type_endpoint: c_void;
 }
 
+/// Listener and peer callbacks invoked by libxpc.
+///
+/// # Safety
+///
+/// libxpc invokes these with the event object it received and the context
+/// pointer installed alongside the callback; the function pointer must stay
+/// valid for as long as the listener or peer is registered.
 pub type XpcListenerEventCallback = unsafe extern "C" fn(event: xpc_object_t, context: *mut c_void);
 pub type XpcPeerMessageCallback =
     unsafe extern "C" fn(dictionary: xpc_object_t, context: *mut c_void);
 
+// SAFETY: the declarations mirror the `fw_xpc_*` trampolines implemented by
+// the linked shim; pointer and context arguments are the caller's to keep
+// alive for the duration of each call.
 unsafe extern "C" {
     #[cfg(target_os = "macos")]
     pub fn fw_xpc_create_listener(
@@ -67,6 +79,8 @@ unsafe extern "C" {
     pub fn fw_xpc_resume(connection: xpc_connection_t);
     pub fn fw_xpc_cancel(connection: xpc_connection_t);
     #[cfg(target_os = "macos")]
+    // SAFETY: libxpc invokes this handler with a valid connection and the
+    // context pointer installed with it.
     pub fn fw_xpc_run_service(
         handler: Option<unsafe extern "C" fn(xpc_connection_t, *mut c_void)>,
         context: *mut c_void,
@@ -74,6 +88,8 @@ unsafe extern "C" {
     // dispatch_main is not declared — we use a custom xpc_main wrapper.
 }
 
+// SAFETY: the declarations mirror the libxpc entry points exported by the
+// linked framework; object and connection arguments are libxpc references.
 unsafe extern "C" {
     pub fn xpc_retain(object: xpc_object_t) -> xpc_object_t;
     pub fn xpc_release(object: xpc_object_t);
@@ -603,6 +619,11 @@ unsafe fn cleanup_listener_handler(ptr: *mut c_void) {
 /// Checks the XPC type before calling dictionary functions to avoid
 /// API misuse on macOS 26+ where calling dict functions on non-dict
 /// objects triggers _xpc_api_misuse / SIGTRAP.
+///
+/// # Safety
+///
+/// Called by libxpc on the connection's queue with the event object and the
+/// context pointer installed by `fw_xpc_set_peer_handler`.
 unsafe extern "C" fn xpc_peer_callback(object: xpc_object_t, context: *mut c_void) {
     // Check pointer validity BEFORE accessing shared context.
     // On macOS 26+, mach cancel events deliver invalid small-integer pointers.
@@ -675,6 +696,11 @@ unsafe extern "C" fn xpc_peer_callback(object: xpc_object_t, context: *mut c_voi
 /// Internal callback for listener events.
 /// Checks XPC type before calling dict functions — on macOS 26+ the event
 /// is a direct XPC_TYPE_CONNECTION (peer), not a dictionary.
+///
+/// # Safety
+///
+/// Called by libxpc on the listener's queue with the event object and the
+/// context pointer installed by `fw_xpc_create_listener`.
 unsafe extern "C" fn xpc_listener_callback(event: xpc_object_t, context: *mut c_void) {
     // Check pointer validity BEFORE accessing shared context.
     if event.is_null() || (event as usize) < 0x100_0000 {

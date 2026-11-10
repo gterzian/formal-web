@@ -17,6 +17,7 @@ use rusty_v8 as v8;
 use crate::enums::{
     IntegrityLevel, IteratorKind, PromiseState, SharedMemoryOrder, TypedArrayElementType,
 };
+use crate::fatal_invariant;
 use crate::gc::{JsTypesGcExt, PlatformData, PlatformDataMut, Trace};
 use crate::records::{
     IteratorRecord, ModuleRequest, PromiseCapability, PromiseResolvers, RealmIntrinsics,
@@ -563,12 +564,23 @@ impl V8Engine {
 /// collection that can reclaim an old-space referent). The callback runs on
 /// the isolate thread, so a plain `Cell` is enough; arithmetic only, so
 /// nothing can unwind into C++.
+///
+/// # Safety
+///
+/// Called by V8 with `data` set to the `Cell<u64>` registered in
+/// `SharedIsolate::new`; the body must not unwind.
 unsafe extern "C" fn gc_prologue_bump_epoch(
     _isolate: v8::UnsafeRawIsolatePtr,
-    _gc_type: v8::GCType,
+    gc_type: v8::GCType,
     _flags: v8::GCCallbackFlags,
     data: *mut std::ffi::c_void,
 ) {
+    // Registration filters to this exact type; a callback for any other
+    // collection would bump the epoch for a pass that does not trace every
+    // edge, marking live edges stale.
+    if gc_type != v8::GCType::kGCTypeMarkSweepCompact {
+        fatal_invariant!("V8 GC prologue ran for a collection the edge epoch does not track");
+    }
     // SAFETY: `data` is the address of the `Cell<u64>` that
     // `SharedIsolate::new` registered, which lives as long as the isolate.
     let epoch = unsafe { &*(data as *const Cell<u64>) };

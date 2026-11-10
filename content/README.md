@@ -85,6 +85,12 @@ the slot is cleared, and a field mutated to a fresh JS value and written back
 gets `js_engine::gc::store_traced` from `with_cloned_platform_mut` (see
 `content/src/js/downcast.rs`).
 
+To examine a subset of a cell's contents before an engine call, collect the
+needed values under a shared borrow and root them with
+`make_strong_traced`, instead of cloning the whole container with `get`
+(`EventTarget::add_event_listener`/`remove_event_listener_entry` do this to
+avoid rooting the entire listener list on every call).
+
 Platform-object native data follows the same clone-out/write-back rule:
 `with_object_any_mut` ties its `&mut dyn Any` to `&mut ec`, so an operation
 that must call the engine while mutating a platform object clones it out,
