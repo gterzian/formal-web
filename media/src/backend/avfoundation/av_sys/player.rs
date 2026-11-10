@@ -16,7 +16,9 @@ pub(crate) struct AvPlayer {
 }
 
 // SAFETY: `AVPlayer` is created and used on one thread only (the one that
-// pumps its run loop), and `inner()` asserts that thread at every access.
+// pumps its run loop); `inner()` asserts that thread at every access. The
+// only operation allowed on another thread is the release performed when
+// `inner` drops, which is an `objc_release` refcount decrement.
 unsafe impl Send for AvPlayer {}
 
 impl AvPlayer {
