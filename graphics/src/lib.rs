@@ -444,7 +444,7 @@ fn handle_media_event<R: SurfaceRenderer>(
             // thread).
             let Some(resource_id) = slot.renderer.store_video_frame(
                 paint_id,
-                &frame.pixel_buffer,
+                frame.pixel_buffer(),
                 frame.width,
                 frame.height,
             ) else {

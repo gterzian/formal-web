@@ -158,6 +158,8 @@ unsafe extern "C" fn completion_trampoline(
         let content_type = if content_type.is_null() {
             String::new()
         } else {
+            // SAFETY: `content_type` is a NUL-terminated C string valid for
+            // the duration of the call.
             unsafe { CStr::from_ptr(content_type) }
                 .to_string_lossy()
                 .into_owned()

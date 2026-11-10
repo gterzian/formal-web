@@ -30,18 +30,54 @@ pub struct PixelBufferVideoFrame {
     pub height: u32,
     /// The decoded NV12 pixel buffer; must stay alive while the Metal
     /// textures wrapping its planes are in use.
-    pub pixel_buffer: objc2::rc::Retained<objc2_core_video::CVPixelBuffer>,
+    pixel_buffer: objc2::rc::Retained<objc2_core_video::CVPixelBuffer>,
+    /// The thread that produced the frame.
+    producer: std::thread::ThreadId,
 }
 
-// SAFETY: the pixel buffer is produced by the AVFoundation pipeline and
-// consumed by the graphics event loop on the same thread (the media backend
-// runs inside the graphics process's select loop); it is only ever touched
-// on that thread. The crossbeam channel between them only needs the Send
-// marker.
 #[cfg(all(
     any(feature = "backend-avfoundation", avf_default),
     target_os = "macos"
 ))]
+impl PixelBufferVideoFrame {
+    pub fn new(
+        pipeline_id: MediaPipelineId,
+        width: u32,
+        height: u32,
+        pixel_buffer: objc2::rc::Retained<objc2_core_video::CVPixelBuffer>,
+    ) -> Self {
+        Self {
+            pipeline_id,
+            width,
+            height,
+            pixel_buffer,
+            producer: std::thread::current().id(),
+        }
+    }
+
+    /// The decoded pixel buffer, after checking that this is the thread that
+    /// produced the frame.
+    pub fn pixel_buffer(&self) -> &objc2::rc::Retained<objc2_core_video::CVPixelBuffer> {
+        assert_eq!(
+            std::thread::current().id(),
+            self.producer,
+            "pixel buffer frame consumed on a thread other than the one that produced it"
+        );
+        &self.pixel_buffer
+    }
+}
+
+// SAFETY: the pixel buffer is produced by the AVFoundation pipeline and
+// consumed by the graphics event loop on the same thread (the media backend
+// runs inside the graphics process's select loop); `pixel_buffer()` asserts
+// that thread, so the only cross-thread operation left is dropping the frame,
+// which releases the buffer.
+#[cfg(all(
+    any(feature = "backend-avfoundation", avf_default),
+    target_os = "macos"
+))]
+// SAFETY: see above; the buffer is only read through `pixel_buffer()`, which
+// asserts the producing thread, and dropping a `CFType` is thread-safe.
 unsafe impl Send for PixelBufferVideoFrame {}
 
 #[cfg(all(
@@ -55,7 +91,7 @@ impl std::fmt::Debug for PixelBufferVideoFrame {
             .field("pipeline_id", &self.pipeline_id)
             .field("width", &self.width)
             .field("height", &self.height)
-            .field("pixel_buffer", &(&**self.pixel_buffer as *const _))
+            .field("pixel_buffer", &(&*self.pixel_buffer as *const _))
             .finish()
     }
 }
@@ -158,3 +194,52 @@ pub mod gstreamer;
     any(target_os = "macos", target_os = "ios")
 ))]
 pub mod avfoundation;
+
+#[cfg(all(
+    test,
+    any(feature = "backend-avfoundation", avf_default),
+    target_os = "macos"
+))]
+mod tests {
+    use std::sync::mpsc;
+
+    use std::ptr::NonNull;
+
+    use ipc_messages::media::{MediaPipelineId, VideoPaintId};
+    use objc2::rc::Retained;
+    use objc2_core_video::{CVBuffer, CVPixelBufferCreate};
+
+    use super::PixelBufferVideoFrame;
+
+    fn pixel_buffer() -> Retained<CVBuffer> {
+        let mut buffer: *mut CVBuffer = std::ptr::null_mut();
+        // SAFETY: the allocator and attributes are optional (null), both
+        // dimensions are non-zero, and `buffer` is a live out-parameter.
+        let status = unsafe {
+            CVPixelBufferCreate(None, 4, 4, 0x4247_5241, None, NonNull::from(&mut buffer))
+        };
+        assert_eq!(status, 0, "CVPixelBufferCreate failed with {status}");
+        // SAFETY: a successful `CVPixelBufferCreate` returns a +1 reference in
+        // `buffer`, and `from_raw` takes ownership of that reference.
+        unsafe { Retained::from_raw(buffer) }.expect("CVPixelBufferCreate returned null")
+    }
+
+    #[test]
+    #[should_panic(expected = "consumed on a thread other than the one that produced it")]
+    fn pixel_buffer_frame_is_thread_affine() {
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let frame = PixelBufferVideoFrame::new(
+                MediaPipelineId(VideoPaintId::new().0),
+                4,
+                4,
+                pixel_buffer(),
+            );
+            sender.send(frame).expect("receiver alive");
+        })
+        .join()
+        .expect("producer thread");
+        let frame = receiver.recv().expect("frame delivered");
+        let _ = frame.pixel_buffer();
+    }
+}

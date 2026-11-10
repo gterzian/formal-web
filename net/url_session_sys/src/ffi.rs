@@ -9,6 +9,11 @@ pub type FwUrlSession = *mut FwUrlSession_private;
 /// Completion callback invoked exactly once when a data task finishes.
 /// All pointer arguments are only valid for the duration of the call;
 /// the caller must copy what it needs. `error` is NULL on success.
+///
+/// # Safety
+///
+/// Only the URLSession trampoline may invoke it, with the pointers described
+/// above; it must not unwind.
 pub type FwUrlSessionCompletion = unsafe extern "C" fn(
     context: *mut c_void,
     status_code: c_int,
@@ -19,6 +24,8 @@ pub type FwUrlSessionCompletion = unsafe extern "C" fn(
     error: *const c_char,
 );
 
+// SAFETY: the declarations mirror the `fw_url_session_*` trampolines
+// implemented by the linked shim.
 unsafe extern "C" {
     /// Create a session with no shared cache. Returns NULL on failure.
     pub fn fw_url_session_create() -> FwUrlSession;

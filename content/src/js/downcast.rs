@@ -242,9 +242,8 @@ where
     // edge before the clone re-enters traced storage; otherwise the write-back
     // would install a strong root the marker cannot see.
     store_traced(&mut platform, ec);
-    if let Some(slot) = ec
-        .with_object_any_mut(object)
-        .and_then(|data| data.downcast_mut::<T>())
+    if let Some(mut data) = ec.with_object_any_mut(object)
+        && let Some(slot) = data.downcast_mut::<T>()
     {
         *slot = platform;
     }
@@ -326,9 +325,9 @@ pub(crate) fn try_set_event_target_reflector(
         // Set the reflector on the embedded target; capture the Worker id so
         // the owner realm's registered clone can be synced after the borrow
         // is released.
-        let worker_id = ec.with_object_any_mut(&obj).and_then(|data| {
+        let worker_id = ec.with_object_any_mut(&obj).and_then(|mut data| {
             let worker_id = data.downcast_ref::<Worker>().map(|worker| worker.worker_id);
-            with_platform_reflector_slot_mut(data, |slot| *slot = reflector.clone());
+            with_platform_reflector_slot_mut(&mut *data, |slot| *slot = reflector.clone());
             worker_id
         });
 
@@ -428,7 +427,7 @@ pub(crate) fn try_with_event_target_mut<R>(
     // write the clone back without holding a platform borrow while `ec` runs.
     let target = ec
         .with_object_any_mut(&obj)
-        .and_then(|data| with_platform_event_target_mut(data, |target| target.clone()));
+        .and_then(|mut data| with_platform_event_target_mut(&mut *data, |target| target.clone()));
     let Some(mut target) = target else {
         return Err(ec.new_type_error("receiver is not an EventTarget"));
     };
@@ -437,7 +436,7 @@ pub(crate) fn try_with_event_target_mut<R>(
     // before the write-back installs them in traced storage.
     store_traced(&mut target, ec);
     ec.with_object_any_mut(&obj)
-        .and_then(|data| with_platform_event_target_mut(data, |slot| *slot = target));
+        .and_then(|mut data| with_platform_event_target_mut(&mut *data, |slot| *slot = target));
     Ok(result)
 }
 

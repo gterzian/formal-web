@@ -18,12 +18,18 @@ fn main() {
         Some("com.formal-web.app.NetworkingExtension"),
     ) {
         Ok(handle) => {
+            // SAFETY: every call below passes the live `handle` from
+            // `launch_process` (or the grant it produced), in the order the
+            // functions require; `make_xpc_connection` does not consume it.
             let _ = unsafe { make_xpc_connection(handle, KIND_NETWORKING) };
             if let Ok(grant) =
+                // SAFETY: `handle` is still live and unconsumed.
                 unsafe { grant_capability(handle, KIND_NETWORKING, CAPABILITY_FOREGROUND) }
             {
+                // SAFETY: `grant` came from `grant_capability` and is consumed.
                 unsafe { invalidate_grant(grant) };
             }
+            // SAFETY: `handle` is live and consumed by the call.
             unsafe { invalidate(handle, KIND_NETWORKING) };
         }
         Err(message) => println!("launch failed (expected without an entitlement): {message}"),

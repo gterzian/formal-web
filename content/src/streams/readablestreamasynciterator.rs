@@ -69,15 +69,13 @@ impl AsyncValueIterable for ReadableStream {
 
         // Step 2: Store the reader for iteration.
         // Retrieve the domain data from the platform object.
-        let reader_any = ec.with_object_any(&reader_object);
-        let some_reader = reader_any.and_then(|d| d.downcast_ref::<ReadableStreamDefaultReader>());
-        let reader = match some_reader {
-            Some(reader) => reader.clone(),
-            None => {
-                return Err(
-                    ec.new_type_error("ReadableStream async iterator requires a default reader")
-                );
-            }
+        let reader = ec
+            .with_object_any(&reader_object)
+            .and_then(|data| data.downcast_ref::<ReadableStreamDefaultReader>().cloned());
+        let Some(reader) = reader else {
+            return Err(
+                ec.new_type_error("ReadableStream async iterator requires a default reader")
+            );
         };
 
         // Step 3: "Let preventCancel be args[0][\"preventCancel\"]."

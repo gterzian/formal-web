@@ -61,6 +61,9 @@ pub const CAPABILITY_SUSPENDED: c_int = 2;
 mod ffi {
     use super::*;
 
+    // SAFETY: the declarations mirror the `bek_*` functions implemented by
+    // the linked Swift shim; callback pointers and contexts are the caller's
+    // to keep alive for as long as the process handle is live.
     unsafe extern "C" {
         pub fn bek_launch_process(
             kind: c_int,
@@ -92,9 +95,13 @@ fn take_error_message(pointer: *mut c_char) -> Option<String> {
     if pointer.is_null() {
         return None;
     }
+    // SAFETY: the pointer was null-checked above; the Swift side `strdup`s
+    // the message, so it is a NUL-terminated string this call owns.
     let message = unsafe { CStr::from_ptr(pointer) }
         .to_string_lossy()
         .into_owned();
+    // SAFETY: the string was `strdup`ed by the shim and is freed exactly once,
+    // here (the copy above no longer borrows it).
     unsafe {
         ffi::bek_free_string(pointer);
     }
@@ -119,6 +126,9 @@ pub fn launch_process(kind: c_int, bundle_id: Option<&str>) -> Result<ProcessHan
         error_message: *mut c_char,
         context: *mut c_void,
     ) {
+        // SAFETY: `context` is the `Box::into_raw` pointer from
+        // `launch_process`; Swift invokes this completion exactly once, so the
+        // box is reclaimed exactly once.
         let result_tx =
             unsafe { Box::from_raw(context as *mut mpsc::Sender<Result<ProcessHandle, String>>) };
         let result = if handle.is_null() {
@@ -138,6 +148,9 @@ pub fn launch_process(kind: c_int, bundle_id: Option<&str>) -> Result<ProcessHan
         .as_ref()
         .map_or(ptr::null(), |cstring| cstring.as_ptr());
 
+    // SAFETY: the arguments are the enum value, a NUL-terminated bundle string
+    // that outlives the call, two `extern "C"` callbacks, and the boxed sender
+    // whose ownership the completion callback takes.
     unsafe {
         ffi::bek_launch_process(kind, bundle_ptr, on_interrupt, on_complete, context);
     }
@@ -161,6 +174,8 @@ pub unsafe fn make_xpc_connection(
     kind: c_int,
 ) -> Result<ConnectionHandle, String> {
     let mut error_message: *mut c_char = ptr::null_mut();
+    // SAFETY: the caller guarantees `handle` is a live process handle for
+    // `kind`; `error_message` is a live out-parameter.
     let connection =
         unsafe { ffi::bek_process_make_xpc_connection(handle, kind, &mut error_message) };
     if connection.is_null() {
@@ -179,6 +194,8 @@ pub unsafe fn make_xpc_connection(
 /// given `kind`; it is consumed and must not be used again.
 #[cfg(target_os = "ios")]
 pub unsafe fn invalidate(handle: ProcessHandle, kind: c_int) {
+    // SAFETY: the caller guarantees `handle` is a live process handle for
+    // `kind`, consumed by the call.
     unsafe { ffi::bek_process_invalidate(handle, kind) };
 }
 
@@ -195,6 +212,8 @@ pub unsafe fn grant_capability(
     capability: c_int,
 ) -> Result<GrantHandle, String> {
     let mut error_message: *mut c_char = ptr::null_mut();
+    // SAFETY: the caller guarantees `handle` is a live process handle for
+    // `kind`; `error_message` is a live out-parameter.
     let grant =
         unsafe { ffi::bek_process_grant_capability(handle, kind, capability, &mut error_message) };
     if grant.is_null() {
@@ -213,6 +232,8 @@ pub unsafe fn grant_capability(
 /// consumed and must not be used again.
 #[cfg(target_os = "ios")]
 pub unsafe fn invalidate_grant(handle: GrantHandle) {
+    // SAFETY: the caller guarantees `handle` is a live grant handle, consumed
+    // by the call.
     unsafe { ffi::bek_grant_invalidate(handle) };
 }
 

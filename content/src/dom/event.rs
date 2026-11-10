@@ -1,6 +1,6 @@
 use crate::js::Types;
 use crate::webidl::Callback;
-use js_engine::gc::{GcCell, gc_cell_new};
+use js_engine::gc::{GcCell, gc_cell_new, make_strong_traced};
 use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes};
 use std::cell::Cell;
@@ -209,19 +209,22 @@ impl EventTarget {
         // listener's callback, and capture is listener's capture, then
         // append listener to eventTarget's event listener list.
         let listener_id = self.next_listener_id.get().wrapping_add(1);
-        // Test membership under a shared borrow so `equals` can use the
-        // execution context; the mutable borrow is scoped to the append.
-        let duplicate = {
+        // The event listener list slot is `GcCell<Vec<EventListener>>`; the
+        // candidate callbacks are cloned out under a shared borrow (their
+        // plain `type_`/`capture` fields need no engine access) and rooted
+        // before `equals` runs an engine operation.
+        let mut candidates: Vec<Callback> = {
             let listeners = self.event_listener_list.borrow(ec);
-            listeners.iter().any(|listener| {
-                listener.type_ == type_
-                    && listener.capture == capture
-                    && listener
-                        .callback
-                        .as_ref()
-                        .is_some_and(|existing| existing.equals(&callback, ec))
-            })
+            listeners
+                .iter()
+                .filter(|listener| listener.type_ == type_ && listener.capture == capture)
+                .filter_map(|listener| listener.callback.clone())
+                .collect()
         };
+        make_strong_traced(&mut candidates, ec);
+        let duplicate = candidates
+            .iter()
+            .any(|existing| existing.equals(&callback, ec));
 
         if !duplicate {
             self.next_listener_id.set(listener_id);
@@ -261,21 +264,28 @@ impl EventTarget {
     ) {
         // Step 2: Set listener's removed to true and remove listener from
         // eventTarget's event listener list.
-        let matching_ids: Vec<u64> = {
+        // Read the candidate callbacks under a shared borrow and root them
+        // before `equals` runs an engine operation, so only listeners of this
+        // type and capture are cloned instead of the whole list.
+        let mut candidates: Vec<(u64, Callback)> = {
             let listeners = self.event_listener_list.borrow(ec);
             listeners
                 .iter()
-                .filter(|listener| {
-                    listener.type_ == type_
-                        && listener.capture == capture
-                        && listener
-                            .callback
-                            .as_ref()
-                            .is_some_and(|existing| existing.equals(callback, ec))
+                .filter(|listener| listener.type_ == type_ && listener.capture == capture)
+                .filter_map(|listener| {
+                    listener
+                        .callback
+                        .clone()
+                        .map(|callback| (listener.id, callback))
                 })
-                .map(|listener| listener.id)
                 .collect()
         };
+        make_strong_traced(&mut candidates, ec);
+        let matching_ids: Vec<u64> = candidates
+            .iter()
+            .filter(|(_, existing)| existing.equals(callback, ec))
+            .map(|(id, _)| *id)
+            .collect();
         let mut listeners = self.event_listener_list.borrow_mut(ec);
         for listener in listeners.iter_mut() {
             if matching_ids.contains(&listener.id) {

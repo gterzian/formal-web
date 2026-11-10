@@ -17,7 +17,8 @@ still holds keeps addressing a valid node: `parentNode` becomes null, node data
 still reads, and the node can be reinserted.  A detached subtree is freed only
 when no node in it has a live wrapper (`ContentProcess::drain_detached_nodes`,
 see `content/src/html/README.md`), and only then is its slab id handed out
-again.
+again; the innerHTML parser's own fragment root is the exception, freed at
+parse time because it never reaches script.
 
 An operation that detaches nodes must not free them or delete wrapper-cache
 entries.  Detach with `DocumentMutator::remove_node`, and record each detached

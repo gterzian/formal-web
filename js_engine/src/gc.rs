@@ -140,7 +140,246 @@ impl<T: JsTypes> Clone for GcRootHandle<T> {
 }
 
 // ============================================================================
-// SECTION III: UNIFIED GC CELL
+// SECTION III: PLATFORM DATA ACCESS
+// ============================================================================
+
+// `with_object_any` / `with_object_any_mut` return the type-erased data of a
+// platform object together with the backend's borrow of that object: the
+// guard lives as long as the returned reference, so a later mutable borrow of
+// the same object fails instead of handing out a reference that aliases this
+// one. On V8 the data sits behind an `UnsafeCell` and the guard carries the
+// platform's reader count or writer flag; on Boa it is the `GcRef`/`GcRefMut`
+// guard that keeps the object's `GcRefCell` borrow set.
+
+#[cfg(feature = "v8")]
+pub use v8_platform_data::*;
+
+#[cfg(feature = "v8")]
+mod v8_platform_data {
+    use std::any::Any;
+    use std::marker::PhantomData;
+    use std::ops::{Deref, DerefMut};
+
+    use crate::ExecutionContext;
+    use crate::v8::V8Types;
+
+    /// Shared borrow of a platform object's type-erased data.
+    ///
+    /// Increments the platform's reader count for its lifetime, so a mutable
+    /// borrow taken through another engine handle over the same isolate fails
+    /// instead of handing out a `&mut` that aliases this reference.
+    pub struct PlatformData<'a> {
+        data: &'a dyn Any,
+        readers: &'a std::cell::Cell<u32>,
+        _engine: PhantomData<&'a dyn ExecutionContext<V8Types>>,
+    }
+
+    impl<'a> PlatformData<'a> {
+        /// Take ownership of the shared reference to the platform data.
+        ///
+        /// # Safety
+        ///
+        /// `data` must stay valid for `'a`: the object whose wrapper traces
+        /// the platform data must outlive it. `readers` must be the counter
+        /// belonging to that same platform data.
+        pub(crate) unsafe fn new(
+            data: &'a dyn Any,
+            readers: &'a std::cell::Cell<u32>,
+            writer: &'a std::cell::Cell<bool>,
+        ) -> Self {
+            assert!(
+                !writer.get(),
+                "platform data read while a mutable borrow is live"
+            );
+            readers.set(readers.get() + 1);
+            Self {
+                data,
+                readers,
+                _engine: PhantomData,
+            }
+        }
+    }
+
+    impl Drop for PlatformData<'_> {
+        fn drop(&mut self) {
+            self.readers.set(self.readers.get() - 1);
+        }
+    }
+
+    impl Deref for PlatformData<'_> {
+        type Target = dyn Any;
+
+        fn deref(&self) -> &dyn Any {
+            self.data
+        }
+    }
+
+    /// Exclusive borrow of a platform object's type-erased data.
+    ///
+    /// Holds the platform's writer flag for its lifetime, so a cppgc trace
+    /// that reads the data (or a shared access through `as_any`) aborts
+    /// instead of deriving a reference that aliases this one.
+    pub struct PlatformDataMut<'a> {
+        data: &'a mut dyn Any,
+        writer: &'a std::cell::Cell<bool>,
+        _engine: PhantomData<&'a mut dyn ExecutionContext<V8Types>>,
+    }
+
+    impl<'a> PlatformDataMut<'a> {
+        /// Take ownership of the exclusive reference to the platform data.
+        ///
+        /// # Safety
+        ///
+        /// `data` must stay valid for `'a`, and the caller must hold the
+        /// engine's exclusive host-data access path (`&mut self`). `readers`
+        /// and `writer` must be the counters belonging to that same platform
+        /// data.
+        pub(crate) unsafe fn new(
+            data: &'a mut dyn Any,
+            readers: &'a std::cell::Cell<u32>,
+            writer: &'a std::cell::Cell<bool>,
+        ) -> Self {
+            assert_eq!(
+                readers.get(),
+                0,
+                "platform data mutably borrowed while a shared borrow is live"
+            );
+            assert!(
+                !writer.replace(true),
+                "platform data mutably borrowed while a mutable borrow is live"
+            );
+            Self {
+                data,
+                writer,
+                _engine: PhantomData,
+            }
+        }
+    }
+
+    impl Drop for PlatformDataMut<'_> {
+        fn drop(&mut self) {
+            self.writer.set(false);
+        }
+    }
+
+    impl Deref for PlatformDataMut<'_> {
+        type Target = dyn Any;
+
+        fn deref(&self) -> &dyn Any {
+            self.data
+        }
+    }
+
+    impl DerefMut for PlatformDataMut<'_> {
+        fn deref_mut(&mut self) -> &mut dyn Any {
+            self.data
+        }
+    }
+}
+
+#[cfg(feature = "boa")]
+pub use boa_platform_data::*;
+
+#[cfg(feature = "boa")]
+mod boa_platform_data {
+    use std::any::Any;
+    use std::marker::PhantomData;
+    use std::ops::{Deref, DerefMut};
+
+    use boa_engine::object::Object;
+    use boa_gc::{GcRef, GcRefMut};
+
+    use crate::ExecutionContext;
+    use crate::boa::{BoaTypes, NativeDataWrapper};
+
+    /// Shared borrow of a platform object's type-erased data.
+    ///
+    /// The `GcRef` guard is held for the borrow, so the object's `GcRefCell`
+    /// shared borrow stays set: a later `borrow_mut` of the same object fails
+    /// instead of aliasing `data`.
+    pub struct PlatformData<'a> {
+        _guard: GcRef<'a, Object<NativeDataWrapper>>,
+        data: *const dyn Any,
+        _engine: PhantomData<&'a dyn ExecutionContext<BoaTypes>>,
+    }
+
+    impl<'a> PlatformData<'a> {
+        /// # Safety
+        ///
+        /// `data` must point into the allocation `guard` borrows.
+        pub(crate) unsafe fn new(
+            guard: GcRef<'a, Object<NativeDataWrapper>>,
+            data: *const dyn Any,
+        ) -> Self {
+            Self {
+                _guard: guard,
+                data,
+                _engine: PhantomData,
+            }
+        }
+    }
+
+    impl Deref for PlatformData<'_> {
+        type Target = dyn Any;
+
+        fn deref(&self) -> &dyn Any {
+            // SAFETY: `data` points into the allocation the `GcRef` guard
+            // borrows: the guard keeps the `GcRefCell` borrow set (no
+            // `borrow_mut` can run) and the object handle keeps the
+            // allocation alive for `'a`.
+            unsafe { &*self.data }
+        }
+    }
+
+    /// Exclusive borrow of a platform object's type-erased data.
+    ///
+    /// The `GcRefMut` guard is held for the borrow, so the object's
+    /// `GcRefCell` stays mutably borrowed: a later `borrow`/`borrow_mut` of
+    /// the same object fails instead of aliasing `data`.
+    pub struct PlatformDataMut<'a> {
+        _guard: GcRefMut<'a, NativeDataWrapper>,
+        data: *mut dyn Any,
+        _engine: PhantomData<&'a mut dyn ExecutionContext<BoaTypes>>,
+    }
+
+    impl<'a> PlatformDataMut<'a> {
+        /// # Safety
+        ///
+        /// `data` must point into the allocation `guard` borrows.
+        pub(crate) unsafe fn new(
+            guard: GcRefMut<'a, NativeDataWrapper>,
+            data: *mut dyn Any,
+        ) -> Self {
+            Self {
+                _guard: guard,
+                data,
+                _engine: PhantomData,
+            }
+        }
+    }
+
+    impl Deref for PlatformDataMut<'_> {
+        type Target = dyn Any;
+
+        fn deref(&self) -> &dyn Any {
+            // SAFETY: see `PlatformData::deref`; the guard holds the
+            // exclusive borrow, so reborrowing it shared is sound.
+            unsafe { &*self.data }
+        }
+    }
+
+    impl DerefMut for PlatformDataMut<'_> {
+        fn deref_mut(&mut self) -> &mut dyn Any {
+            // SAFETY: see `PlatformData::deref`; the guard holds the
+            // exclusive borrow, so this is the only live mutable reference
+            // into the allocation.
+            unsafe { &mut *self.data }
+        }
+    }
+}
+
+// ============================================================================
+// SECTION IV: UNIFIED GC CELL
 // ============================================================================
 
 // ── Boa backend ────────────────────────────────────────────────────────────
@@ -260,12 +499,15 @@ mod boa_cells {
     // wrapped value during marking exactly like any other `Gc` field.
     unsafe impl<T: boa_gc::Trace + 'static> boa_gc::Trace for GcCell<T> {
         unsafe fn trace(&self, tracer: &mut boa_gc::Tracer) {
+            // SAFETY: the marker calls this once per reachable cell, and the
+            // inner `Gc` visits the value it owns under the same marking pass.
             unsafe {
                 self.0.trace(tracer);
             }
         }
 
         unsafe fn trace_non_roots(&self) {
+            // SAFETY: as in `trace`; the inner `Gc` visits the same value.
             unsafe {
                 self.0.trace_non_roots();
             }
@@ -291,16 +533,16 @@ mod boa_cells {
 // borrow counter restores the runtime double-borrow checks of `RefCell`.
 //
 // Borrow discipline: never call engine methods (any `ec` operation) while a
-// shared borrow guard is live. An engine call may allocate and trigger a
-// cppgc trace that reads the cell while the borrow is live, which is legal
-// aliasing for a shared borrow but forbidden so call sites do not have to
-// know which operations allocate. A mutable guard holds the execution
-// context for its lifetime, so the compiler rejects an `ec` call while it is
-// live; clone the value out (`borrow(ec).clone()` … `set(value, ec)`) or
-// scope the mutable borrow to a non-engine section. Dropping a mutable guard
-// runs `store` over the cell contents, converting rooted handles written
-// through it into cppgc edges. `HeapCell::trace` aborts on a live mutable
-// borrow as a backstop.
+// borrow guard is live. An engine call may allocate and trigger a cppgc trace
+// that reads the cell while the borrow is live, which is legal aliasing for a
+// shared borrow but forbidden so call sites do not have to know which
+// operations allocate. Both guard kinds borrow the execution context for
+// their lifetime (`borrow<'a>(&'a self, ec: &'a dyn …)`), so the compiler
+// rejects an `ec` call while a guard is live; clone the value out
+// (`get(ec)` / `borrow(ec).clone()` … `set(value, ec)`) or scope the borrow
+// to a non-engine section. Dropping a mutable guard runs `store` over the
+// cell contents, converting rooted handles written through it into cppgc
+// edges. `HeapCell::trace` aborts on a live mutable borrow as a backstop.
 #[cfg(feature = "v8")]
 pub use v8_cells::*;
 
@@ -335,7 +577,7 @@ mod v8_cells {
 
     impl<T: Trace + 'static> GcCell<T> {
         /// Immutably borrow the wrapped value.
-        pub fn borrow<'a>(&'a self, ec: &dyn ExecutionContext<V8Types>) -> GcRef<'a, T> {
+        pub fn borrow<'a>(&'a self, ec: &'a dyn ExecutionContext<V8Types>) -> GcRef<'a, T> {
             self.0.borrow(ec)
         }
 
@@ -679,6 +921,9 @@ macro_rules! impl_gc_traits {
             $($fields)*
         }
 
+        // SAFETY: the V8 `#[gc_struct]` expansion writes the real `Trace`
+        // impl for this type; this marker impl only satisfies the bound
+        // before that expansion is applied.
         #[cfg(not(feature = "boa"))]
         unsafe impl $(<$($generic),+>)? $crate::gc::Trace for $name $(<$($generic),+>)? {}
 
@@ -697,6 +942,8 @@ macro_rules! impl_gc_traits {
             $($variants)*
         }
 
+        // SAFETY: as for the struct arm, the V8 `#[gc_struct]` expansion
+        // writes the real `Trace` impl for the enum.
         #[cfg(not(feature = "boa"))]
         unsafe impl $(<$($generic),+>)? $crate::gc::Trace for $name $(<$($generic),+>)? {}
 
@@ -757,11 +1004,14 @@ mod boa_gc_impl {
     // GcRootHandle fields (e.g. on_change callbacks) are properly traced.
     unsafe impl boa_gc::Trace for super::GcRootHandle<BoaTypes> {
         unsafe fn trace(&self, tracer: &mut boa_gc::Tracer) {
+            // SAFETY: the marker calls this once per reachable handle, and the
+            // inner `JsValue` visits the value it holds under the same pass.
             unsafe {
                 boa_gc::Trace::trace(&self.value, tracer);
             }
         }
         unsafe fn trace_non_roots(&self) {
+            // SAFETY: as in `trace`; the inner `JsValue` visits the same value.
             unsafe {
                 boa_gc::Trace::trace_non_roots(&self.value);
             }
@@ -784,6 +1034,8 @@ mod v8_trace_impls {
     macro_rules! empty_trace {
         ($($ty:ty),* $(,)?) => {
             $(
+                // SAFETY: these types hold no GC edge, so tracing visits
+                // nothing and no root/edge conversion is needed.
                 unsafe impl Trace for $ty {
                     unsafe fn trace(&self, _visitor: &mut Visitor) {}
 
@@ -814,6 +1066,8 @@ mod v8_trace_impls {
         String,
     );
 
+    // SAFETY: `Cell<T>` holds a `Copy` scalar, never a GC edge, so tracing
+    // and conversion visit nothing.
     unsafe impl<T: Trace> Trace for std::rc::Rc<std::cell::Cell<T>> {
         unsafe fn trace(&self, _visitor: &mut Visitor) {}
 
@@ -822,6 +1076,8 @@ mod v8_trace_impls {
         fn make_strong(&mut self, _ec: &mut dyn crate::ExecutionContext<crate::v8::V8Types>) {}
     }
 
+    // SAFETY: delegates to the cell's own `Traced` impl, which visits the
+    // nested heap cell and its contents exactly once.
     unsafe impl<T: Trace + 'static> Trace for super::GcCell<T> {
         unsafe fn trace(&self, visitor: &mut Visitor) {
             crate::v8_gc::Traced::trace(&self.0, visitor);
@@ -842,6 +1098,7 @@ mod v8_trace_impls {
 
     macro_rules! tuple_trace {
         ($(($t:ident, $i:tt)),* $(,)?) => {
+            // SAFETY: every tuple element is visited exactly once.
             unsafe impl<$($t: Trace),*> Trace for ($($t,)*) {
                 unsafe fn trace(&self, visitor: &mut Visitor) {
                     $(

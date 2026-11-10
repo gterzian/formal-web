@@ -46,7 +46,8 @@ use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 use crate::{
     Completion, EcmascriptHost, ExecutionContext, HostHooks, IntegrityLevel, IteratorKind,
     JsEngine, JsTypes, JsTypesWithRealm, Numeric, PreferredType, SharedMemoryOrder,
-    TypedArrayElementType,
+    TypedArrayElementType, fatal_invariant,
+    gc::{PlatformData, PlatformDataMut},
     records::{
         IteratorRecord, PromiseCapability, PromiseResolvers, PropertyDescriptor, RealmIntrinsics,
     },
@@ -189,6 +190,11 @@ where
     // automatically traces through all JsObject references inside C.
     let native = NativeFunction::from_copy_closure_with_captures(
         move |this, args, captures, context| {
+            // SAFETY: Boa calls this capture closure with the `Context` that
+            // the native function's realm belongs to, i.e. exactly the
+            // `BoaContext` this engine was built from (`BoaContext` is
+            // `repr(transparent)` over `Context`). The closure runs
+            // synchronously, so the reference does not outlive the call.
             let engine: &mut BoaContext =
                 unsafe { &mut *(context as *mut Context as *mut BoaContext) };
             behaviour(args, this.clone(), captures, engine).map_err(JsError::from_opaque)
@@ -333,6 +339,8 @@ pub fn context_as_ec(context: &mut boa_engine::Context) -> &mut dyn ExecutionCon
 
 /// Cast `&Context` to `&dyn ExecutionContext<BoaTypes>` (immutable).
 pub fn context_as_ec_ref(context: &boa_engine::Context) -> &dyn ExecutionContext<BoaTypes> {
+    // SAFETY: BoaContext has the same repr as Context (repr(transparent)), and
+    // the returned reference has the input's lifetime.
     unsafe { &*(context as *const boa_engine::Context as *const BoaContext) }
 }
 
@@ -342,6 +350,12 @@ pub fn context_as_ec_ref(context: &boa_engine::Context) -> &dyn ExecutionContext
 pub unsafe fn ec_to_ctx<'a>(
     ec: &'a mut dyn ExecutionContext<BoaTypes>,
 ) -> &'a mut boa_engine::Context {
+    // The cast is an unchecked reinterpretation, so check its precondition:
+    // `BoaContext` is the only implementor of `ExecutionContext<BoaTypes>`.
+    assert!(
+        ec.as_any().is::<BoaContext>(),
+        "ec_to_ctx called with an execution context that is not a BoaContext"
+    );
     // SAFETY: BoaContext is repr(transparent) over Context.
     unsafe {
         &mut *(ec as *mut dyn ExecutionContext<BoaTypes> as *mut BoaContext
@@ -351,50 +365,17 @@ pub unsafe fn ec_to_ctx<'a>(
 
 /// Internal host hooks used when building a context for the content layer.
 ///
-/// The execution context is stored on the hooks after the initial context is
-/// built, so the platform-object factory runs with the context available when
-/// the real realm's global object is created. The initial realm created by
-/// the builder has placeholder data; it is replaced by the realm built from
-/// the factory (see [`BoaContext::build`]).
-struct GlobalObjectHostHooks<D> {
-    /// Builds the realm's platform object (the Window) from the document the
-    /// content layer is setting up.
-    factory: std::cell::RefCell<Option<Box<dyn Fn(&mut dyn ExecutionContext<BoaTypes>) -> D>>>,
-    /// The execution context, stored after the initial context is built.
-    ec: std::cell::RefCell<Option<*mut dyn ExecutionContext<BoaTypes>>>,
-}
+/// Every realm's global object is created with placeholder platform data; the
+/// platform object that belongs to the initial realm is installed afterwards
+/// by [`BoaContext::build`], once the realm exists and the context is
+/// available as `&mut` (so no factory runs while the realm is being created).
+struct GlobalObjectHostHooks;
 
-impl<D> boa_engine::context::HostHooks for GlobalObjectHostHooks<D>
-where
-    D: std::any::Any + crate::gc::Trace + 'static,
-{
+impl boa_engine::context::HostHooks for GlobalObjectHostHooks {
     fn create_global_object(
         &self,
         intrinsics: &boa_engine::context::intrinsics::Intrinsics,
     ) -> JsObject {
-        let ec_pointer = *self.ec.borrow();
-        if let Some(ec_pointer) = ec_pointer {
-            // Take the factory so the closure (and anything it captures) is
-            // released after the realm's platform object has been built;
-            // leaving it in place keeps it alive for the context's lifetime.
-            let factory = self.factory.borrow_mut().take();
-            if let Some(factory) = factory {
-                // SAFETY: The execution context is stored once, after the
-                // initial context is built, and remains valid for the
-                // lifetime of this host hook. `create_global_object` runs
-                // synchronously inside realm creation, where no other borrow
-                // of the context is active.
-                let ec = unsafe { &mut *ec_pointer };
-                let data = factory(ec);
-                return JsObject::from_proto_and_data(
-                    intrinsics.constructors().object().prototype(),
-                    NativeDataWrapper(TraceableBox::new(data)),
-                );
-            }
-        }
-        // Initial builder realm (no execution context yet) or a realm created
-        // after the factory was consumed: the global object carries
-        // placeholder platform data.
         JsObject::from_proto_and_data(
             intrinsics.constructors().object().prototype(),
             NativeDataWrapper(TraceableBox::noop(Box::new(()))),
@@ -474,45 +455,58 @@ impl BoaContext {
     /// Build a Boa context with the realm's global object carrying the
     /// platform object produced by `factory`.
     ///
-    /// The initial realm created by the builder has placeholder platform
-    /// data; once the execution context exists it is stored on the host hooks
-    /// and the real realm is created with the factory, so `create_global_object`
-    /// can construct the Window with isolate-scoped proof.
+    /// The realm is created first (its global object carries placeholder
+    /// platform data), then the factory runs with the context as `&mut` and
+    /// its result is installed into the global object's data.
     pub fn build<D>(
-        factory: impl Fn(&mut dyn ExecutionContext<BoaTypes>) -> D + 'static,
+        factory: impl FnOnce(&mut dyn ExecutionContext<BoaTypes>) -> D,
     ) -> Result<Self, String>
     where
         D: std::any::Any + crate::gc::Trace + 'static,
     {
-        let hooks = std::rc::Rc::new(GlobalObjectHostHooks::<D> {
-            factory: std::cell::RefCell::new(Some(Box::new(factory))),
-            ec: std::cell::RefCell::new(None),
-        });
+        let hooks = std::rc::Rc::new(GlobalObjectHostHooks);
         let context = boa_engine::context::ContextBuilder::new()
-            .host_hooks(std::rc::Rc::clone(&hooks))
+            .host_hooks(hooks)
             .job_executor(std::rc::Rc::new(boa_engine::job::SimpleJobExecutor::new()))
             .build()
             .map_err(|error| error.to_string())?;
         let mut engine = BoaContext::from_context(context);
-        // Store the execution context on the host hooks so
-        // `create_global_object` can build the real platform object.
-        hooks
-            .ec
-            .replace(Some(&mut engine as *mut dyn ExecutionContext<BoaTypes>));
-        // Create the real realm: `Context::create_realm` runs
-        // `Realm::create` with the context's host hooks, whose stored
-        // execution context is now set, then installs the default global
-        // bindings on the new realm's global object.
+        // Create the realm: `Context::create_realm` runs `Realm::create` with
+        // the context's host hooks, which give the global object placeholder
+        // platform data, then installs the default global bindings.
         let realm = engine
             .context()
             .create_realm()
             .map_err(|error| error.to_string())?;
         engine.context().enter_realm(realm);
-        // The stored pointer is only valid for the realm creation above; any
-        // later use (e.g. a child realm built from the same hooks) falls back
-        // to the placeholder branch.
-        hooks.ec.replace(None);
+        // The realm is current, so the factory sees the new global object
+        // through the context. No other borrow of the context is live here.
+        let data = factory(&mut engine);
+        let global_object = engine.context().global_object();
+        engine.install_global_platform_data(&global_object, data)?;
         Ok(engine)
+    }
+
+    /// Replace the placeholder platform data of `global_object` with `data`.
+    ///
+    /// Called by [`Self::build`] after the realm exists, so the platform
+    /// object is built with the context as `&mut` and no borrow of it spans
+    /// the call. Fails when the global has no platform-data wrapper.
+    fn install_global_platform_data<D>(
+        &mut self,
+        global_object: &JsObject,
+        data: D,
+    ) -> Result<(), String>
+    where
+        D: std::any::Any + crate::gc::Trace + 'static,
+    {
+        let Some(mut wrapper) = global_object.downcast_mut::<NativeDataWrapper>() else {
+            return Err(String::from(
+                "realm global object has no platform-data wrapper",
+            ));
+        };
+        wrapper.0.replace(data);
+        Ok(())
     }
 
     /// Wrap an existing `Context` into a `BoaContext`.
@@ -2315,7 +2309,7 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         JsObject::from_proto_and_data(Some(prototype), wrapper)
     }
 
-    fn with_object_any(&self, object: &JsObject) -> Option<&dyn std::any::Any> {
+    fn with_object_any<'a>(&'a self, object: &'a JsObject) -> Option<PlatformData<'a>> {
         // Use try_borrow instead of downcast_ref to avoid panicking when
         // the JsObject's GcRefCell is already mutably borrowed (e.g. during
         // re-entrant property access inside Boa's VM).
@@ -2326,19 +2320,20 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         // SAFETY: we verified is::<NativeDataWrapper>(), so the data is
         // Object<NativeDataWrapper>.  GcRef::cast changes only the type
         // parameter, keeping the same Ref guard valid.
-        let cast: boa_gc::GcRef<'_, boa_engine::object::Object<NativeDataWrapper>> =
+        let guard: boa_gc::GcRef<'a, boa_engine::object::Object<NativeDataWrapper>> =
             unsafe { boa_gc::GcRef::cast(borrow) };
-        // SAFETY: The TraceableBox lives in the GC heap and outlives this
-        // function call.
-        Some(unsafe { &*(cast.data().0.as_any_ref() as *const dyn std::any::Any) })
+        let data: *const dyn std::any::Any = guard.data().0.as_any_ref();
+        // SAFETY: `data` points into the allocation `guard` borrows; the guard
+        // is held by the returned `PlatformData`.
+        Some(unsafe { PlatformData::new(guard, data) })
     }
 
-    fn with_object_any_mut(&mut self, object: &JsObject) -> Option<&mut dyn std::any::Any> {
-        let mut wrapper = object.downcast_mut::<NativeDataWrapper>()?;
-        // SAFETY: The TraceableBox lives in the JsObject's GC heap, which
-        // outlives this function call.  The RefMut guard is temporary but
-        // the pointed-to data remains valid as long as the JsObject is alive.
-        Some(unsafe { &mut *(wrapper.0.as_any_mut() as *mut dyn std::any::Any) })
+    fn with_object_any_mut<'a>(&'a mut self, object: &'a JsObject) -> Option<PlatformDataMut<'a>> {
+        let mut guard = object.downcast_mut::<NativeDataWrapper>()?;
+        let data: *mut dyn std::any::Any = guard.0.as_any_mut();
+        // SAFETY: `data` points into the allocation `guard` borrows; the guard
+        // is held by the returned `PlatformDataMut`.
+        Some(unsafe { PlatformDataMut::new(guard, data) })
     }
 
     fn new_type_error(&mut self, msg: &str) -> JsValue {
@@ -2517,23 +2512,34 @@ impl TraceableBox {
     /// The `Trace` bound implies `boa_gc::Trace` (its supertrait on the Boa
     /// backend), which supplies the tracing used by the stored vtables.
     pub fn new<T: std::any::Any + crate::gc::Trace>(data: T) -> Self {
+        // SAFETY: the vtable is built for this same `T` (see below), and the
+        // downcast checks the pairing before tracing.
         unsafe fn trace_impl<T: boa_gc::Trace + 'static>(
             data: &dyn std::any::Any,
             tracer: &mut boa_gc::Tracer,
         ) {
-            // SAFETY: The data was created with Box::new(data) where
-            // data: T, so downcast_ref<T>() always succeeds.
-            unsafe {
-                boa_gc::Trace::trace(data.downcast_ref::<T>().unwrap_unchecked(), tracer);
-            }
+            // The data was created with Box::new(data) where data: T, so the
+            // downcast must succeed; abort rather than trace through a
+            // mismatched type if the vtables were ever paired wrongly (a
+            // panic must not unwind through the collector).
+            let Some(data) = data.downcast_ref::<T>() else {
+                fatal_invariant!("Boa platform data type mismatch during tracing");
+            };
+            // SAFETY: the downcast proved the concrete type `T`.
+            unsafe { boa_gc::Trace::trace(data, tracer) }
         }
         unsafe fn trace_non_roots_impl<T: boa_gc::Trace + 'static>(data: &dyn std::any::Any) {
-            unsafe {
-                boa_gc::Trace::trace_non_roots(data.downcast_ref::<T>().unwrap_unchecked());
-            }
+            let Some(data) = data.downcast_ref::<T>() else {
+                fatal_invariant!("Boa platform data type mismatch during tracing");
+            };
+            // SAFETY: the downcast proved the concrete type `T`.
+            unsafe { boa_gc::Trace::trace_non_roots(data) }
         }
         fn finalize_impl<T: boa_gc::Trace + 'static>(data: &dyn std::any::Any) {
-            data.downcast_ref::<T>().unwrap().run_finalizer();
+            let Some(data) = data.downcast_ref::<T>() else {
+                fatal_invariant!("Boa platform data type mismatch during finalization");
+            };
+            data.run_finalizer();
         }
         TraceableBox {
             inner: Box::new(data),
@@ -2556,6 +2562,11 @@ impl TraceableBox {
         }
     }
 
+    /// Replace the wrapped data (and its trace/finalize function pointers).
+    pub(crate) fn replace<T: std::any::Any + crate::gc::Trace>(&mut self, data: T) {
+        *self = TraceableBox::new(data);
+    }
+
     /// Downcast the inner data to a concrete type.
     pub fn downcast_ref<T: std::any::Any>(&self) -> Option<&T> {
         self.inner.downcast_ref::<T>()
@@ -2576,12 +2587,24 @@ impl TraceableBox {
         &mut *self.inner
     }
 
-    /// Safe access: call the stored trace function pointer.
+    /// Call the stored trace function pointer.
+    ///
+    /// # Safety
+    ///
+    /// `self` must be the `TraceableBox` the function pointer was built for
+    /// (they are only ever created together, in `new`/`replace`).
     pub(crate) unsafe fn trace_data(&self, tracer: &mut boa_gc::Tracer) {
+        // SAFETY: the caller guarantees the pointer matches `self.inner`.
         unsafe { (self.trace_fn)(&*self.inner, tracer) }
     }
 
+    /// Call the stored `trace_non_roots` function pointer.
+    ///
+    /// # Safety
+    ///
+    /// As for [`Self::trace_data`].
     pub(crate) unsafe fn trace_non_roots_data(&self) {
+        // SAFETY: the caller guarantees the pointer matches `self.inner`.
         unsafe { (self.trace_non_roots_fn)(&*self.inner) }
     }
 
@@ -2872,6 +2895,8 @@ fn has_property_then_get_boolean(
 
 #[cfg(test)]
 mod tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
     use super::*;
     use crate::{ExecutionContext, JsTypes};
 
@@ -3055,5 +3080,49 @@ mod tests {
         let ab =
             JsEngine::allocate_array_buffer(&mut engine, intrinsics.array_buffer, 8, None).unwrap();
         let _ = ab;
+    }
+
+    #[test]
+    fn live_platform_data_blocks_the_objects_mutable_borrow() {
+        let engine = BoaContext::new();
+        let prototype = engine
+            .context
+            .intrinsics()
+            .constructors()
+            .object()
+            .prototype();
+        let object = JsObject::from_proto_and_data(
+            Some(prototype),
+            NativeDataWrapper(TraceableBox::noop(Box::new(7u32))),
+        );
+        let shared = engine
+            .with_object_any(&object)
+            .expect("the object carries platform data");
+        let blocked = catch_unwind(AssertUnwindSafe(|| {
+            object.downcast_mut::<NativeDataWrapper>().is_some()
+        }));
+        assert!(
+            blocked.is_err(),
+            "a live shared platform-data guard must block the object's mutable borrow"
+        );
+        drop(shared);
+        assert!(
+            object.downcast_mut::<NativeDataWrapper>().is_some(),
+            "the mutable borrow must succeed once the shared guard is dropped"
+        );
+    }
+
+    #[test]
+    fn build_installs_the_global_platform_data() {
+        let engine = BoaContext::build(|_| 42u32).expect("the realm must build");
+        let global = engine.context_ref().global_object();
+        let data = engine
+            .with_object_any(&global)
+            .expect("the realm global carries platform data");
+        assert_eq!(
+            data.downcast_ref::<u32>(),
+            Some(&42),
+            "the factory result must be installed on the realm global"
+        );
     }
 }

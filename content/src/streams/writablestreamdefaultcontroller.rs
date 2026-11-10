@@ -198,7 +198,7 @@ impl WritableStreamDefaultController {
         &self,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<WritableStream, Types> {
-        self.stream.borrow(ec).clone().ok_or_else(|| {
+        self.stream.get(ec).ok_or_else(|| {
             ec.new_type_error("WritableStreamDefaultController is not attached to a stream")
         })
     }
@@ -236,7 +236,7 @@ impl WritableStreamDefaultController {
         &self,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<AbortSignal, Types> {
-        self.abort_signal.borrow(ec).clone().ok_or_else(|| {
+        self.abort_signal.get(ec).ok_or_else(|| {
             ec.new_type_error("WritableStreamDefaultController is missing its abort signal")
         })
     }
@@ -302,7 +302,7 @@ impl WritableStreamDefaultController {
         &self,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<WriteAlgorithm, Types> {
-        self.write_algorithm.borrow(ec).clone().ok_or_else(|| {
+        self.write_algorithm.get(ec).ok_or_else(|| {
             ec.new_type_error("WritableStreamDefaultController is missing its write algorithm")
         })
     }
@@ -311,7 +311,7 @@ impl WritableStreamDefaultController {
         &self,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<CloseAlgorithm, Types> {
-        self.close_algorithm.borrow(ec).clone().ok_or_else(|| {
+        self.close_algorithm.get(ec).ok_or_else(|| {
             ec.new_type_error("WritableStreamDefaultController is missing its close algorithm")
         })
     }
@@ -320,7 +320,7 @@ impl WritableStreamDefaultController {
         &self,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<AbortAlgorithm, Types> {
-        self.abort_algorithm.borrow(ec).clone().ok_or_else(|| {
+        self.abort_algorithm.get(ec).ok_or_else(|| {
             ec.new_type_error("WritableStreamDefaultController is missing its abort algorithm")
         })
     }
@@ -569,7 +569,7 @@ impl WritableStreamDefaultController {
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<QueueEntryValue, Types> {
         self.queue
-            .borrow(ec)
+            .get(ec)
             .first()
             .map(|entry| entry.value.clone())
             .ok_or_else(|| ec.new_type_error("WritableStreamDefaultController queue is empty"))

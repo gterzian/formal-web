@@ -31,15 +31,15 @@ pub(crate) fn init_global_object_slot(
 }
 
 /// <https://html.spec.whatwg.org/#global-object>
-fn global_scope_or_error(ec: &dyn ExecutionContext<crate::js::Types>) -> Option<&GlobalScope> {
-    let global_obj = ec.realm_global_object();
-    ec.with_object_any(&global_obj).and_then(|data| {
+fn global_scope_or_error(
+    ec: &dyn ExecutionContext<crate::js::Types>,
+    global_object: &JsObject,
+) -> Option<GlobalScope> {
+    ec.with_object_any(global_object).and_then(|data| {
         if let Some(window) = data.downcast_ref::<Window>() {
-            Some(&window.global_scope)
-        } else if let Some(worker_global_scope) = worker_global_scope_from(data) {
-            Some(&worker_global_scope.global_scope)
+            Some(window.global_scope.clone())
         } else {
-            None
+            worker_global_scope_from(&*data).map(|scope| scope.global_scope.clone())
         }
     })
 }
@@ -58,10 +58,10 @@ fn worker_global_scope_from(data: &dyn std::any::Any) -> Option<&WorkerGlobalSco
 /// <https://html.spec.whatwg.org/#global-object>
 fn worker_global_scope_or_error(
     ec: &dyn ExecutionContext<crate::js::Types>,
-) -> Option<&WorkerGlobalScope> {
-    let global_obj = ec.realm_global_object();
-    ec.with_object_any(&global_obj)
-        .and_then(|data| worker_global_scope_from(data))
+    global_object: &JsObject,
+) -> Option<WorkerGlobalScope> {
+    ec.with_object_any(global_object)
+        .and_then(|data| worker_global_scope_from(&*data).cloned())
 }
 
 /// Access the realm's worker global scope, when the global object is a
@@ -74,7 +74,8 @@ pub(crate) fn with_worker_global_scope<R>(
         &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<R, crate::js::Types>,
 ) -> Completion<R, crate::js::Types> {
-    let Some(worker_global_scope) = worker_global_scope_or_error(ec) else {
+    let global_object = ec.realm_global_object();
+    let Some(worker_global_scope) = worker_global_scope_or_error(ec, &global_object) else {
         return Err(ec.new_type_error("global object is not a WorkerGlobalScope"));
     };
     let worker_global_scope = worker_global_scope.clone();
@@ -113,7 +114,8 @@ pub(crate) fn with_global_scope<R>(
     // Clone the handle out of the object registry so `f` can borrow `ec`
     // mutably; the clone shares all GC-managed state with the registered
     // platform object.
-    let Some(gs) = global_scope_or_error(ec) else {
+    let global_object = ec.realm_global_object();
+    let Some(gs) = global_scope_or_error(ec, &global_object) else {
         return Err(ec.new_type_error("global object is not a Window or WorkerGlobalScope"));
     };
     let gs = gs.clone();
@@ -163,7 +165,8 @@ pub(crate) fn resolve_element_object(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<<crate::js::Types as JsTypes>::JsObject, crate::js::Types> {
     // Read cache + document via immutable GlobalScope access.
-    let (cached, document) = match global_scope_or_error(ec).cloned() {
+    let global_object = ec.realm_global_object();
+    let (cached, document) = match global_scope_or_error(ec, &global_object) {
         Some(gs) => (gs.cached_node_object(node_id, ec), gs.document()),
         None => return Err(ec.new_type_error("global object is not a Window")),
     };
@@ -184,7 +187,7 @@ pub(crate) fn resolve_element_object(
     sync_event_handler_content_attributes(&document, node_id, &object, ec)?;
 
     // Cache the result (immutable GlobalScope access).
-    if let Some(gs) = global_scope_or_error(ec).cloned() {
+    if let Some(gs) = global_scope_or_error(ec, &global_object) {
         gs.cache_node_object(node_id, object.clone(), ec);
     }
 
@@ -196,7 +199,8 @@ pub(crate) fn object_for_existing_node(
     node_id: usize,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<<crate::js::Types as JsTypes>::JsObject, crate::js::Types> {
-    let cached = match global_scope_or_error(ec).cloned() {
+    let global_object = ec.realm_global_object();
+    let cached = match global_scope_or_error(ec, &global_object) {
         Some(gs) => gs.cached_node_object(node_id, ec),
         None => return Err(ec.new_type_error("global object is not a Window")),
     };
@@ -220,7 +224,8 @@ pub(crate) fn resolve_or_create_text_node_object(
     node_id: usize,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<<crate::js::Types as JsTypes>::JsObject, crate::js::Types> {
-    let cached = match global_scope_or_error(ec).cloned() {
+    let global_object = ec.realm_global_object();
+    let cached = match global_scope_or_error(ec, &global_object) {
         Some(gs) => gs.cached_node_object(node_id, ec),
         None => return Err(ec.new_type_error("global object is not a Window")),
     };
@@ -231,7 +236,7 @@ pub(crate) fn resolve_or_create_text_node_object(
     let object =
         create_interface_instance::<crate::js::Types, Node>(Node::new(document, node_id, ec), ec)?;
 
-    if let Some(gs) = global_scope_or_error(ec).cloned() {
+    if let Some(gs) = global_scope_or_error(ec, &global_object) {
         gs.cache_node_object(node_id, object.clone(), ec);
     }
 
@@ -471,8 +476,10 @@ fn target_is_anchor_with_href(
     target_object: &JsObject,
 ) -> bool {
     ec.with_object_any(target_object)
-        .and_then(|data| data.downcast_ref::<HTMLAnchorElement>())
-        .map(|anchor| anchor.href_attribute().is_some())
+        .and_then(|data| {
+            data.downcast_ref::<HTMLAnchorElement>()
+                .map(|anchor| anchor.href_attribute().is_some())
+        })
         .unwrap_or(false)
 }
 

@@ -8,6 +8,7 @@ use std::sync::Arc;
 use rusty_v8 as v8;
 
 use crate::TypedArrayElementType;
+use crate::v8_gc::{Traced, Visitor};
 use crate::{JsTypes, JsTypesWithRealm};
 
 #[derive(Clone, Debug)]
@@ -125,7 +126,59 @@ impl std::fmt::Debug for V8ArrayBufferState {
 /// clones share a single edge through the `Rc`.
 pub(crate) enum V8Handle<T> {
     Root(v8::Global<T>),
-    Edge(std::rc::Rc<v8::TracedReference<T>>),
+    Edge(std::rc::Rc<EdgeSlot<T>>),
+}
+
+/// A cppgc edge to a JS object plus the collection epoch in which the edge was
+/// created or last traced.
+///
+/// A `TracedReference` keeps its referent alive only while some cppgc object
+/// traces it (V8's documented requirement: do not read it once the referent
+/// has been reclaimed). The epoch records the last collection the edge is
+/// known to have survived, so `to_local` can refuse to read an edge that no
+/// marker has visited since a collection ran — a value moved or cloned out of
+/// traced storage, or one whose owning platform was collected.
+pub(crate) struct EdgeSlot<T> {
+    pub(crate) reference: v8::TracedReference<T>,
+    epoch: std::cell::Cell<u64>,
+    /// The owning isolate's collection counter. Stable and alive as long as
+    /// the isolate, which is also how long the edge's cppgc storage lives.
+    isolate_epoch: *const std::cell::Cell<u64>,
+}
+
+impl<T> EdgeSlot<T> {
+    /// The epoch the edge is known to have survived.
+    pub(crate) fn epoch(&self) -> u64 {
+        self.epoch.get()
+    }
+
+    /// The isolate's current epoch.
+    ///
+    /// # Safety
+    ///
+    /// The isolate that owns the epoch counter must still be alive; it is the
+    /// same isolate whose cppgc heap holds this edge.
+    pub(crate) unsafe fn current_epoch(&self) -> u64 {
+        // SAFETY: the caller guarantees the isolate is alive; the counter is
+        // boxed in the isolate's shared state, so its address is stable.
+        unsafe { &*self.isolate_epoch }.get()
+    }
+
+    /// Record that the edge survived a collection in the current epoch.
+    pub(crate) fn stamp(&self) {
+        // SAFETY: tracing runs on the isolate thread while the isolate is
+        // alive.
+        self.epoch.set(unsafe { self.current_epoch() });
+    }
+}
+
+impl<T> Traced for EdgeSlot<T> {
+    fn trace(&self, visitor: &mut Visitor) {
+        visitor.trace(&self.reference);
+        // The marker visited the edge, so its referent survived this
+        // collection: reads are valid until the next one.
+        self.stamp();
+    }
 }
 
 impl<T> Clone for V8Handle<T> {
@@ -149,7 +202,27 @@ impl<T> V8Handle<T> {
     ) -> Option<v8::Local<'s, T>> {
         match self {
             Self::Root(global) => Some(v8::Local::new(scope, global)),
-            Self::Edge(edge) => edge.get(scope),
+            Self::Edge(edge) => {
+                // SAFETY: the edge's cppgc storage lives in the isolate whose
+                // counter `isolate_epoch` points at, so the isolate is alive
+                // while this edge is.
+                self.assert_readable(unsafe { edge.current_epoch() });
+                edge.reference.get(scope)
+            }
+        }
+    }
+
+    /// Panics when this handle is a cppgc edge that no marker has visited
+    /// since the last full collection: the referent may already be reclaimed.
+    pub(crate) fn assert_readable(&self, current_epoch: u64) {
+        if let Self::Edge(edge) = self {
+            assert!(
+                edge.epoch() == current_epoch,
+                "reading a cppgc edge that no marker has visited since the last \
+                 collection (edge epoch {}, current epoch {current_epoch}): the referent may \
+                 already be reclaimed",
+                edge.epoch()
+            );
         }
     }
 
@@ -166,10 +239,21 @@ impl<T> V8Handle<T> {
     }
 
     /// Convert a rooted handle into a cppgc edge. Idempotent for edges.
-    pub(crate) fn store_edge(&mut self, scope: &mut v8::PinScope<'_, '_, ()>) {
+    pub(crate) fn store_edge(
+        &mut self,
+        scope: &mut v8::PinScope<'_, '_, ()>,
+        isolate_epoch: *const std::cell::Cell<u64>,
+    ) {
         if let Self::Root(global) = self {
             let local = v8::Local::new(scope, &*global);
-            *self = Self::Edge(std::rc::Rc::new(v8::TracedReference::new(scope, local)));
+            // SAFETY: the caller passes the owning isolate's counter, which is
+            // alive while the value is being stored into its traced storage.
+            let epoch = unsafe { &*isolate_epoch }.get();
+            *self = Self::Edge(std::rc::Rc::new(EdgeSlot {
+                reference: v8::TracedReference::new(scope, local),
+                epoch: std::cell::Cell::new(epoch),
+                isolate_epoch,
+            }));
         }
     }
 
@@ -180,8 +264,13 @@ impl<T> V8Handle<T> {
     /// the cppgc owner that traced the edge, and the value is not traced once
     /// it has been removed.
     pub(crate) fn make_strong(&mut self, scope: &mut v8::PinScope<'_, '_, ()>) {
-        if let Self::Edge(edge) = self {
-            let replacement = edge.get(scope).map(|local| v8::Global::new(scope, local));
+        if let Self::Edge(edge) = &*self {
+            // SAFETY: as in `to_local`, the isolate outlives the edge.
+            self.assert_readable(unsafe { edge.current_epoch() });
+            let replacement = edge
+                .reference
+                .get(scope)
+                .map(|local| v8::Global::new(scope, local));
             if let Some(global) = replacement {
                 *self = Self::Root(global);
             }

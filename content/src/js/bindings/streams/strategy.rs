@@ -132,11 +132,12 @@ fn get_byte_length_high_water_mark(
 ) -> Completion<JsValue, Types> {
     let obj = Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("ByteLengthQueuingStrategy receiver is not an object"))?;
-    if let Some(strategy) = ec
-        .with_object_any(&obj)
-        .and_then(|data| data.downcast_ref::<ByteLengthQueuingStrategy>())
-    {
-        return Ok(ec.value_from_number(strategy.high_water_mark()));
+    let high_water_mark = ec.with_object_any(&obj).and_then(|data| {
+        data.downcast_ref::<ByteLengthQueuingStrategy>()
+            .map(|strategy| strategy.high_water_mark())
+    });
+    if let Some(high_water_mark) = high_water_mark {
+        return Ok(ec.value_from_number(high_water_mark));
     }
     Err(ec.new_type_error("receiver is not a ByteLengthQueuingStrategy"))
 }
@@ -148,11 +149,12 @@ fn get_count_high_water_mark(
 ) -> Completion<JsValue, Types> {
     let obj = Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("CountQueuingStrategy receiver is not an object"))?;
-    if let Some(strategy) = ec
-        .with_object_any(&obj)
-        .and_then(|data| data.downcast_ref::<CountQueuingStrategy>())
-    {
-        return Ok(ec.value_from_number(strategy.high_water_mark()));
+    let high_water_mark = ec.with_object_any(&obj).and_then(|data| {
+        data.downcast_ref::<CountQueuingStrategy>()
+            .map(|strategy| strategy.high_water_mark())
+    });
+    if let Some(high_water_mark) = high_water_mark {
+        return Ok(ec.value_from_number(high_water_mark));
     }
     Err(ec.new_type_error("receiver is not a CountQueuingStrategy"))
 }

@@ -110,6 +110,9 @@ pub fn create_shared_texture(
     // Metal texture from the IOSurface. The descriptor's format must match
     // the surface pixel format ('RGBA' ↔ RGBA8Unorm); the dimensions are the
     // padded surface dimensions.
+    // SAFETY: the dimensions are clamped to at least 1 above, and the pixel
+    // format matches the surface's format ('RGBA'); the call returns an
+    // autoreleased descriptor.
     let descriptor = unsafe {
         MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
             MTLPixelFormat::RGBA8Unorm,
@@ -136,6 +139,10 @@ pub fn create_shared_texture(
         ProtocolObject::from_retained(metal_texture);
 
     // Import into wgpu on the same device the renderer composites with.
+    // SAFETY: the Metal texture was created from this surface and its
+    // dimensions were validated above; the descriptor's format matches the
+    // surface's `RGBA8Unorm` pixel format, so wgpu's hal texture wraps it
+    // without conversion.
     let hal_texture = unsafe {
         wgpu::hal::metal::Device::texture_from_raw(
             metal_texture,
@@ -150,6 +157,8 @@ pub fn create_shared_texture(
             },
         )
     };
+    // SAFETY: the hal texture was created on this device and declares the
+    // same format, extent, mip count and sample count as the descriptor.
     let texture = unsafe {
         device.create_texture_from_hal::<wgpu::hal::metal::Api>(
             hal_texture,
@@ -225,8 +234,20 @@ fn surface_properties(width: u32, height: u32) -> Retained<CFDictionary> {
         &is_global_value,
     ];
     let dictionary = CFDictionary::<CFString, CFNumber>::from_slices(&keys, &values);
-    // SAFETY: CFDictionary<K, V> is a transparent wrapper over CFDictionaryRef;
-    // the type parameters are phantom and the runtime content is CFString keys
-    // with CFNumber values, which is what IOSurfaceCreate expects.
+    // `CFDictionary<K, V>` is a transparent wrapper over `CFDictionaryRef`: the
+    // type parameters are phantom, so the transmute only changes them.
+    const {
+        assert!(
+            std::mem::size_of::<CFDictionary<CFString, CFNumber>>()
+                == std::mem::size_of::<CFDictionary>()
+        );
+        assert!(
+            std::mem::align_of::<CFDictionary<CFString, CFNumber>>()
+                == std::mem::align_of::<CFDictionary>()
+        );
+    }
+    // SAFETY: the layouts are identical (asserted above), and the runtime
+    // content is CFString keys with CFNumber values, which is what
+    // IOSurfaceCreate expects.
     unsafe { std::mem::transmute(dictionary) }
 }

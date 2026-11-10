@@ -17,11 +17,14 @@ pub(crate) fn document_creation_url(
 ) -> Completion<Url, crate::js::Types> {
     let object = platform_objects::document_object(ec)?;
     let missing_err = ec.new_type_error("document object is not a Document");
-    let document = ec
+    let creation_url = ec
         .with_object_any(&object)
-        .and_then(|any| any.downcast_ref::<Document>())
+        .and_then(|any| {
+            any.downcast_ref::<Document>()
+                .map(|document| document.creation_url.clone())
+        })
         .ok_or(missing_err)?;
-    Ok(document.creation_url.clone())
+    Ok(creation_url)
 }
 
 fn try_with_hyperlink_element_utils_ref<R>(

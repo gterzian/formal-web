@@ -396,3 +396,27 @@ fn the_drain_clears_node_id_keyed_registries() {
         "a new element must not inherit the dropped element's registry entry"
     );
 }
+
+#[cfg(v8_backend)]
+#[test]
+fn repeated_inner_html_assignments_do_not_accumulate_parser_roots() {
+    let mut test = TestProcess::new();
+    let baseline = test.node_count();
+    test.evaluate(
+        "globalThis.host = document.createElement('div');\
+         document.body.appendChild(host);\
+         for (let index = 0; index < 1000; index++) {\
+           host.innerHTML = '<span>x</span>';\
+         }",
+    );
+    test.settle();
+    test.collect_garbage();
+    test.settle();
+
+    let after = test.node_count();
+    assert!(
+        after <= baseline + 16,
+        "repeated innerHTML assignments must not accumulate parser fragment roots: \
+         baseline {baseline}, after {after}"
+    );
+}

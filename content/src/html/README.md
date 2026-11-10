@@ -6,7 +6,7 @@
 - `document_providers.rs` is blitz plumbing, not a spec algorithm: it holds `DocumentProviders`, its `ResourceHooks` impl (which reports blitz's subresource requests), the `AssetRequest` those fetches carry, and `install_resource`, which installs a fetched response into the document.  A function carrying a spec anchor belongs in the module that owns that spec section, not here.
 - `html_dom_tree.rs` holds the document-level iframe post-connection and removing entry points run at document load completion and document destruction; the iframe's HTML element steps do not run from the `MutationHooks` hooks.
 - Keep iframe bindings and iframe processing algorithms together in `content/src/html/html_iframe_element.rs` as free functions over content-process state (`ContentProcess`).
-- Keep helper names aligned with the corresponding HTML algorithm anchors, and prefer explicit error returns or `debug_assert!` plus safe early returns over sentinel ids.
+- Keep helper names aligned with the corresponding HTML algorithm anchors, and prefer explicit error returns over sentinel ids.  `debug_assert!` is for spec-state assertions (`Assert:` steps, DOM bookkeeping) that a release build may skip; an unsafe precondition is asserted in every build (see `AGENTS.md`, "Unsafe-code discipline").
 - Iframe work is driven by the DOM mutation hooks in `dom_trees.rs`: a
   connected, changed or removed iframe records its HTML element steps, and the
   content process runs them at the end of the current operation.  The
@@ -18,7 +18,10 @@
 `ContentProcess::drain_detached_nodes` frees the Blitz slab entries of detached
 subtrees once no node in them has a live wrapper.  It runs at the end of every
 operation that also runs `drain_pending_iframe_steps`, with no outstanding
-borrow of a Blitz document, and it is the only place content frees nodes.
+borrow of a Blitz document.  It is the only place content frees nodes reached
+from a DOM operation; the innerHTML parser frees its own parser-internal
+fragment root directly (`JsTreeSink::parse_inner_html_into_mutator`), since no
+wrapper can address it.
 
 `remove`, `removeChild`, `textContent =`, `innerHTML =`, and `document.title =`
 detach with `DocumentMutator::remove_node` and record each detached root with

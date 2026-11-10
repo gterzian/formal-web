@@ -112,12 +112,17 @@ where
     let process_handle = bek_sys::launch_process(kind.to_bek_kind(), Some(&bundle_id))
         .map_err(IpcError::Transport)?;
 
+    // SAFETY: `process_handle` is the live handle `launch_process` just
+    // returned; the shim either borrows it for the call or returns an owned
+    // connection reference (null-checked by `from_raw` below).
     let raw_connection =
         unsafe { bek_sys::make_xpc_connection(process_handle, kind.to_bek_kind()) }
             .map_err(IpcError::Transport)?;
 
     // The connection comes from BrowserEngineKit, but everything downstream
     // is the same libxpc machinery the transport always used.
+    // SAFETY: BrowserEngineKit hands back a retained `xpc_connection_t`; the
+    // wrapper takes ownership of that reference and releases it on drop.
     let connection = unsafe {
         XpcConnection::from_raw(
             raw_connection as xpc_sys::xpc_connection_t,
@@ -203,6 +208,9 @@ where
     let (crossbeam_tx, crossbeam_rx) = unbounded::<IpcIncoming<In>>();
     let (peer_tx, peer_rx) = std::sync::mpsc::sync_channel::<XpcConnection>(1);
 
+    // SAFETY: a null name creates an anonymous listener connection, which is
+    // what an endpoint offer needs; libxpc returns a retained reference that
+    // the wrapper owns. `from_raw` rejects a null result.
     let raw_listener = unsafe { xpc_sys::xpc_connection_create(std::ptr::null(), queue.inner) };
     let listener = unsafe { XpcConnection::from_raw(raw_listener, queue) };
 
@@ -261,6 +269,9 @@ where
 {
     let queue = xpc_sys::create_queue("com.formal-web.bek-accepted-endpoint");
 
+    // SAFETY: `endpoint.as_raw()` is the live endpoint this function borrows;
+    // libxpc returns a retained connection reference (null-checked below) that
+    // the wrapper owns.
     let raw_connection =
         unsafe { xpc_sys::xpc_connection_create_from_endpoint(endpoint.as_raw(), queue.inner) };
     if raw_connection.is_null() {
@@ -269,6 +280,8 @@ where
         ));
     }
 
+    // SAFETY: the reference was just created and is non-null (checked above);
+    // the wrapper takes ownership of it.
     let connection = unsafe { XpcConnection::from_raw(raw_connection, queue) };
 
     let (crossbeam_tx, crossbeam_rx) = unbounded();

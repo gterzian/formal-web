@@ -216,6 +216,8 @@ where
     finished: Rc<Cell<bool>>,
 }
 
+// SAFETY: with neither engine feature compiled there is no GC to trace; the
+// impl only satisfies the bound.
 #[cfg(all(not(feature = "boa"), not(feature = "v8")))]
 unsafe impl<T: AsyncValueIterable + 'static> js_engine::gc::Trace for DefaultAsyncIterator<T> {}
 #[cfg(all(not(feature = "boa"), not(feature = "v8")))]
@@ -223,6 +225,8 @@ impl<T: AsyncValueIterable + 'static> js_engine::gc::Finalize for DefaultAsyncIt
 
 // V8: the iterator walks its traced fields; the promise cell keeps its JS
 // object alive while this iterator is traced.
+// SAFETY: `trace` visits every traced field (target, state, promise cell)
+// exactly once; `store`/`make_strong` delegate to them.
 #[cfg(feature = "v8")]
 unsafe impl<T: AsyncValueIterable + 'static> js_engine::gc::Trace for DefaultAsyncIterator<T> {
     unsafe fn trace(&self, visitor: &mut js_engine::v8_gc::Visitor) {
@@ -579,8 +583,7 @@ where
     let obj = ec.to_object(this.clone())?;
     let cloned = ec
         .with_object_any(&obj)
-        .and_then(|data| data.downcast_ref::<DefaultAsyncIterator<T>>())
-        .cloned();
+        .and_then(|data| data.downcast_ref::<DefaultAsyncIterator<T>>().cloned());
     cloned.ok_or_else(|| ec.new_type_error("object is not a default asynchronous iterator"))
 }
 

@@ -107,7 +107,7 @@ impl WorkerGlobalScope {
     ) -> Completion<WorkerLocation, Types> {
         // The location attribute must return the WorkerLocation object whose
         // associated WorkerGlobalScope object is the WorkerGlobalScope object.
-        if let Some(location_object) = self.location_object.borrow(ec).clone() {
+        if let Some(location_object) = self.location_object.get(ec) {
             let location = ec
                 .with_object_any(&location_object)
                 .and_then(|data| data.downcast_ref::<WorkerLocation>().cloned())
@@ -134,7 +134,7 @@ impl WorkerGlobalScope {
         // The navigator attribute must return the WorkerNavigator object
         // whose associated WorkerGlobalScope object is the WorkerGlobalScope
         // object.
-        if let Some(navigator_object) = self.navigator_object.borrow(ec).clone() {
+        if let Some(navigator_object) = self.navigator_object.get(ec) {
             let navigator = ec
                 .with_object_any(&navigator_object)
                 .and_then(|data| data.downcast_ref::<WorkerNavigator>().cloned())

@@ -235,7 +235,7 @@ impl ReadableStreamDefaultController {
         &self,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<ReadableStream, Types> {
-        self.stream.borrow(ec).clone().ok_or_else(|| {
+        self.stream.get(ec).ok_or_else(|| {
             ec.new_type_error("ReadableStreamDefaultController is missing its stream")
         })
     }
@@ -537,15 +537,9 @@ impl ReadableStreamDefaultController {
             readable_stream_fulfill_read_request(stream, chunk, false, ec)?;
         } else {
             // Step 4.1: "Let result be the result of performing controller.[[strategySizeAlgorithm]], passing in chunk, and interpreting the result as a completion record."
-            let size_algorithm =
-                self.strategy_size_algorithm
-                    .borrow(ec)
-                    .clone()
-                    .ok_or_else(|| {
-                        ec.new_type_error(
-                            "ReadableStreamDefaultController is missing its size algorithm",
-                        )
-                    })?;
+            let size_algorithm = self.strategy_size_algorithm.get(ec).ok_or_else(|| {
+                ec.new_type_error("ReadableStreamDefaultController is missing its size algorithm")
+            })?;
             let chunk_size = match size_algorithm.size(&chunk, ec) {
                 Ok(chunk_size) => chunk_size,
                 Err(error) => {

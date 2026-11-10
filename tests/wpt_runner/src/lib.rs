@@ -2528,6 +2528,8 @@ fn force_kill_wptserve(child: &mut Child) -> Result<(), String> {
 #[cfg(unix)]
 fn send_signal_to_wptserve_group(pid: u32, signal: libc::c_int) -> Result<(), String> {
     let process_group = -(pid as libc::pid_t);
+    // SAFETY: `pid` is the spawned wptserve child, whose process group exists
+    // until it is reaped, and `signal` is a valid signal number.
     let result = unsafe { libc::kill(process_group, signal) };
     if result == 0 {
         return Ok(());

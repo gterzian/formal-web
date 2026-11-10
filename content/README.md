@@ -25,27 +25,42 @@ patterns.
 ## GcCell borrow discipline
 
 Domain code must **never call an engine method (any `ec` operation) while a
-shared `GcCell` borrow guard (`borrow`) is live**.  A mutable guard
-(`borrow_mut`) holds the execution context for its lifetime, so the compiler
-rejects an `ec` call while it is live; a shared guard does not hold it, so
-the rule is on the author there.  The rule is engine-independent: an engine
-call may allocate, and on the V8 backend an allocation can trigger a cppgc
-trace that reads the cell while the borrow is live. A *mutable* borrow being
-traced is an aliasing violation (undefined behavior); a *shared* borrow being
-traced is legal aliasing, but the rule still forbids it so content code never
-has to know which engine operations allocate (and a shared-borrow site can
-silently become a mutable-borrow site later). The approved patterns are:
+`GcCell` borrow guard (`borrow` or `borrow_mut`) is live**.  An engine call
+may allocate, and on the V8 backend an allocation can trigger a cppgc trace
+that reads the cell while the borrow is live. A *mutable* borrow being traced
+is an aliasing violation (undefined behavior); a *shared* borrow being traced
+is legal aliasing, but the rule still forbids it so content code never has to
+know which engine operations allocate (and a shared-borrow site can silently
+become a mutable-borrow site later).
 
-- **Clone out, write back** — `let mut value = cell.borrow(ec).clone();` …
-  use the owned value (mutably, across `ec` calls) …
-  `cell.set(value, ec);`.
-- **Scope the borrow** — hold the guard only for the section that touches
-the cell, and drop it before any `ec` call (the mutable guard's
-context-holding lifetime makes that drop mandatory).
+On the V8 backend the guard's lifetime is tied to the `ec` borrow
+(`GcCell::borrow<'a>(&'a self, ec: &'a dyn ExecutionContext<…>)`), so the
+compiler rejects an `ec` call while any guard is alive and the rule needs no
+reviewer attention.  The Boa backend's guard holds no `ec` borrow (its cells
+are `Gc<GcRefCell<T>>`), so there the rule is on the author.  The approved
+patterns are:
+
+- **Clone out, write back** — `let mut value = cell.get(ec);` … use the owned
+  value (mutably, across `ec` calls) … `cell.set(value, ec);`.  `get` returns
+  the value with its edges rooted, so the copy stays valid while engine code
+  runs.
+- **Scope the borrow** — hold the guard only for the section that touches the
+  cell, and drop it before any `ec` call.  Typically that means cloning the
+  needed fields into locals (`let listeners = cell.borrow(ec).clone();`) and
+  running the engine calls on the locals.
 
 Writing a rooted handle through a mutable guard is safe: dropping the guard
 runs `Trace::store` over the cell's contents, converting those handles into
 cppgc edges before the borrow ends.
+
+Platform data reaches the engine through the same discipline:
+`with_object_any`/`with_object_any_mut` return a guard that holds the
+backend's borrow of the platform object (a `GcRef`/`GcRefMut` on Boa, a
+reader count and writer flag on V8) for as long as the data is borrowed, and
+it borrows both the object and the context.  Clone what is needed into an
+owned value inside the closure/locals and write it back through
+`with_object_any_mut` instead of holding a platform-data reference across an
+engine call.
 
 **Removing a value from a cell.**  A value that leaves a cell — a queued
 request dequeued, a slot taken, a resolver pair consumed — must be removed
@@ -69,6 +84,12 @@ cleared is cloned and rooted with `js_engine::gc::make_strong_traced` before
 the slot is cleared, and a field mutated to a fresh JS value and written back
 gets `js_engine::gc::store_traced` from `with_cloned_platform_mut` (see
 `content/src/js/downcast.rs`).
+
+To examine a subset of a cell's contents before an engine call, collect the
+needed values under a shared borrow and root them with
+`make_strong_traced`, instead of cloning the whole container with `get`
+(`EventTarget::add_event_listener`/`remove_event_listener_entry` do this to
+avoid rooting the entire listener list on every call).
 
 Platform-object native data follows the same clone-out/write-back rule:
 `with_object_any_mut` ties its `&mut dyn Any` to `&mut ec`, so an operation

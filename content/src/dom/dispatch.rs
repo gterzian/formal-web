@@ -66,8 +66,7 @@ pub(crate) fn fire_event(
     // data, and the reflector was set automatically by create_interface_instance.
     let event: Event = ec
         .with_object_any(&event_object)
-        .and_then(|data| data.downcast_ref::<Event>())
-        .cloned()
+        .and_then(|data| data.downcast_ref::<Event>().cloned())
         .ok_or_else(|| ec.new_type_error("event_object is not an Event"))?;
 
     // Step 5: Return the result of dispatching event at target, with

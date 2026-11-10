@@ -17,6 +17,8 @@ pub type dispatch_queue_t = *mut c_void;
 // XPC type constants for runtime type checks.
 // Comparing xpc_get_type() result against these avoids API misuse (calling
 // dictionary functions on connection/error objects).
+// SAFETY: these libxpc type constants are exported by the linked framework;
+// the declarations state their types.
 unsafe extern "C" {
     static _xpc_type_connection: c_void;
     static _xpc_type_error: c_void;
@@ -25,10 +27,20 @@ unsafe extern "C" {
     static _xpc_type_endpoint: c_void;
 }
 
+/// Listener and peer callbacks invoked by libxpc.
+///
+/// # Safety
+///
+/// libxpc invokes these with the event object it received and the context
+/// pointer installed alongside the callback; the function pointer must stay
+/// valid for as long as the listener or peer is registered.
 pub type XpcListenerEventCallback = unsafe extern "C" fn(event: xpc_object_t, context: *mut c_void);
 pub type XpcPeerMessageCallback =
     unsafe extern "C" fn(dictionary: xpc_object_t, context: *mut c_void);
 
+// SAFETY: the declarations mirror the `fw_xpc_*` trampolines implemented by
+// the linked shim; pointer and context arguments are the caller's to keep
+// alive for the duration of each call.
 unsafe extern "C" {
     #[cfg(target_os = "macos")]
     pub fn fw_xpc_create_listener(
@@ -67,6 +79,8 @@ unsafe extern "C" {
     pub fn fw_xpc_resume(connection: xpc_connection_t);
     pub fn fw_xpc_cancel(connection: xpc_connection_t);
     #[cfg(target_os = "macos")]
+    // SAFETY: libxpc invokes this handler with a valid connection and the
+    // context pointer installed with it.
     pub fn fw_xpc_run_service(
         handler: Option<unsafe extern "C" fn(xpc_connection_t, *mut c_void)>,
         context: *mut c_void,
@@ -74,6 +88,8 @@ unsafe extern "C" {
     // dispatch_main is not declared — we use a custom xpc_main wrapper.
 }
 
+// SAFETY: the declarations mirror the libxpc entry points exported by the
+// linked framework; object and connection arguments are libxpc references.
 unsafe extern "C" {
     pub fn xpc_retain(object: xpc_object_t) -> xpc_object_t;
     pub fn xpc_release(object: xpc_object_t);
@@ -145,6 +161,7 @@ impl XpcObject {
     /// `inner` must be a valid XPC object reference that the caller owns;
     /// the wrapper releases it on drop.
     pub unsafe fn from_raw(inner: xpc_object_t) -> Self {
+        assert!(!inner.is_null(), "XPC object reference is null");
         XpcObject { inner }
     }
     pub fn as_raw(&self) -> xpc_object_t {
@@ -153,6 +170,8 @@ impl XpcObject {
     /// Create a bool object, e.g. as the expected value of a
     /// peer-entitlement requirement.
     pub fn new_bool(value: bool) -> Self {
+        // SAFETY: `xpc_bool_create` returns a new +1 object, and `from_raw`
+        // takes ownership of that reference (it asserts non-null).
         unsafe { XpcObject::from_raw(xpc_bool_create(value)) }
     }
     pub fn into_raw(self) -> xpc_object_t {
@@ -163,11 +182,13 @@ impl XpcObject {
 }
 impl Drop for XpcObject {
     fn drop(&mut self) {
+        // SAFETY: the wrapper owns exactly one reference to `self.inner` (from `from_raw`/`retain`) and releases it here, once.
         unsafe { xpc_release(self.inner) }
     }
 }
 impl Clone for XpcObject {
     fn clone(&self) -> Self {
+        // SAFETY: the wrapper owns one reference to `self.inner`; a clone takes a second retained reference.
         unsafe {
             XpcObject {
                 inner: xpc_retain(self.inner),
@@ -181,6 +202,7 @@ pub struct XpcDictionary {
 }
 impl XpcDictionary {
     pub fn new() -> Self {
+        // SAFETY: libxpc returns a +1 retained dictionary; `from_raw` takes ownership (and rejects null).
         unsafe {
             XpcDictionary {
                 object: XpcObject::from_raw(xpc_dictionary_create(
@@ -216,12 +238,15 @@ impl XpcDictionary {
     pub fn set_string(&mut self, key: &str, value: &str) {
         let ck = CString::new(key).unwrap();
         let cv = CString::new(value).unwrap();
+        // SAFETY: the receiver is a retained dictionary owned by this wrapper,
+        // and both C strings outlive the call.
         unsafe {
             xpc_dictionary_set_string(self.object.as_raw(), ck.as_ptr(), cv.as_ptr());
         }
     }
     pub fn get_string(&self, key: &str) -> Option<String> {
         let ck = CString::new(key).unwrap();
+        // SAFETY: the receiver is a retained dictionary owned by this wrapper; the returned string borrows the dictionary.
         unsafe {
             let p = xpc_dictionary_get_string(self.object.as_raw(), ck.as_ptr());
             if p.is_null() {
@@ -233,12 +258,14 @@ impl XpcDictionary {
     }
     pub fn set_int64(&mut self, key: &str, value: i64) {
         let ck = CString::new(key).unwrap();
+        // SAFETY: the receiver is a retained `xpc_dictionary_t` owned by this wrapper, and the C strings and buffers passed to libxpc outlive the call.
         unsafe {
             xpc_dictionary_set_int64(self.object.as_raw(), ck.as_ptr(), value);
         }
     }
     pub fn get_int64(&self, key: &str) -> Option<i64> {
         let ck = CString::new(key).unwrap();
+        // SAFETY: the receiver is a retained `xpc_dictionary_t` owned by this wrapper, and the C strings and buffers passed to libxpc outlive the call.
         unsafe {
             if xpc_dictionary_get_value(self.object.as_raw(), ck.as_ptr()).is_null() {
                 None
@@ -249,12 +276,14 @@ impl XpcDictionary {
     }
     pub fn set_uint64(&mut self, key: &str, value: u64) {
         let ck = CString::new(key).unwrap();
+        // SAFETY: the receiver is a retained `xpc_dictionary_t` owned by this wrapper, and the C strings and buffers passed to libxpc outlive the call.
         unsafe {
             xpc_dictionary_set_uint64(self.object.as_raw(), ck.as_ptr(), value);
         }
     }
     pub fn get_uint64(&self, key: &str) -> Option<u64> {
         let ck = CString::new(key).unwrap();
+        // SAFETY: the receiver is a retained `xpc_dictionary_t` owned by this wrapper, and the C strings and buffers passed to libxpc outlive the call.
         unsafe {
             if xpc_dictionary_get_value(self.object.as_raw(), ck.as_ptr()).is_null() {
                 None
@@ -265,12 +294,14 @@ impl XpcDictionary {
     }
     pub fn set_bool(&mut self, key: &str, value: bool) {
         let ck = CString::new(key).unwrap();
+        // SAFETY: the receiver is a retained `xpc_dictionary_t` owned by this wrapper, and the C strings and buffers passed to libxpc outlive the call.
         unsafe {
             xpc_dictionary_set_bool(self.object.as_raw(), ck.as_ptr(), value);
         }
     }
     pub fn get_bool(&self, key: &str) -> Option<bool> {
         let ck = CString::new(key).unwrap();
+        // SAFETY: the receiver is a retained `xpc_dictionary_t` owned by this wrapper, and the C strings and buffers passed to libxpc outlive the call.
         unsafe {
             if xpc_dictionary_get_value(self.object.as_raw(), ck.as_ptr()).is_null() {
                 None
@@ -281,6 +312,7 @@ impl XpcDictionary {
     }
     pub fn set_data(&mut self, key: &str, value: &[u8]) {
         let ck = CString::new(key).unwrap();
+        // SAFETY: the receiver is a retained `xpc_dictionary_t` owned by this wrapper, and the C strings and buffers passed to libxpc outlive the call.
         unsafe {
             xpc_dictionary_set_data(
                 self.object.as_raw(),
@@ -292,6 +324,7 @@ impl XpcDictionary {
     }
     pub fn get_data(&self, key: &str) -> Option<&[u8]> {
         let ck = CString::new(key).unwrap();
+        // SAFETY: the receiver is a retained dictionary owned by this wrapper; the returned bytes borrow the dictionary.
         unsafe {
             let mut l = 0;
             let p = xpc_dictionary_get_data(self.object.as_raw(), ck.as_ptr(), &mut l);
@@ -304,18 +337,21 @@ impl XpcDictionary {
     }
     pub fn set_shmem(&mut self, key: &str, shmem: &XpcSharedMemory) {
         let ck = CString::new(key).unwrap();
+        // SAFETY: the receiver is a retained `xpc_dictionary_t` owned by this wrapper, and the C strings and buffers passed to libxpc outlive the call.
         unsafe {
             xpc_dictionary_set_value(self.object.as_raw(), ck.as_ptr(), shmem.object.as_raw());
         }
     }
     pub fn set_dict(&mut self, key: &str, value: &XpcDictionary) {
         let ck = CString::new(key).unwrap();
+        // SAFETY: the receiver is a retained `xpc_dictionary_t` owned by this wrapper, and the C strings and buffers passed to libxpc outlive the call.
         unsafe {
             xpc_dictionary_set_value(self.object.as_raw(), ck.as_ptr(), value.object.as_raw());
         }
     }
     pub fn get_dict(&self, key: &str) -> Option<XpcDictionary> {
         let ck = CString::new(key).unwrap();
+        // SAFETY: the receiver is a retained dictionary owned by this wrapper; the returned value borrows it.
         unsafe {
             let v = xpc_dictionary_get_value(self.object.as_raw(), ck.as_ptr());
             if v.is_null() {
@@ -331,6 +367,7 @@ impl XpcDictionary {
     /// `key`. `xpc_dictionary_set_value` retains the object.
     pub fn set_object(&mut self, key: &str, object: &XpcObject) {
         let ck = CString::new(key).unwrap();
+        // SAFETY: the receiver is a retained `xpc_dictionary_t` owned by this wrapper, and the C strings and buffers passed to libxpc outlive the call.
         unsafe {
             xpc_dictionary_set_value(self.object.as_raw(), ck.as_ptr(), object.as_raw());
         }
@@ -339,6 +376,7 @@ impl XpcDictionary {
     /// caller).
     pub fn get_object(&self, key: &str) -> Option<XpcObject> {
         let ck = CString::new(key).unwrap();
+        // SAFETY: the receiver is a retained dictionary owned by this wrapper; the returned value borrows it.
         unsafe {
             let v = xpc_dictionary_get_value(self.object.as_raw(), ck.as_ptr());
             if v.is_null() {
@@ -353,6 +391,7 @@ impl XpcDictionary {
     /// travel as dictionary values.
     pub fn set_endpoint(&mut self, key: &str, endpoint: &XpcEndpoint) {
         let ck = CString::new(key).unwrap();
+        // SAFETY: the receiver is a retained `xpc_dictionary_t` owned by this wrapper, and the C strings and buffers passed to libxpc outlive the call.
         unsafe {
             xpc_dictionary_set_value(self.object.as_raw(), ck.as_ptr(), endpoint.as_raw());
         }
@@ -361,6 +400,7 @@ impl XpcDictionary {
     /// there is actually an XPC endpoint.
     pub fn get_endpoint(&self, key: &str) -> Option<XpcEndpoint> {
         let object = self.get_object(key)?;
+        // SAFETY: the receiver is a retained dictionary owned by this wrapper; the static type objects are valid for the process lifetime.
         unsafe {
             if std::ptr::eq(
                 xpc_get_type(object.as_raw()),
@@ -376,6 +416,7 @@ impl XpcDictionary {
     /// actually an XPC shmem object.
     pub fn get_shmem(&self, key: &str) -> Option<XpcSharedMemory> {
         let object = self.get_object(key)?;
+        // SAFETY: the receiver is a retained dictionary owned by this wrapper; the static type objects are valid for the process lifetime.
         unsafe {
             if std::ptr::eq(
                 xpc_get_type(object.as_raw()),
@@ -401,6 +442,7 @@ pub struct XpcEndpoint {
 impl XpcEndpoint {
     /// Wrap an anonymous listener connection as an endpoint.
     pub fn from_connection(connection: &XpcConnection) -> Self {
+        // SAFETY: the endpoint is the retained `xpc_endpoint_t` this function owns and passes on; `from_raw` takes the reference.
         unsafe {
             XpcEndpoint {
                 object: XpcObject::from_raw(xpc_endpoint_create(connection.as_raw())),
@@ -424,25 +466,11 @@ pub struct XpcSharedMemory {
     needs_munmap: bool,
 }
 impl XpcSharedMemory {
-    /// Wrap an existing writable memory region as an XPC shared-memory
-    /// object for transfer in a message. The caller keeps ownership of the
-    /// region; releasing the object does not unmap it.
-    ///
-    /// # Safety
-    ///
-    /// `ptr` must point to `size` bytes of valid, page-backed memory that
-    /// stays alive until the message carrying this object has been sent.
-    pub unsafe fn wrap(ptr: *mut c_void, size: usize) -> Self {
-        unsafe {
-            XpcSharedMemory {
-                object: XpcObject::from_raw(xpc_shmem_create(ptr, size)),
-                ptr: ptr as *mut u8,
-                size,
-                needs_munmap: false,
-            }
-        }
-    }
     pub fn allocate(size: usize) -> Result<Self, String> {
+        // SAFETY: `mmap` returns a fresh anonymous mapping of `size` bytes (or
+        // `MAP_FAILED`, checked below); `xpc_shmem_create` takes ownership of
+        // that mapping; the `munmap` in the error path releases the mapping
+        // `xpc_shmem_create` rejected.
         unsafe {
             let p = libc::mmap(
                 ptr::null_mut(),
@@ -480,6 +508,8 @@ impl XpcSharedMemory {
         let mut region: *mut c_void = ptr::null_mut();
         // xpc_shmem_map writes the mapped region into the out-param and
         // returns its length.
+        // SAFETY: the caller guarantees `object` is a valid XPC shmem object
+        // that outlives the returned mapping; the out-param is a live local.
         let size = unsafe { xpc_shmem_map(object.as_raw(), &mut region) };
         if region.is_null() {
             return Err("xpc_shmem_map failed".into());
@@ -492,9 +522,14 @@ impl XpcSharedMemory {
         })
     }
     pub fn as_slice(&self) -> &[u8] {
+        assert!(!self.ptr.is_null(), "XPC shared-memory mapping is null");
+        // SAFETY: the pointer and length come from a successful
+        // `xpc_shmem_create`/`xpc_shmem_map`; the mapping lives with `self`.
         unsafe { std::slice::from_raw_parts(self.ptr, self.size) }
     }
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        assert!(!self.ptr.is_null(), "XPC shared-memory mapping is null");
+        // SAFETY: as in `as_slice`; `&mut self` makes this the only view.
         unsafe { std::slice::from_raw_parts_mut(self.ptr, self.size) }
     }
     pub fn size(&self) -> usize {
@@ -504,6 +539,8 @@ impl XpcSharedMemory {
 impl Drop for XpcSharedMemory {
     fn drop(&mut self) {
         if self.needs_munmap {
+            // SAFETY: `needs_munmap` is set only for a `map_object` mapping,
+            // whose pointer and length are the ones `xpc_shmem_map` returned.
             unsafe {
                 libc::munmap(self.ptr as *mut libc::c_void, self.size);
             }
@@ -516,6 +553,7 @@ impl Drop for XpcSharedMemory {
 /// A type-erased closure pointer and its cleanup function.
 struct ContextEntry {
     ptr: *mut c_void,
+    // SAFETY: the cleanup function is the one paired with the pointer in its `HandlerEntry`.
     cleanup: unsafe fn(*mut c_void),
 }
 
@@ -543,6 +581,7 @@ struct SharedContext {
 }
 
 impl SharedContext {
+    // SAFETY: `ptr` and `cleanup` are the pair the caller boxed for `HandlerEntry`; cleanup runs exactly once, on that entry's drop.
     fn new(ptr: *mut c_void, cleanup: unsafe fn(*mut c_void)) -> Self {
         SharedContext {
             entries: Arc::new(Mutex::new(Some(ContextEntry { ptr, cleanup }))),
@@ -560,13 +599,17 @@ impl SharedContext {
     }
 }
 
+// SAFETY: the pointer was produced by `Box::into_raw` in `HandlerEntry::new` and is freed exactly once, here.
 unsafe fn cleanup_msg_handler(ptr: *mut c_void) {
+    // SAFETY: the pointer was produced by `Box::into_raw` in `HandlerEntry::new` and is freed exactly once, here.
     unsafe {
         let _ = Box::from_raw(ptr as *mut Box<dyn Fn(XpcMessageEvent) + Send>);
     }
 }
 
+// SAFETY: the pointer was produced by `Box::into_raw` in `HandlerEntry::new` and is freed exactly once, here.
 unsafe fn cleanup_listener_handler(ptr: *mut c_void) {
+    // SAFETY: the pointer was produced by `Box::into_raw` in `HandlerEntry::new` and is freed exactly once, here.
     unsafe {
         let _ = Box::from_raw(ptr as *mut Box<dyn Fn(XpcListenerEvent) + Send>);
     }
@@ -576,6 +619,11 @@ unsafe fn cleanup_listener_handler(ptr: *mut c_void) {
 /// Checks the XPC type before calling dictionary functions to avoid
 /// API misuse on macOS 26+ where calling dict functions on non-dict
 /// objects triggers _xpc_api_misuse / SIGTRAP.
+///
+/// # Safety
+///
+/// Called by libxpc on the connection's queue with the event object and the
+/// context pointer installed by `fw_xpc_set_peer_handler`.
 unsafe extern "C" fn xpc_peer_callback(object: xpc_object_t, context: *mut c_void) {
     // Check pointer validity BEFORE accessing shared context.
     // On macOS 26+, mach cancel events deliver invalid small-integer pointers.
@@ -585,6 +633,7 @@ unsafe extern "C" fn xpc_peer_callback(object: xpc_object_t, context: *mut c_voi
         return;
     }
 
+    // SAFETY: libxpc passes the context pointer the caller installed (a `Box<SharedContext>`); the callback runs on the queue and borrows it for the call.
     let shared = unsafe { &*(context as *const SharedContext) };
     if !shared.is_alive() {
         return;
@@ -597,31 +646,39 @@ unsafe extern "C" fn xpc_peer_callback(object: xpc_object_t, context: *mut c_voi
         Some(p) => p,
         None => return,
     };
+    // SAFETY: libxpc passes the handler pointer the caller installed (a boxed `Box<dyn Fn>`); the callback borrows it for the call.
     let handler = unsafe { &*(handler_ptr as *mut Box<dyn Fn(XpcMessageEvent) + Send>) };
 
+    // SAFETY: the message object is the one libxpc passed to this handler.
     let object_type = unsafe { xpc_get_type(object) };
     let is_dictionary =
+        // SAFETY: the static type object is valid for the process lifetime.
         unsafe { std::ptr::eq(object_type, &_xpc_type_dictionary as *const c_void) };
 
     if is_dictionary {
+        // SAFETY: the handler owns the message object for the duration of the callback; the retained clone keeps it alive past the call.
         let dict = unsafe { XpcObject::from_raw(xpc_retain(object)) };
         handler(XpcMessageEvent::Message(XpcDictionary { object: dict }));
     } else {
         // Non-dictionary: error or invalidation.
         let error_key = CString::new("XPCErrorDescription").unwrap();
         // Only call dict getters on error objects (not on connection/other types).
+        // SAFETY: the message object is the one libxpc passed to this handler; the static type object is valid for the process lifetime.
         let error_str = if unsafe { std::ptr::eq(object_type, &_xpc_type_error as *const c_void) } {
+            // SAFETY: the message object is the one libxpc passed to this handler; the returned string borrows it.
             unsafe { xpc_dictionary_get_string(object, error_key.as_ptr()) }
         } else {
             std::ptr::null()
         };
         if !error_str.is_null() {
+            // SAFETY: libxpc returns a NUL-terminated string owned by the message, which outlives this use.
             let msg = unsafe { CStr::from_ptr(error_str) }
                 .to_string_lossy()
                 .into_owned();
             if msg.contains("invalidated") || msg.contains("Interrupted") {
                 handler(XpcMessageEvent::Invalidated);
                 if let Some(entry) = guard.take() {
+                    // SAFETY: the entry's cleanup function and pointer are the pair stored when the handler was installed.
                     unsafe {
                         (entry.cleanup)(entry.ptr);
                     }
@@ -639,12 +696,18 @@ unsafe extern "C" fn xpc_peer_callback(object: xpc_object_t, context: *mut c_voi
 /// Internal callback for listener events.
 /// Checks XPC type before calling dict functions — on macOS 26+ the event
 /// is a direct XPC_TYPE_CONNECTION (peer), not a dictionary.
+///
+/// # Safety
+///
+/// Called by libxpc on the listener's queue with the event object and the
+/// context pointer installed by `fw_xpc_create_listener`.
 unsafe extern "C" fn xpc_listener_callback(event: xpc_object_t, context: *mut c_void) {
     // Check pointer validity BEFORE accessing shared context.
     if event.is_null() || (event as usize) < 0x100_0000 {
         return;
     }
 
+    // SAFETY: libxpc passes the context pointer the caller installed (a `Box<SharedContext>`); the callback runs on the queue and borrows it for the call.
     let shared = unsafe { &*(context as *const SharedContext) };
     if !shared.is_alive() {
         return;
@@ -657,12 +720,16 @@ unsafe extern "C" fn xpc_listener_callback(event: xpc_object_t, context: *mut c_
         Some(p) => p,
         None => return,
     };
+    // SAFETY: libxpc passes the handler pointer the caller installed (a boxed `Box<dyn Fn>`); the callback borrows it for the call.
     let handler = unsafe { &*(handler_ptr as *mut Box<dyn Fn(XpcListenerEvent) + Send>) };
 
+    // SAFETY: the event object is the one libxpc passed to this handler.
     let event_type = unsafe { xpc_get_type(event) };
 
+    // SAFETY: the static type object is valid for the process lifetime.
     if unsafe { std::ptr::eq(event_type, &_xpc_type_connection as *const c_void) } {
         // New peer connection.
+        // SAFETY: the event object is the one libxpc passed to this handler; the shim returns the peer's retained connection.
         let peer_inner = unsafe { fw_xpc_peer_from_event(event) };
         let peer_queue = create_queue("com.formal-web.xpc-peer");
         handler(XpcListenerEvent::NewPeer(XpcConnection {
@@ -670,11 +737,14 @@ unsafe extern "C" fn xpc_listener_callback(event: xpc_object_t, context: *mut c_
             _queue: peer_queue,
             context: Arc::new(Mutex::new(None)),
         }));
+    // SAFETY: the static type object is valid for the process lifetime.
     } else if unsafe { std::ptr::eq(event_type, &_xpc_type_error as *const c_void) } {
         // Error / invalidation.
         let error_key = CString::new("XPCErrorDescription").unwrap();
+        // SAFETY: the event object is the one libxpc passed to this handler; the returned string borrows it.
         let error_str = unsafe { xpc_dictionary_get_string(event, error_key.as_ptr()) };
         let msg = if !error_str.is_null() {
+            // SAFETY: libxpc returns a NUL-terminated string owned by the event, which outlives this use.
             unsafe { CStr::from_ptr(error_str) }
                 .to_string_lossy()
                 .into_owned()
@@ -682,9 +752,11 @@ unsafe extern "C" fn xpc_listener_callback(event: xpc_object_t, context: *mut c_
             String::from("listener error")
         };
         handler(XpcListenerEvent::Error(msg));
+    // SAFETY: the static type object is valid for the process lifetime.
     } else if unsafe { std::ptr::eq(event_type, &_xpc_type_dictionary as *const c_void) } {
         // Dictionary (first message) — pass as peer via fw_xpc_peer_from_event
         // which casts to xpc_connection_t.
+        // SAFETY: the event object is the one libxpc passed to this handler; the shim returns the peer's retained connection.
         let peer_inner = unsafe { fw_xpc_peer_from_event(event) };
         let peer_queue = create_queue("com.formal-web.xpc-peer");
         handler(XpcListenerEvent::NewPeer(XpcConnection {
@@ -707,11 +779,14 @@ pub struct XpcConnection {
     /// cleanup lifecycle.
     context: Arc<Mutex<Option<ContextEntry>>>,
 }
+// SAFETY: libxpc connection objects are reference-counted handles that may be retained and released from any thread; the queue guard is `Send`/`Sync` for the same reason.
 unsafe impl Send for XpcConnection {}
+// SAFETY: as for `Send`: libxpc connection handles are thread-safe reference-counted objects.
 unsafe impl Sync for XpcConnection {}
 impl Clone for XpcConnection {
     fn clone(&self) -> Self {
         XpcConnection {
+            // SAFETY: the wrapper owns one reference to `self.inner`; a clone takes a second retained reference.
             inner: unsafe { xpc_retain(self.inner as xpc_object_t) as xpc_connection_t },
             _queue: self._queue.clone(),
             context: self.context.clone(),
@@ -727,6 +802,7 @@ impl XpcConnection {
 
 impl Drop for XpcConnection {
     fn drop(&mut self) {
+        // SAFETY: cancel is called before the context is freed, so no callback can observe it afterwards; the queue guard keeps the dispatch queue alive.
         unsafe {
             // Cancel first — after this no more callbacks will fire.
             fw_xpc_cancel(self.inner);
@@ -739,6 +815,7 @@ impl Drop for XpcConnection {
         if let Ok(mut guard) = self.context.lock()
             && let Some(entry) = guard.take()
         {
+            // SAFETY: the entry's pointer is the `Box<SharedContext>` installed for this handler, which is still alive inside the callback.
             unsafe {
                 let shared = &*(entry.ptr as *const SharedContext);
                 shared.invalidate();
@@ -754,6 +831,7 @@ impl Drop for XpcConnection {
                 // Box<SharedContext>, which we need to keep.
             }
         }
+        // SAFETY: the wrapper owns exactly one reference to `self.inner`, released here once.
         unsafe {
             xpc_release(self.inner as xpc_object_t);
         }
@@ -778,6 +856,7 @@ impl XpcConnection {
         let shared = SharedContext::new(closure_ptr, cleanup_msg_handler);
         let c_context = Box::into_raw(Box::new(shared)) as *mut c_void;
 
+        // SAFETY: the shim returns a +1 retained connection built from the boxed context; ownership passes to `XpcConnection::from_raw`.
         let inner = unsafe {
             fw_xpc_create_client(
                 c_name.as_ptr(),
@@ -792,6 +871,7 @@ impl XpcConnection {
             context: Arc::new(Mutex::new(Some(ContextEntry {
                 ptr: c_context,
                 cleanup: |p| {
+                    // SAFETY: the context pointer was produced by `Box::into_raw` in `new` and is freed exactly once, in this cleanup.
                     let _ = unsafe { Box::from_raw(p as *mut SharedContext) };
                 },
             }))),
@@ -813,6 +893,7 @@ impl XpcConnection {
         let shared = SharedContext::new(closure_ptr, cleanup_msg_handler);
         let c_context = Box::into_raw(Box::new(shared)) as *mut c_void;
 
+        // SAFETY: the shim returns a +1 retained connection built from the boxed context; ownership passes to `XpcConnection::from_raw`.
         let inner = unsafe {
             fw_xpc_create_connection(
                 c_name.as_ptr(),
@@ -827,6 +908,7 @@ impl XpcConnection {
             context: Arc::new(Mutex::new(Some(ContextEntry {
                 ptr: c_context,
                 cleanup: |p| {
+                    // SAFETY: the context pointer was produced by `Box::into_raw` in `new` and is freed exactly once, in this cleanup.
                     let _ = unsafe { Box::from_raw(p as *mut SharedContext) };
                 },
             }))),
@@ -854,6 +936,7 @@ impl XpcConnection {
         log::trace!("xpc: listen() c_context={:p}", c_context);
 
         log::trace!("xpc: listen() calling fw_xpc_create_listener");
+        // SAFETY: the shim returns a +1 retained listener built from the boxed context; ownership passes to `XpcConnection::from_raw`.
         let inner = unsafe {
             fw_xpc_create_listener(
                 c_name.as_ptr(),
@@ -869,6 +952,7 @@ impl XpcConnection {
             context: Arc::new(Mutex::new(Some(ContextEntry {
                 ptr: c_context,
                 cleanup: |p| {
+                    // SAFETY: the context pointer was produced by `Box::into_raw` in `new` and is freed exactly once, in this cleanup.
                     let _ = unsafe { Box::from_raw(p as *mut SharedContext) };
                 },
             }))),
@@ -886,6 +970,7 @@ impl XpcConnection {
         let shared = SharedContext::new(closure_ptr, cleanup_msg_handler);
         let c_context = Box::into_raw(Box::new(shared)) as *mut c_void;
 
+        // SAFETY: the context and handler pointers are the boxes this function just created; libxpc takes the handler pointer.
         unsafe {
             fw_xpc_set_peer_handler(
                 self.inner,
@@ -898,6 +983,7 @@ impl XpcConnection {
         // Replace the old context with the new one.
         let mut guard = self.context.lock().unwrap();
         if let Some(old) = guard.take() {
+            // SAFETY: the previous handler entry is the one replaced by this install; its cleanup and pointer are the pair stored with it.
             unsafe {
                 (old.cleanup)(old.ptr);
             }
@@ -905,6 +991,7 @@ impl XpcConnection {
         *guard = Some(ContextEntry {
             ptr: c_context,
             cleanup: |p| {
+                // SAFETY: the context pointer was produced by `Box::into_raw` and is freed exactly once, in this cleanup.
                 let _ = unsafe { Box::from_raw(p as *mut SharedContext) };
             },
         });
@@ -920,6 +1007,7 @@ impl XpcConnection {
     /// set up an event handler via `set_listener_handler` or `set_message_handler`
     /// before resuming.
     pub unsafe fn from_raw(inner: xpc_connection_t, queue: XpcQueue) -> Self {
+        assert!(!inner.is_null(), "XPC connection reference is null");
         XpcConnection {
             inner,
             _queue: queue,
@@ -937,6 +1025,7 @@ impl XpcConnection {
         let shared = SharedContext::new(closure_ptr, cleanup_listener_handler);
         let c_context = Box::into_raw(Box::new(shared)) as *mut c_void;
 
+        // SAFETY: the context and handler pointers are the boxes this function just created; libxpc takes the handler pointer.
         unsafe {
             fw_xpc_set_listener_handler(
                 self.inner,
@@ -951,6 +1040,7 @@ impl XpcConnection {
         *guard = Some(ContextEntry {
             ptr: c_context,
             cleanup: |p| {
+                // SAFETY: the context pointer was produced by `Box::into_raw` and is freed exactly once, in this cleanup.
                 let _ = unsafe { Box::from_raw(p as *mut SharedContext) };
             },
         });
@@ -959,14 +1049,17 @@ impl XpcConnection {
     // ── lifecycle ────────────────────────────────────────────────────────
 
     pub fn resume(&self) {
+        // SAFETY: `self.inner` is a retained connection; resuming it is a libxpc operation on that handle.
         unsafe { fw_xpc_resume(self.inner) }
     }
     pub fn send_message(&self, message: &XpcDictionary) {
+        // SAFETY: the connection and message are retained libxpc objects owned by this call's arguments.
         unsafe {
             xpc_connection_send_message(self.inner, message.as_raw());
         }
     }
     pub fn cancel(&self) {
+        // SAFETY: `self.inner` is a retained connection; cancelling it is a libxpc operation on that handle.
         unsafe { fw_xpc_cancel(self.inner) }
     }
 
@@ -985,6 +1078,7 @@ impl XpcConnection {
     /// result means the requirement was invalid or already set.
     pub fn require_team_identity(&self, signing_identifier: Option<&str>) -> Result<(), i32> {
         let c_identifier = signing_identifier.map(|id| CString::new(id).unwrap());
+        // SAFETY: the connection is a retained handle and the requirement string outlives the call; libxpc copies what it needs.
         let result = unsafe {
             xpc_connection_set_peer_team_identity_requirement(
                 self.inner,
@@ -1007,6 +1101,7 @@ impl XpcConnection {
         expected: &XpcObject,
     ) -> Result<(), i32> {
         let c_entitlement = CString::new(entitlement).unwrap();
+        // SAFETY: the connection is a retained handle and the requirement strings outlive the call; libxpc copies what it needs.
         let result = unsafe {
             xpc_connection_set_peer_entitlement_matches_value_requirement(
                 self.inner,
@@ -1023,21 +1118,26 @@ impl XpcConnection {
 pub struct XpcQueue {
     pub inner: dispatch_queue_t,
 }
+// SAFETY: dispatch queues are reference-counted handles that may be retained and released from any thread; the wrapped pointer is never mutated directly.
 unsafe impl Send for XpcQueue {}
+// SAFETY: as for `Send`: dispatch queue handles are thread-safe reference-counted objects.
 unsafe impl Sync for XpcQueue {}
 impl Clone for XpcQueue {
     fn clone(&self) -> Self {
         XpcQueue {
+            // SAFETY: the wrapper owns one reference to `self.inner`; a clone takes a second retained reference.
             inner: unsafe { dispatch_retain(self.inner) },
         }
     }
 }
 impl Drop for XpcQueue {
     fn drop(&mut self) {
+        // SAFETY: the wrapper owns exactly one reference to `self.inner`, released here once.
         unsafe { dispatch_release(self.inner) }
     }
 }
 pub fn create_queue(label: &str) -> XpcQueue {
+    // SAFETY: libxpc returns a +1 retained queue; the wrapper owns that reference.
     unsafe {
         let c = CString::new(label).unwrap();
         XpcQueue {

@@ -81,8 +81,7 @@ impl TransformStream {
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<ReadableStream, Types> {
         self.readable
-            .borrow(ec)
-            .clone()
+            .get(ec)
             .ok_or_else(|| ec.new_type_error("TransformStream is missing its readable side"))
     }
 
@@ -90,7 +89,7 @@ impl TransformStream {
         &self,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<JsObject, Types> {
-        self.readable_object.borrow(ec).clone().ok_or_else(|| {
+        self.readable_object.get(ec).ok_or_else(|| {
             ec.new_type_error("TransformStream is missing its readable JavaScript object")
         })
     }
@@ -100,8 +99,7 @@ impl TransformStream {
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<WritableStream, Types> {
         self.writable
-            .borrow(ec)
-            .clone()
+            .get(ec)
             .ok_or_else(|| ec.new_type_error("TransformStream is missing its writable side"))
     }
 
@@ -109,7 +107,7 @@ impl TransformStream {
         &self,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<JsObject, Types> {
-        self.writable_object.borrow(ec).clone().ok_or_else(|| {
+        self.writable_object.get(ec).ok_or_else(|| {
             ec.new_type_error("TransformStream is missing its writable JavaScript object")
         })
     }
@@ -119,8 +117,7 @@ impl TransformStream {
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<TransformStreamDefaultController, Types> {
         self.controller
-            .borrow(ec)
-            .clone()
+            .get(ec)
             .ok_or_else(|| ec.new_type_error("TransformStream is missing its controller"))
     }
 
@@ -128,7 +125,7 @@ impl TransformStream {
         &self,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<JsObject, Types> {
-        self.controller_object.borrow(ec).clone().ok_or_else(|| {
+        self.controller_object.get(ec).ok_or_else(|| {
             ec.new_type_error("TransformStream is missing its controller JavaScript object")
         })
     }
@@ -141,7 +138,7 @@ impl TransformStream {
         &self,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Option<JsObject> {
-        self.backpressure_change_promise.borrow(ec).clone()
+        self.backpressure_change_promise.get(ec)
     }
 }
 
@@ -202,7 +199,7 @@ impl TransformStreamDefaultController {
         &self,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<TransformStream, Types> {
-        self.stream.borrow(ec).clone().ok_or_else(|| {
+        self.stream.get(ec).ok_or_else(|| {
             ec.new_type_error("TransformStreamDefaultController is not attached to a stream")
         })
     }

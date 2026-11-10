@@ -266,6 +266,9 @@ impl VideoImport {
         raw_device: &Retained<ProtocolObject<dyn MTLDevice>>,
     ) -> Option<VideoImport> {
         let mut cache_ptr = std::ptr::null_mut();
+        // SAFETY: `cache_ptr` is an out-parameter the framework fills with a
+        // retained cache on success; the raw device is the one backing this
+        // renderer.
         let cache_result = unsafe {
             CVMetalTextureCache::create(
                 None,
@@ -494,6 +497,9 @@ fn plane_texture(
         )
     };
     let mut texture_ptr = std::ptr::null_mut();
+    // SAFETY: the cache, pixel buffer, format and plane describe a texture
+    // inside this frame's pixel buffer; `texture_ptr` is the framework's
+    // out-parameter for the retained result.
     let result = unsafe {
         CVMetalTextureCache::create_texture_from_image(
             None,
@@ -518,6 +524,8 @@ fn plane_texture(
     let raw_texture: Retained<ProtocolObject<dyn MTLTexture>> =
         CVMetalTextureGetTexture(&cv_metal_texture)?;
 
+    // SAFETY: the Metal texture comes from the cache for this pixel buffer and
+    // its format/extent match the descriptor below.
     let hal_texture = unsafe {
         wgpu::hal::metal::Device::texture_from_raw(
             raw_texture,
@@ -532,6 +540,8 @@ fn plane_texture(
             },
         )
     };
+    // SAFETY: the hal texture was created on this device and declares the same
+    // format, extent, mip count and sample count as the descriptor.
     Some(unsafe {
         device.create_texture_from_hal::<wgpu::hal::metal::Api>(
             hal_texture,
