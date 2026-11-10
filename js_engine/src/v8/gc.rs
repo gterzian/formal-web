@@ -52,6 +52,11 @@ pub struct V8PlatformData {
     /// through this flag's `trace`; the flag makes that a deterministic abort
     /// instead of a silent aliasing violation, mirroring `HeapCell`.
     writer: Cell<bool>,
+    /// Number of live [`PlatformData`] guards. Borrow checking relates a
+    /// shared guard to its own engine only; a second engine handle over the
+    /// same isolate is a distinct `&V8Engine`, so the count is what refuses a
+    /// mutable borrow while a shared one is live.
+    readers: Cell<u32>,
 }
 
 impl V8PlatformData {
@@ -60,6 +65,7 @@ impl V8PlatformData {
         Self {
             data: UnsafeCell::new(Box::new(data)),
             writer: Cell::new(false),
+            readers: Cell::new(0),
             trace_fn: |data, visitor| {
                 // The box holds exactly the `T` this closure was created for.
                 // A mismatch would mean the trace function outlived or was
@@ -80,6 +86,7 @@ impl V8PlatformData {
         Self {
             data: UnsafeCell::new(data),
             writer: Cell::new(false),
+            readers: Cell::new(0),
             trace_fn: |_data, _visitor| {},
         }
     }
@@ -102,6 +109,16 @@ impl V8PlatformData {
     /// The mutable-borrow flag, to be cleared when the borrow ends.
     pub(crate) fn writer_flag(&self) -> &Cell<bool> {
         &self.writer
+    }
+
+    /// The shared-borrow counter, to be decremented when the borrow ends.
+    pub(crate) fn readers_flag(&self) -> &Cell<u32> {
+        &self.readers
+    }
+
+    /// Number of live shared borrows of the platform data.
+    pub(crate) fn readers(&self) -> u32 {
+        self.readers.get()
     }
 
     /// Raw pointer to the boxed value, for mutation through the cell.

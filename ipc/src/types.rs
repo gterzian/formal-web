@@ -278,10 +278,9 @@ impl<T: IpcSerialize + IpcDeserialize> IpcSender<T> {
     /// Send a message with a map of shared-memory regions attached.
     ///
     /// On the ipc-channel backend each region travels as a Mach port/fd with
-    /// zero-copy semantics. On the XPC transport each region is wrapped with
-    /// `xpc_shmem_create` and attached to the outgoing dictionary under its
-    /// map key; mapping regions on the receiving side is not yet wired (see
-    /// `ipc/ARCHITECTURE.md`).
+    /// zero-copy semantics. On the XPC transport each region is copied into an
+    /// XPC data object under its map key; mapping regions on the receiving
+    /// side is not yet wired (see `ipc/ARCHITECTURE.md`).
     pub fn send_with_shmem_map(
         &self,
         message: T,

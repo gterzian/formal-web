@@ -339,6 +339,8 @@ pub fn context_as_ec(context: &mut boa_engine::Context) -> &mut dyn ExecutionCon
 
 /// Cast `&Context` to `&dyn ExecutionContext<BoaTypes>` (immutable).
 pub fn context_as_ec_ref(context: &boa_engine::Context) -> &dyn ExecutionContext<BoaTypes> {
+    // SAFETY: BoaContext has the same repr as Context (repr(transparent)), and
+    // the returned reference has the input's lifetime.
     unsafe { &*(context as *const boa_engine::Context as *const BoaContext) }
 }
 
@@ -481,7 +483,7 @@ impl BoaContext {
         // through the context. No other borrow of the context is live here.
         let data = factory(&mut engine);
         let global_object = engine.context().global_object();
-        engine.install_global_platform_data(&global_object, data);
+        engine.install_global_platform_data(&global_object, data)?;
         Ok(engine)
     }
 
@@ -489,16 +491,22 @@ impl BoaContext {
     ///
     /// Called by [`Self::build`] after the realm exists, so the platform
     /// object is built with the context as `&mut` and no borrow of it spans
-    /// the call.
-    fn install_global_platform_data<D>(&mut self, global_object: &JsObject, data: D)
+    /// the call. Fails when the global has no platform-data wrapper.
+    fn install_global_platform_data<D>(
+        &mut self,
+        global_object: &JsObject,
+        data: D,
+    ) -> Result<(), String>
     where
         D: std::any::Any + crate::gc::Trace + 'static,
     {
         let Some(mut wrapper) = global_object.downcast_mut::<NativeDataWrapper>() else {
-            log::error!("realm global object has no platform-data wrapper");
-            return;
+            return Err(String::from(
+                "realm global object has no platform-data wrapper",
+            ));
         };
         wrapper.0.replace(data);
+        Ok(())
     }
 
     /// Wrap an existing `Context` into a `BoaContext`.
@@ -2885,6 +2893,8 @@ fn has_property_then_get_boolean(
 
 #[cfg(test)]
 mod tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
     use super::*;
     use crate::{ExecutionContext, JsTypes};
 
@@ -3068,5 +3078,35 @@ mod tests {
         let ab =
             JsEngine::allocate_array_buffer(&mut engine, intrinsics.array_buffer, 8, None).unwrap();
         let _ = ab;
+    }
+
+    #[test]
+    fn live_platform_data_blocks_the_objects_mutable_borrow() {
+        let engine = BoaContext::new();
+        let prototype = engine
+            .context
+            .intrinsics()
+            .constructors()
+            .object()
+            .prototype();
+        let object = JsObject::from_proto_and_data(
+            Some(prototype),
+            NativeDataWrapper(TraceableBox::noop(Box::new(7u32))),
+        );
+        let shared = engine
+            .with_object_any(&object)
+            .expect("the object carries platform data");
+        let blocked = catch_unwind(AssertUnwindSafe(|| {
+            object.downcast_mut::<NativeDataWrapper>().is_some()
+        }));
+        assert!(
+            blocked.is_err(),
+            "a live shared platform-data guard must block the object's mutable borrow"
+        );
+        drop(shared);
+        assert!(
+            object.downcast_mut::<NativeDataWrapper>().is_some(),
+            "the mutable borrow must succeed once the shared guard is dropped"
+        );
     }
 }

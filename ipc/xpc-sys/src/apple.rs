@@ -446,24 +446,6 @@ pub struct XpcSharedMemory {
     needs_munmap: bool,
 }
 impl XpcSharedMemory {
-    /// Wrap an existing writable memory region as an XPC shared-memory
-    /// object for transfer in a message. The caller keeps ownership of the
-    /// region; releasing the object does not unmap it.
-    ///
-    /// # Safety
-    ///
-    /// `ptr` must point to `size` bytes of valid, page-backed memory that
-    /// stays alive until the message carrying this object has been sent.
-    pub unsafe fn wrap(ptr: *mut c_void, size: usize) -> Self {
-        unsafe {
-            XpcSharedMemory {
-                object: XpcObject::from_raw(xpc_shmem_create(ptr, size)),
-                ptr: ptr as *mut u8,
-                size,
-                needs_munmap: false,
-            }
-        }
-    }
     pub fn allocate(size: usize) -> Result<Self, String> {
         unsafe {
             let p = libc::mmap(
@@ -531,6 +513,8 @@ impl XpcSharedMemory {
 impl Drop for XpcSharedMemory {
     fn drop(&mut self) {
         if self.needs_munmap {
+            // SAFETY: `needs_munmap` is set only for a `map_object` mapping,
+            // whose pointer and length are the ones `xpc_shmem_map` returned.
             unsafe {
                 libc::munmap(self.ptr as *mut libc::c_void, self.size);
             }

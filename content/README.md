@@ -56,10 +56,11 @@ cppgc edges before the borrow ends.
 Platform data reaches the engine through the same discipline:
 `with_object_any`/`with_object_any_mut` return a guard that holds the
 backend's borrow of the platform object (a `GcRef`/`GcRefMut` on Boa, a
-writer flag on V8) for as long as the data is borrowed, and it borrows both
-the object and the context.  Clone what is needed into an owned value inside
-the closure/locals and write it back through `with_object_any_mut` instead of
-holding a platform-data reference across an engine call.
+reader count and writer flag on V8) for as long as the data is borrowed, and
+it borrows both the object and the context.  Clone what is needed into an
+owned value inside the closure/locals and write it back through
+`with_object_any_mut` instead of holding a platform-data reference across an
+engine call.
 
 **Removing a value from a cell.**  A value that leaves a cell — a queued
 request dequeued, a slot taken, a resolver pair consumed — must be removed

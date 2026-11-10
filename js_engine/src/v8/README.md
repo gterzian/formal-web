@@ -66,7 +66,9 @@ fields, and JS edges are collected in one pass.
 - The isolate's `CppHeap` is created with atomic marking and sweeping
   (`SharedIsolate::new`), so traces run stop-the-world on the isolate thread
   and traced-value destructors (which drop V8 handles) run on the isolate
-  thread.
+  thread. The edge epoch depends on this: the prologue bump runs before
+  marking starts, and the stop-the-world mark then visits every live edge in
+  that same collection, so an edge whose owner survives carries the new epoch.
 
 Forced-collection coverage lives in the js_engine test module: `engine.gc()`
 (a V8 full collection plus a cppgc sweep with `NoHeapPointers`) reclaims a
@@ -79,15 +81,19 @@ destruction.
 Unsafe blocks follow the repo-wide discipline in `AGENTS.md` ("Unsafe-code
 discipline"). The backend-specific checks are the `GcCell` borrow counters on
 the guard deref/drop paths, the edge epoch check on every handle
-materialization, the platform-data writer flag (a trace or shared read during
-a `with_object_any_mut` borrow aborts), strict LIFO drop order for the
-thread-local engine and callback-scope guards, isolate identity on engine
-entry and `with_object_any`, the null check on cached platform addresses, and
-the non-shared backing store before `array_buffer_data` iterates it as
-`Cell<u8>`.  A re-entrant V8 callback runs against an engine handle copied
-from `CURRENT_ENGINE` (`V8Engine::handle`), never against a `&mut` to the
-suspended engine, so no write goes through a pointer hidden behind that
-frame's `&mut self`. Checks that run inside V8's C++ callbacks (the
+materialization and on the cached platform address `with_object_any`
+dereferences, the platform-data writer flag (a trace or shared read during a
+`with_object_any_mut` borrow aborts) and reader count (a mutable borrow fails
+while a shared guard held by another engine handle over the same isolate is
+live), strict LIFO drop order for the thread-local engine and callback-scope
+guards, isolate identity on engine entry and `with_object_any`, the null check
+on cached platform addresses, and the non-shared backing store before
+`array_buffer_data` iterates it as `Cell<u8>`. A re-entrant V8 callback runs
+against the engine handle the thread-local guard installs (`V8Engine::handle`),
+never against a `&mut` to the suspended engine, so no write goes through a
+pointer hidden behind that frame's `&mut self`; the callback scope the macros
+reborrow is branded with a block-local borrow, so a `Local` created inside a
+macro body cannot escape it. Checks that run inside V8's C++ callbacks (the
 cppgc `trace` functions) use `fatal_invariant!` instead of a panic.
 
 ## Native callback records and realm teardown

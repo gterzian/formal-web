@@ -147,9 +147,8 @@ impl<T: JsTypes> Clone for GcRootHandle<T> {
 // platform object together with the backend's borrow of that object: the
 // guard lives as long as the returned reference, so a later mutable borrow of
 // the same object fails instead of handing out a reference that aliases this
-// one. On V8 the data sits behind an `UnsafeCell` whose exclusivity comes
-// from the engine-wide borrow the caller holds (`&self` / `&mut self`), so
-// the guard is the reference itself; on Boa it is the `GcRef`/`GcRefMut`
+// one. On V8 the data sits behind an `UnsafeCell` and the guard carries the
+// platform's reader count or writer flag; on Boa it is the `GcRef`/`GcRefMut`
 // guard that keeps the object's `GcRefCell` borrow set.
 
 #[cfg(feature = "v8")]
@@ -165,8 +164,13 @@ mod v8_platform_data {
     use crate::v8::V8Types;
 
     /// Shared borrow of a platform object's type-erased data.
+    ///
+    /// Increments the platform's reader count for its lifetime, so a mutable
+    /// borrow taken through another engine handle over the same isolate fails
+    /// instead of handing out a `&mut` that aliases this reference.
     pub struct PlatformData<'a> {
         data: &'a dyn Any,
+        readers: &'a std::cell::Cell<u32>,
         _engine: PhantomData<&'a dyn ExecutionContext<V8Types>>,
     }
 
@@ -176,12 +180,29 @@ mod v8_platform_data {
         /// # Safety
         ///
         /// `data` must stay valid for `'a`: the object whose wrapper traces
-        /// the platform data must outlive it.
-        pub(crate) unsafe fn new(data: &'a dyn Any) -> Self {
+        /// the platform data must outlive it. `readers` must be the counter
+        /// belonging to that same platform data.
+        pub(crate) unsafe fn new(
+            data: &'a dyn Any,
+            readers: &'a std::cell::Cell<u32>,
+            writer: &'a std::cell::Cell<bool>,
+        ) -> Self {
+            assert!(
+                !writer.get(),
+                "platform data read while a mutable borrow is live"
+            );
+            readers.set(readers.get() + 1);
             Self {
                 data,
+                readers,
                 _engine: PhantomData,
             }
+        }
+    }
+
+    impl Drop for PlatformData<'_> {
+        fn drop(&mut self) {
+            self.readers.set(self.readers.get() - 1);
         }
     }
 
@@ -210,8 +231,19 @@ mod v8_platform_data {
         /// # Safety
         ///
         /// `data` must stay valid for `'a`, and the caller must hold the
-        /// engine's exclusive host-data access path (`&mut self`).
-        pub(crate) unsafe fn new(data: &'a mut dyn Any, writer: &'a std::cell::Cell<bool>) -> Self {
+        /// engine's exclusive host-data access path (`&mut self`). `readers`
+        /// and `writer` must be the counters belonging to that same platform
+        /// data.
+        pub(crate) unsafe fn new(
+            data: &'a mut dyn Any,
+            readers: &'a std::cell::Cell<u32>,
+            writer: &'a std::cell::Cell<bool>,
+        ) -> Self {
+            assert_eq!(
+                readers.get(),
+                0,
+                "platform data mutably borrowed while a shared borrow is live"
+            );
             assert!(
                 !writer.replace(true),
                 "platform data mutably borrowed while a mutable borrow is live"
@@ -467,12 +499,15 @@ mod boa_cells {
     // wrapped value during marking exactly like any other `Gc` field.
     unsafe impl<T: boa_gc::Trace + 'static> boa_gc::Trace for GcCell<T> {
         unsafe fn trace(&self, tracer: &mut boa_gc::Tracer) {
+            // SAFETY: the marker calls this once per reachable cell, and the
+            // inner `Gc` visits the value it owns under the same marking pass.
             unsafe {
                 self.0.trace(tracer);
             }
         }
 
         unsafe fn trace_non_roots(&self) {
+            // SAFETY: as in `trace`; the inner `Gc` visits the same value.
             unsafe {
                 self.0.trace_non_roots();
             }
@@ -969,11 +1004,14 @@ mod boa_gc_impl {
     // GcRootHandle fields (e.g. on_change callbacks) are properly traced.
     unsafe impl boa_gc::Trace for super::GcRootHandle<BoaTypes> {
         unsafe fn trace(&self, tracer: &mut boa_gc::Tracer) {
+            // SAFETY: the marker calls this once per reachable handle, and the
+            // inner `JsValue` visits the value it holds under the same pass.
             unsafe {
                 boa_gc::Trace::trace(&self.value, tracer);
             }
         }
         unsafe fn trace_non_roots(&self) {
+            // SAFETY: as in `trace`; the inner `JsValue` visits the same value.
             unsafe {
                 boa_gc::Trace::trace_non_roots(&self.value);
             }

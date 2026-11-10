@@ -4,6 +4,7 @@ use std::collections::{HashMap, VecDeque};
 use std::convert::TryFrom;
 use std::ffi::c_void;
 use std::mem::replace;
+use std::ops::{Deref, DerefMut};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr::{NonNull, from_ref};
 use std::rc::{Rc, Weak as RcWeak};
@@ -161,6 +162,37 @@ unsafe impl Trace for RealmHostData {
     }
 }
 
+/// Exclusive borrow of the realm host data.
+///
+/// Holds the holder platform's writer flag for its lifetime, so a cppgc trace
+/// that reaches the host data through another engine handle over the same
+/// isolate aborts instead of deriving a shared reference that aliases this
+/// one.
+struct RealmHostDataMut<'a> {
+    data: &'a mut RealmHostData,
+    writer: &'a Cell<bool>,
+}
+
+impl Drop for RealmHostDataMut<'_> {
+    fn drop(&mut self) {
+        self.writer.set(false);
+    }
+}
+
+impl Deref for RealmHostDataMut<'_> {
+    type Target = RealmHostData;
+
+    fn deref(&self) -> &RealmHostData {
+        self.data
+    }
+}
+
+impl DerefMut for RealmHostDataMut<'_> {
+    fn deref_mut(&mut self) -> &mut RealmHostData {
+        self.data
+    }
+}
+
 #[derive(Clone)]
 struct V8RealmState {
     realm: V8Realm,
@@ -218,8 +250,17 @@ type StoredCallbackScope = v8::PinScope<'static, 'static>;
 
 thread_local! {
     static CURRENT_ENGINE: Cell<*mut V8Engine> = const { Cell::new(std::ptr::null_mut()) };
+    /// The handle of the engine installed in `CURRENT_ENGINE`, kept apart
+    /// from it so a re-entrant callback never dereferences a pointer into the
+    /// suspended engine's frame.
+    static CURRENT_ENGINE_HANDLE: RefCell<Option<V8Engine>> = const { RefCell::new(None) };
     static CURRENT_CALLBACK_SCOPE: Cell<*mut StoredCallbackScope> = const { Cell::new(std::ptr::null_mut()) };
     static CURRENT_CALLBACK_ISOLATE_ID: Cell<u64> = const { Cell::new(0) };
+}
+
+/// The handle installed by the active [`CurrentEngineGuard`].
+fn current_engine_handle() -> Option<V8Engine> {
+    CURRENT_ENGINE_HANDLE.with(|slot| slot.borrow().as_ref().map(|engine| engine.handle()))
 }
 
 struct SharedIsolate {
@@ -280,6 +321,13 @@ impl SharedIsolate {
         // so bumping on those would mark live edges stale. (Verified: with
         // every GC type registered, a scavenge between two reads made a live
         // canvas context's edge look stale.)
+        //
+        // The epoch scheme depends on the heap's atomic marking above: the
+        // prologue runs before marking starts, and the stop-the-world mark
+        // then visits every live edge in that same collection, so an edge
+        // whose owner survives is stamped with the new epoch. A collector
+        // that marked incrementally before the prologue would stamp edges
+        // with the previous epoch and make them read as stale.
         isolate.add_gc_prologue_callback(
             gc_prologue_bump_epoch,
             gc_epoch.as_ref() as *const Cell<u64> as *mut std::ffi::c_void,
@@ -349,6 +397,11 @@ impl V8Engine {
         self.shared_isolate.gc_epoch_source()
     }
 
+    /// The isolate's current full-collection epoch.
+    pub(crate) fn gc_epoch(&self) -> u64 {
+        self.shared_isolate.gc_epoch.get()
+    }
+
     /// A second handle to this engine's isolate, realm state, host hooks, and
     /// realm bookkeeping.
     ///
@@ -392,12 +445,8 @@ impl V8Engine {
                 self.isolate_id,
                 "reentrant V8 scope belongs to another isolate"
             );
-            // SAFETY: The pointer and lifetime invariants are established by
-            // `CurrentCallbackScopeGuard` and checked above. The scope's
-            // lifetimes are inferred here, so references derived from it
-            // cannot escape this call.
-            let callback_scope: &mut v8::PinScope<'_, '_> =
-                unsafe { &mut *callback_scope_pointer.cast() };
+            let mut scope_brand = ();
+            let callback_scope = reentrant_scope(callback_scope_pointer, &mut scope_brand);
             let isolate = &mut ***callback_scope;
             f(isolate)
         }
@@ -414,6 +463,24 @@ impl V8Engine {
     }
 }
 
+/// The active callback scope, reborrowed with a lifetime bounded by the
+/// caller's brand borrow.
+///
+/// The returned scope's lifetimes are both `'brand`, and `'brand` is the
+/// lifetime of the borrow of a local in the calling macro expansion, so no
+/// `Local` derived from the scope can outlive that block.
+fn reentrant_scope<'brand>(
+    callback_scope_pointer: *mut StoredCallbackScope,
+    _brand: &'brand mut (),
+) -> &'brand mut v8::PinScope<'brand, 'brand> {
+    // SAFETY: `native_callback` installs this pointer from the pinned scope V8
+    // supplied for the synchronous callback. The guard clears it before that
+    // scope ends, and the caller checks the isolate identity. Reusing the
+    // callback scope avoids creating a second mutable reference to the isolate
+    // owned by the outer V8 call.
+    unsafe { &mut *callback_scope_pointer.cast() }
+}
+
 macro_rules! v8_engine_scope_with_context {
     ($scope:ident, $engine:expr, $context:expr, $body:block) => {{
         let callback_scope_pointer = CURRENT_CALLBACK_SCOPE.get();
@@ -428,16 +495,8 @@ macro_rules! v8_engine_scope_with_context {
                 $engine.isolate_id,
                 "reentrant V8 scope belongs to another isolate"
             );
-            // SAFETY: `native_callback` installs this pointer from the pinned
-            // scope V8 supplied for the synchronous callback. The guard clears
-            // it before that scope ends, and the isolate identity is checked
-            // above. Reusing the callback scope avoids creating a second
-            // mutable reference to the isolate owned by the outer V8 call.
-            // The scope's lifetimes are inferred here rather than reusing the
-            // stored `'static` ones, so a `Local` created through it cannot
-            // outlive this block.
-            let callback_scope: &mut v8::PinScope<'_, '_> =
-                unsafe { &mut *callback_scope_pointer.cast() };
+            let mut scope_brand = ();
+            let callback_scope = reentrant_scope(callback_scope_pointer, &mut scope_brand);
             let local_context = v8::Local::new(callback_scope, $context);
             let $scope = &mut v8::ContextScope::new(callback_scope, local_context);
             $body
@@ -458,11 +517,8 @@ macro_rules! v8_shared_scope {
                 $isolate_id,
                 "reentrant V8 scope belongs to another isolate"
             );
-            // SAFETY: The pointer and lifetime invariants are established by
-            // `CurrentCallbackScopeGuard` and checked above; the scope's
-            // lifetimes are inferred at this use.
-            let $scope: &mut v8::PinScope<'_, '_> =
-                unsafe { &mut *callback_scope_pointer.cast() };
+            let mut scope_brand = ();
+            let $scope = reentrant_scope(callback_scope_pointer, &mut scope_brand);
             $body
         }
     }};
@@ -481,12 +537,8 @@ macro_rules! v8_shared_isolate {
                 $isolate_id,
                 "reentrant V8 scope belongs to another isolate"
             );
-            // SAFETY: The pointer and lifetime invariants are established by
-            // `CurrentCallbackScopeGuard` and checked above. The isolate
-            // reference is reborrowed from V8's active callback scope, with
-            // lifetimes inferred at this use.
-            let callback_scope: &mut v8::PinScope<'_, '_> =
-                unsafe { &mut *callback_scope_pointer.cast() };
+            let mut scope_brand = ();
+            let callback_scope = reentrant_scope(callback_scope_pointer, &mut scope_brand);
             let $isolate = &mut ***callback_scope;
             $body
         }
@@ -526,6 +578,7 @@ unsafe extern "C" fn gc_prologue_bump_epoch(
 struct CurrentEngineGuard {
     previous: *mut V8Engine,
     installed: *mut V8Engine,
+    previous_handle: Option<V8Engine>,
 }
 
 struct CurrentCallbackScopeGuard {
@@ -574,10 +627,13 @@ impl Drop for CurrentCallbackScopeGuard {
 impl CurrentEngineGuard {
     fn enter(engine: &mut V8Engine) -> Self {
         let engine_pointer = engine as *mut V8Engine;
+        let handle = engine.handle();
+        let previous_handle = CURRENT_ENGINE_HANDLE.with(|slot| slot.borrow_mut().replace(handle));
         let previous = CURRENT_ENGINE.replace(engine_pointer);
         Self {
             previous,
             installed: engine_pointer,
+            previous_handle,
         }
     }
 }
@@ -590,6 +646,9 @@ impl Drop for CurrentEngineGuard {
             "engine guards dropped out of order"
         );
         CURRENT_ENGINE.set(self.previous);
+        CURRENT_ENGINE_HANDLE.with(|slot| {
+            *slot.borrow_mut() = self.previous_handle.take();
+        });
     }
 }
 
@@ -597,7 +656,7 @@ pub struct V8Engine {
     isolate_id: u64,
     realm_state: Rc<V8RealmState>,
     /// Shared so a re-entrant callback handle sees the same host hooks.
-    host_hooks: Rc<HostHooks<V8Types>>,
+    host_hooks: Rc<RefCell<HostHooks<V8Types>>>,
     shared_isolate: Rc<SharedIsolate>,
     // Strong references to realm states created through `create_realm`: the
     // shared-isolate registry holds weak refs (pruned when the last owner
@@ -1021,33 +1080,26 @@ fn native_callback(
         return;
     }
 
-    let engine_pointer = CURRENT_ENGINE.get();
-    if engine_pointer.is_null() {
+    let Some(mut engine) = current_engine_handle() else {
         let message = v8::String::new(scope, "native callback entered without an active engine")
             .expect("static V8 callback error allocation failed");
         let exception = v8::Exception::error(scope, message);
         scope.throw_exception(exception);
         return;
-    }
+    };
 
     // SAFETY: `slot_pointer` points at the shared slot created by
     // `make_builtin_function`; the registry entry and the guaranteed weak
     // finalizer keep that `Rc` allocation alive for as long as V8 can invoke
     // this function, so reborrowing the slot is valid and a taken slot is
     // reported as a JS error instead of dereferencing the freed record.
-    // CURRENT_ENGINE is installed around every operation that can execute
+    // The handle was installed around every operation that can execute
     // JavaScript and is restricted to the isolate thread. The isolate id
     // check below prevents a record from being used by another isolate.
     // `catch_unwind` prevents Rust unwinding from crossing V8's callback
     // boundary.
     let (result, callback_isolate_id) = unsafe {
         let record_slot = &*slot_pointer;
-        // SAFETY: `CURRENT_ENGINE` points at the engine whose operation is
-        // suspended inside the V8 call that reached this callback. The handle
-        // is a copy of that engine's `Rc`s, so the callback never writes
-        // through a pointer derived from the suspended frame's `&mut self`;
-        // the record slot is kept alive by the callback registry (see above).
-        let mut engine = (&*engine_pointer).handle();
         let record_guard = record_slot.borrow();
         match record_guard.as_ref() {
             None => (
@@ -1140,117 +1192,103 @@ fn resolve_module_import<'scope>(
     // callback boundary; the scope is pinned for its full use below.
     v8::callback_scope!(unsafe scope, context);
 
-    let engine_pointer = CURRENT_ENGINE.get();
-    if engine_pointer.is_null() {
+    let Some(mut engine) = current_engine_handle() else {
         let message = v8::String::new(scope, "module resolution entered without an active engine")
+            .expect("static module error allocation failed");
+        let exception = v8::Exception::type_error(scope, message);
+        scope.throw_exception(exception);
+        return None;
+    };
+
+    if engine.host_hooks.borrow().load_imported_module.is_none() {
+        let message = v8::String::new(scope, "module imports are not enabled for the V8 backend")
             .expect("static module error allocation failed");
         let exception = v8::Exception::type_error(scope, message);
         scope.throw_exception(exception);
         return None;
     }
 
-    // SAFETY: CURRENT_ENGINE is installed around every operation that can
-    // execute JavaScript and is restricted to the isolate thread. The module
-    // resolver runs synchronously inside `evaluate_module`, which already
-    // holds the isolate scope; the callback-scope guard lets engine methods
-    // below reborrow the pinned callback scope instead of the (already
-    // borrowed) shared isolate.
-    unsafe {
-        // SAFETY: as in `native_callback`, the engine is reached through a
-        // handle copied from `CURRENT_ENGINE`, so no reference derived from
-        // the suspended frame's `&mut self` is created.
-        let mut engine = (&*engine_pointer).handle();
-        if engine.host_hooks.load_imported_module.is_none() {
-            let message =
-                v8::String::new(scope, "module imports are not enabled for the V8 backend")
-                    .expect("static module error allocation failed");
+    let _current_callback_scope = CurrentCallbackScopeGuard::enter(scope, engine.isolate_id);
+
+    let specifier_string = V8String {
+        value: None,
+        utf16: cache_string(scope, &specifier),
+    };
+    let mut attributes = Vec::new();
+    for index in 0..import_attributes.length() / 2 {
+        if let (Some(key), Some(value)) = (
+            import_attributes.get(scope, index * 2),
+            import_attributes.get(scope, index * 2 + 1),
+        ) && let Ok(key) = v8::Local::<v8::String>::try_from(key)
+            && let Ok(value) = v8::Local::<v8::Value>::try_from(value)
+        {
+            attributes.push((
+                V8String {
+                    value: None,
+                    utf16: cache_string(scope, &key),
+                },
+                wrap_local_value(scope, engine.isolate_id, value),
+            ));
+        }
+    }
+    let module_request = ModuleRequest {
+        specifier: specifier_string,
+        attributes,
+    };
+    let realm = engine.realm_state.realm.clone();
+    let constructor = engine.realm_intrinsics(&realm).promise;
+    let capability = match catch_unwind(AssertUnwindSafe(|| {
+        engine.new_promise_capability(constructor)
+    })) {
+        Ok(Ok(capability)) => capability,
+        Ok(Err(error)) => {
+            error!(
+                "module resolver failed to create the load capability: {}",
+                error.display()
+            );
+            let message = v8::String::new(scope, "module load capability creation failed")
+                .expect("static module error allocation failed");
             let exception = v8::Exception::type_error(scope, message);
             scope.throw_exception(exception);
             return None;
         }
-
-        let _current_callback_scope = CurrentCallbackScopeGuard::enter(scope, engine.isolate_id);
-
-        let specifier_string = V8String {
-            value: None,
-            utf16: cache_string(scope, &specifier),
-        };
-        let mut attributes = Vec::new();
-        for index in 0..import_attributes.length() / 2 {
-            if let (Some(key), Some(value)) = (
-                import_attributes.get(scope, index * 2),
-                import_attributes.get(scope, index * 2 + 1),
-            ) && let Ok(key) = v8::Local::<v8::String>::try_from(key)
-                && let Ok(value) = v8::Local::<v8::Value>::try_from(value)
-            {
-                attributes.push((
-                    V8String {
-                        value: None,
-                        utf16: cache_string(scope, &key),
-                    },
-                    wrap_local_value(scope, engine.isolate_id, value),
-                ));
-            }
+        Err(_panic) => {
+            let message = v8::String::new(scope, "module load capability creation panicked")
+                .expect("static module error allocation failed");
+            let exception = v8::Exception::type_error(scope, message);
+            scope.throw_exception(exception);
+            return None;
         }
-        let module_request = ModuleRequest {
-            specifier: specifier_string,
-            attributes,
-        };
-        let realm = engine.realm_state.realm.clone();
-        let constructor = engine.realm_intrinsics(&realm).promise;
-        let capability = match catch_unwind(AssertUnwindSafe(|| {
-            engine.new_promise_capability(constructor)
-        })) {
-            Ok(Ok(capability)) => capability,
-            Ok(Err(error)) => {
-                error!(
-                    "module resolver failed to create the load capability: {}",
-                    error.display()
-                );
-                let message = v8::String::new(scope, "module load capability creation failed")
-                    .expect("static module error allocation failed");
-                let exception = v8::Exception::type_error(scope, message);
-                scope.throw_exception(exception);
-                return None;
-            }
-            Err(_panic) => {
-                let message = v8::String::new(scope, "module load capability creation panicked")
-                    .expect("static module error allocation failed");
-                let exception = v8::Exception::type_error(scope, message);
-                scope.throw_exception(exception);
-                return None;
-            }
-        };
-        if let Some(hook) = &engine.host_hooks.load_imported_module {
-            // The hook is embedder-supplied Rust code invoked from inside a
-            // callback V8's module resolver calls synchronously; like the
-            // capability creation above and `native_callback`, it must not
-            // unwind across the V8 C++ boundary, so a panic is converted into
-            // a thrown TypeError.
-            let result = catch_unwind(AssertUnwindSafe(|| {
-                hook(module_request, capability);
-            }));
-            if result.is_err() {
-                error!("load_imported_module hook panicked during module resolution");
-                let message = v8::String::new(scope, "module import hook panicked")
-                    .expect("static module error allocation failed");
-                let exception = v8::Exception::type_error(scope, message);
-                scope.throw_exception(exception);
-                return None;
-            }
+    };
+    if let Some(hook) = &engine.host_hooks.borrow().load_imported_module {
+        // The hook is embedder-supplied Rust code invoked from inside a
+        // callback V8's module resolver calls synchronously; like the
+        // capability creation above and `native_callback`, it must not
+        // unwind across the V8 C++ boundary, so a panic is converted into
+        // a thrown TypeError.
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            hook(module_request, capability);
+        }));
+        if result.is_err() {
+            error!("load_imported_module hook panicked during module resolution");
+            let message = v8::String::new(scope, "module import hook panicked")
+                .expect("static module error allocation failed");
+            let exception = v8::Exception::type_error(scope, message);
+            scope.throw_exception(exception);
+            return None;
         }
-        // V8's module resolver is synchronous, while host module loading
-        // resolves its promise capability asynchronously, so no Module can be
-        // produced here; instantiation fails after the hook has been invoked.
-        let message = v8::String::new(
-            scope,
-            "host module loading is asynchronous; the V8 backend cannot instantiate imported modules",
-        )
-        .expect("static module error allocation failed");
-        let exception = v8::Exception::type_error(scope, message);
-        scope.throw_exception(exception);
-        None
     }
+    // V8's module resolver is synchronous, while host module loading
+    // resolves its promise capability asynchronously, so no Module can be
+    // produced here; instantiation fails after the hook has been invoked.
+    let message = v8::String::new(
+        scope,
+        "host module loading is asynchronous; the V8 backend cannot instantiate imported modules",
+    )
+    .expect("static module error allocation failed");
+    let exception = v8::Exception::type_error(scope, message);
+    scope.throw_exception(exception);
+    None
 }
 
 impl V8Engine {
@@ -1334,7 +1372,7 @@ impl V8Engine {
         let mut engine = Self {
             isolate_id,
             realm_state,
-            host_hooks: Rc::new(HostHooks::empty()),
+            host_hooks: Rc::new(RefCell::new(HostHooks::empty())),
             shared_isolate,
             created_realm_states: Rc::new(RefCell::new(Vec::new())),
         };
@@ -1448,7 +1486,7 @@ impl V8Engine {
             .expect("V8 realm host-data holder contains an unexpected value")
     }
 
-    fn realm_host_data_mut(&mut self) -> &mut RealmHostData {
+    fn realm_host_data_mut(&mut self) -> RealmHostDataMut<'_> {
         let holder = self
             .realm_state
             .host_data_holder
@@ -1461,10 +1499,26 @@ impl V8Engine {
         // SAFETY: `&mut self` is the exclusive host-data access path, and the
         // holder is stored in `self.realm_state`, which `self` owns, so its
         // wrapper traces the platform data for the returned borrow.
+        let platform = unsafe { platform_at(address) };
+        assert_eq!(
+            platform.readers(),
+            0,
+            "realm host data mutably borrowed while a shared borrow is live"
+        );
+        let writer = platform.writer_flag();
+        assert!(
+            !writer.replace(true),
+            "realm host data mutably borrowed while a mutable borrow is live"
+        );
+        // SAFETY: the writer flag is now set for the returned borrow, and the
+        // holder's platform data outlives it.
         let data = unsafe { platform_data_mut_pointer(address) };
-        unsafe { &mut *data }
+        // SAFETY: `data` points at the value stored in the holder's platform
+        // data, which `create_object_with_any` filled with a `RealmHostData`.
+        let data = unsafe { &mut *data }
             .downcast_mut::<RealmHostData>()
-            .expect("V8 realm host-data holder contains an unexpected value")
+            .expect("V8 realm host-data holder contains an unexpected value");
+        RealmHostDataMut { data, writer }
     }
 
     fn state_for_realm(&self, realm: &V8Realm) -> Option<Rc<V8RealmState>> {
@@ -2179,7 +2233,7 @@ impl JsEngine<V8Types> for V8Engine {
     }
 
     fn set_host_hooks(&mut self, hooks: HostHooks<V8Types>) {
-        self.host_hooks = Rc::new(hooks);
+        *self.host_hooks.borrow_mut() = hooks;
     }
 }
 
@@ -2296,12 +2350,14 @@ where
     // SAFETY: cppgc is non-moving and the holder is traced from the function
     // created below, so the payload address is stable for as long as the
     // function is callable.
-    let captures_data = engine
-        .with_object_any(&captures_holder)
-        .expect("captures platform data missing");
-    let captures_ptr = captures_data
-        .downcast_ref::<C>()
-        .expect("captures platform data type mismatch") as *const C;
+    let captures_ptr = {
+        let captures_data = engine
+            .with_object_any(&captures_holder)
+            .expect("captures platform data missing");
+        captures_data
+            .downcast_ref::<C>()
+            .expect("captures platform data type mismatch") as *const C
+    };
 
     let stored = Box::new(
         move |arguments: &[V8Value],
@@ -2590,6 +2646,9 @@ impl EcmascriptHost<V8Types> for V8Engine {
         // addresses a caller may hold are cached in `V8Value`s whose wrappers
         // are traced roots. Only tests call this hook: production collections
         // run with V8's default stack scanning.
+        // SAFETY: as stated above, no cppgc pointer reachable only from the
+        // Rust stack is live across the sweep, so the embedder stack state is
+        // `NoHeapPointers`.
         self.with_cpp_heap(|heap| unsafe {
             heap.collect_garbage_for_testing(v8::cppgc::EmbedderStackState::NoHeapPointers);
         });
@@ -2690,22 +2749,23 @@ unsafe fn platform_at<'a>(address: usize) -> &'a V8PlatformData {
 /// The platform address cached on `object`, either from its V8 host-data slot
 /// or from the realm's associated-platform records.
 fn platform_address(engine: &V8Engine, object: &V8Object) -> Option<usize> {
-    let platform_address: Option<usize> = if let Some(pointer) = object.0.host_data {
-        Some(pointer.as_ptr() as usize)
-    } else {
-        engine
-            .realm_host_data()
-            .associated_objects
-            .iter()
-            .find(|associated| engine.same_object(&associated.object, object))
-            .map(|associated| associated.platform_pointer as usize)
-    };
-    let address = platform_address?;
     assert_eq!(
         object.0.isolate_id, engine.isolate_id,
         "with_object_any called with a value from another isolate"
     );
-    Some(address)
+    // A stale edge's referent (and the platform its wrapper traces) may
+    // already be reclaimed, so validate the handle before reading the cached
+    // address.
+    object.1.assert_readable(engine.gc_epoch());
+    if let Some(pointer) = object.0.host_data {
+        return Some(pointer.as_ptr() as usize);
+    }
+    engine
+        .realm_host_data()
+        .associated_objects
+        .iter()
+        .find(|associated| engine.same_object(&associated.object, object))
+        .map(|associated| associated.platform_pointer as usize)
 }
 
 /// `*mut dyn Any` into the platform data at `address`, for the exclusive
@@ -4863,38 +4923,35 @@ impl ExecutionContext<V8Types> for V8Engine {
     }
 
     fn with_object_any<'a>(&'a self, object: &'a V8Object) -> Option<PlatformData<'a>> {
-        // SAFETY: `'a` is the object's own lifetime, and the platform data is
-        // traced by the object's wrapper (directly, or through the associated
-        // record the wrapper keeps alive with a cppgc `Member`).
-        unsafe { platform_data(self, object) }.map(|data| unsafe { PlatformData::new(data) })
+        let address = platform_address(self, object)?;
+        // SAFETY: `platform_address` validated the object's handle against the
+        // current collection epoch, and the platform data is traced by the
+        // object's wrapper (directly, or through the associated record the
+        // wrapper keeps alive with a cppgc `Member`), so it stays alive for
+        // the object's lifetime.
+        let platform = unsafe { platform_at(address) };
+        Some(unsafe {
+            PlatformData::new(
+                platform.as_any(),
+                platform.readers_flag(),
+                platform.writer_flag(),
+            )
+        })
     }
 
     fn with_object_any_mut<'a>(&'a mut self, object: &'a V8Object) -> Option<PlatformDataMut<'a>> {
-        let platform_address: Option<usize> = if let Some(pointer) = object.0.host_data {
-            Some(pointer.as_ptr() as usize)
-        } else {
-            let index = self
-                .realm_host_data()
-                .associated_objects
-                .iter()
-                .position(|associated| self.same_object(&associated.object, object))?;
-            Some(self.realm_host_data_mut().associated_objects[index].platform_pointer as usize)
-        };
-        let address = platform_address?;
-        assert_eq!(
-            object.0.isolate_id, self.isolate_id,
-            "with_object_any_mut called with a value from another isolate"
-        );
+        let address = platform_address(self, object)?;
         // The `&mut self` receiver makes this the exclusive host-data access
         // path for the duration of the returned borrow, and the platform data
         // is reached through its `UnsafeCell`, so no `*mut` is derived from a
         // shared reference.
-        // SAFETY: the returned lifetime is that of the `&mut self` borrow, for
-        // which the object's wrapper (the tracing owner) is alive, and the
-        // `&mut self` receiver is the exclusive host-data access path.
+        // SAFETY: `platform_address` validated the object's handle against the
+        // current collection epoch, so the wrapper that traces the platform is
+        // alive; the returned lifetime is that of the `&mut self` borrow, and
+        // the `&mut self` receiver is the exclusive host-data access path.
         let platform = unsafe { platform_at(address) };
         let data = unsafe { &mut **platform.data_mut_ptr() };
-        Some(unsafe { PlatformDataMut::new(data, platform.writer_flag()) })
+        Some(unsafe { PlatformDataMut::new(data, platform.readers_flag(), platform.writer_flag()) })
     }
 
     fn store_js_object(&mut self, slot: &mut Option<V8Object>, value: V8Object) {
@@ -5068,7 +5125,7 @@ mod tests {
         CALLBACK_HANDLE_COMPACTION_THRESHOLD, CURRENT_CALLBACK_ISOLATE_ID, CURRENT_CALLBACK_SCOPE,
         StoredBehaviour, V8ArrayBuffer, V8Constructor, V8DataView, V8Engine, V8Function,
         V8Generator, V8Map, V8Object, V8Promise, V8Set, V8SharedArrayBuffer, V8TypedArray, V8Types,
-        create_builtin_fn_with_captures, local_object, local_typed_object,
+        create_builtin_fn_with_captures, local_object, local_typed_object, reentrant_scope,
     };
 
     pub(crate) struct DropFlag(pub(crate) Rc<Cell<bool>>);
@@ -6380,6 +6437,49 @@ mod tests {
         engine.with_value_scope(|scope| {
             let _ = borrowed.1.to_local(scope);
         });
+    }
+
+    #[test]
+    #[should_panic(expected = "platform data mutably borrowed while a shared borrow is live")]
+    fn shared_platform_data_guard_blocks_mutation_through_another_engine() {
+        let mut engine = V8Engine::new();
+        let prototype = engine.create_plain_object(None);
+        let wrapper = engine.create_object_with_any(
+            prototype,
+            Box::new(V8PlatformData::new(TestPlatform {
+                dropped: DropFlag(Rc::new(Cell::new(false))),
+                reflector: None,
+                peer: None,
+                cell: None,
+            })),
+        );
+        let mut other_engine = engine.new_child_realm();
+        let _shared = engine
+            .with_object_any(&wrapper)
+            .expect("wrapper carries test platform data");
+        let _ = other_engine.with_object_any_mut(&wrapper);
+    }
+
+    #[test]
+    #[should_panic(expected = "no marker has visited since the last collection")]
+    fn stale_edge_object_passed_to_with_object_any_panics() {
+        let mut engine = V8Engine::new();
+        let prototype = engine.create_plain_object(None);
+        let wrapper = engine.create_object_with_any(
+            prototype,
+            Box::new(V8PlatformData::new(TestPlatform {
+                dropped: DropFlag(Rc::new(Cell::new(false))),
+                reflector: None,
+                peer: None,
+                cell: None,
+            })),
+        );
+        let mut slot = None;
+        engine.store_js_object(&mut slot, wrapper);
+        let stale = slot.clone().expect("the slot holds the wrapper");
+        drop(slot);
+        engine.gc();
+        let _ = engine.with_object_any(&stale);
     }
 
     #[test]

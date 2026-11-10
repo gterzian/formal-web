@@ -206,16 +206,23 @@ impl<T> V8Handle<T> {
                 // SAFETY: the edge's cppgc storage lives in the isolate whose
                 // counter `isolate_epoch` points at, so the isolate is alive
                 // while this edge is.
-                let current = unsafe { edge.current_epoch() };
-                assert!(
-                    edge.epoch() == current,
-                    "reading a cppgc edge that no marker has visited since the last \
-                     collection (edge epoch {}, current epoch {current}): the referent may \
-                     already be reclaimed",
-                    edge.epoch()
-                );
+                self.assert_readable(unsafe { edge.current_epoch() });
                 edge.reference.get(scope)
             }
+        }
+    }
+
+    /// Panics when this handle is a cppgc edge that no marker has visited
+    /// since the last full collection: the referent may already be reclaimed.
+    pub(crate) fn assert_readable(&self, current_epoch: u64) {
+        if let Self::Edge(edge) = self {
+            assert!(
+                edge.epoch() == current_epoch,
+                "reading a cppgc edge that no marker has visited since the last \
+                 collection (edge epoch {}, current epoch {current_epoch}): the referent may \
+                 already be reclaimed",
+                edge.epoch()
+            );
         }
     }
 
@@ -257,16 +264,9 @@ impl<T> V8Handle<T> {
     /// the cppgc owner that traced the edge, and the value is not traced once
     /// it has been removed.
     pub(crate) fn make_strong(&mut self, scope: &mut v8::PinScope<'_, '_, ()>) {
-        if let Self::Edge(edge) = self {
+        if let Self::Edge(edge) = &*self {
             // SAFETY: as in `to_local`, the isolate outlives the edge.
-            let current = unsafe { edge.current_epoch() };
-            assert!(
-                edge.epoch() == current,
-                "rooting a cppgc edge that no marker has visited since the last collection \
-                 (edge epoch {}, current epoch {current}): the referent may already be \
-                 reclaimed",
-                edge.epoch()
-            );
+            self.assert_readable(unsafe { edge.current_epoch() });
             let replacement = edge
                 .reference
                 .get(scope)
