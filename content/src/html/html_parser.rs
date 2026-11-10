@@ -100,6 +100,11 @@ impl<'m, 'doc> JsTreeSink<'m, 'doc> {
         let child_ids = mutr.child_ids(fragment_root_id);
         mutr.append_children(element_id, &child_ids);
         mutr.remove_node(fragment_root_id);
+        // The fragment root is parser-internal: its children moved to the
+        // target element and no wrapper can exist for it, so it is freed here
+        // rather than left for the detached-node drain, which only sees nodes
+        // recorded with `queue_detached_candidates`.
+        mutr.drop_detached_subtree(fragment_root_id);
     }
 }
 

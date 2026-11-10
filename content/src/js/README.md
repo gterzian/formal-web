@@ -29,8 +29,8 @@ layer is the outer half of is documented once, in
 
 `GlobalScope::cache_node_object` installs a reflector whose finalizer appends
 the node id to the realm's collected queue.  The callback runs during garbage
-collection, so it must only push the id: no document borrow, no allocation,
-and no engine call.  `ContentProcess::drain_detached_nodes` (see
+collection, so it only appends the id to that queue: no document borrow and no
+engine call.  `ContentProcess::drain_detached_nodes` (see
 `content/src/html/README.md`) consumes that queue and owns every wrapper-cache
 removal for a dropped node.  Domain and binding code must not delete cache
 entries or free Blitz nodes directly.

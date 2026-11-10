@@ -29,8 +29,9 @@ Two categories of abstraction:
 `JsTypesGcExt::create_reflector_with_finalizer` installs a callback that runs
 when the engine collects the wrapper.  V8 builds a `v8::Weak` with a
 guaranteed finalizer; Boa returns its strong reflector and never invokes the
-callback.  The callback runs during collection, so it must not allocate,
-borrow application state, or call back into the engine.
+callback.  The callback runs during collection, so it must not call back into
+the engine or touch state an engine operation may be borrowing; it queues the
+payload for the next operation to consume.
 
 ### Module layout
 

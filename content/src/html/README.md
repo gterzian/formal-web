@@ -18,7 +18,10 @@
 `ContentProcess::drain_detached_nodes` frees the Blitz slab entries of detached
 subtrees once no node in them has a live wrapper.  It runs at the end of every
 operation that also runs `drain_pending_iframe_steps`, with no outstanding
-borrow of a Blitz document, and it is the only place content frees nodes.
+borrow of a Blitz document.  It is the only place content frees nodes reached
+from a DOM operation; the innerHTML parser frees its own parser-internal
+fragment root directly (`JsTreeSink::parse_inner_html_into_mutator`), since no
+wrapper can address it.
 
 `remove`, `removeChild`, `textContent =`, `innerHTML =`, and `document.title =`
 detach with `DocumentMutator::remove_node` and record each detached root with
