@@ -1088,16 +1088,16 @@ fn native_callback(
         return;
     };
 
-    // SAFETY: `slot_pointer` points at the shared slot created by
-    // `make_builtin_function`; the registry entry and the guaranteed weak
-    // finalizer keep that `Rc` allocation alive for as long as V8 can invoke
-    // this function, so reborrowing the slot is valid and a taken slot is
-    // reported as a JS error instead of dereferencing the freed record.
     // The handle was installed around every operation that can execute
     // JavaScript and is restricted to the isolate thread. The isolate id
     // check below prevents a record from being used by another isolate.
     // `catch_unwind` prevents Rust unwinding from crossing V8's callback
     // boundary.
+    // SAFETY: `slot_pointer` points at the shared slot created by
+    // `make_builtin_function`; the registry entry and the guaranteed weak
+    // finalizer keep that `Rc` allocation alive for as long as V8 can invoke
+    // this function, so reborrowing the slot is valid and a taken slot is
+    // reported as a JS error instead of dereferencing the freed record.
     let (result, callback_isolate_id) = unsafe {
         let record_slot = &*slot_pointer;
         let record_guard = record_slot.borrow();
@@ -1260,7 +1260,8 @@ fn resolve_module_import<'scope>(
             return None;
         }
     };
-    if let Some(hook) = &engine.host_hooks.borrow().load_imported_module {
+    let load_imported_module = engine.host_hooks.borrow().load_imported_module.clone();
+    if let Some(hook) = load_imported_module {
         // The hook is embedder-supplied Rust code invoked from inside a
         // callback V8's module resolver calls synchronously; like the
         // capability creation above and `native_callback`, it must not
@@ -6940,7 +6941,7 @@ mod tests {
         let hook_called = Rc::new(Cell::new(false));
         let hook_flag = Rc::clone(&hook_called);
         let mut hooks = HostHooks::empty();
-        hooks.load_imported_module = Some(Box::new(move |_request, _capability| {
+        hooks.load_imported_module = Some(Rc::new(move |_request, _capability| {
             hook_flag.set(true);
         }));
         engine.set_host_hooks(hooks);
@@ -6964,7 +6965,7 @@ mod tests {
     fn panicking_load_imported_module_hook_does_not_unwind() {
         let mut engine = V8Engine::new();
         let mut hooks = HostHooks::empty();
-        hooks.load_imported_module = Some(Box::new(|_request, _capability| {
+        hooks.load_imported_module = Some(Rc::new(|_request, _capability| {
             panic!("load_imported_module hook panicked");
         }));
         engine.set_host_hooks(hooks);
@@ -6977,6 +6978,30 @@ mod tests {
         assert!(
             result.is_err(),
             "a panicking import hook must surface as an evaluation error, not unwind across V8"
+        );
+    }
+
+    #[test]
+    fn load_imported_module_hook_can_replace_host_hooks() {
+        let mut engine = V8Engine::new();
+        let replaced = Rc::new(Cell::new(false));
+        let hook_engine = Rc::new(RefCell::new(engine.handle()));
+        let replaced_flag = Rc::clone(&replaced);
+        let mut hooks = HostHooks::empty();
+        hooks.load_imported_module = Some(Rc::new(move |_request, _capability| {
+            hook_engine.borrow_mut().set_host_hooks(HostHooks::empty());
+            replaced_flag.set(true);
+        }));
+        engine.set_host_hooks(hooks);
+        let realm = engine.current_realm();
+        let _ = JsEngine::evaluate_module(
+            &mut engine,
+            "import 'virtual-module'; export const answer = 42;",
+            &realm,
+        );
+        assert!(
+            replaced.get(),
+            "the hook must be able to replace the host hooks while it runs"
         );
     }
 

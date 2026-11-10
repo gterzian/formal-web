@@ -110,6 +110,9 @@ pub fn create_shared_texture(
     // Metal texture from the IOSurface. The descriptor's format must match
     // the surface pixel format ('RGBA' ↔ RGBA8Unorm); the dimensions are the
     // padded surface dimensions.
+    // SAFETY: the dimensions are clamped to at least 1 above, and the pixel
+    // format matches the surface's format ('RGBA'); the call returns an
+    // autoreleased descriptor.
     let descriptor = unsafe {
         MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
             MTLPixelFormat::RGBA8Unorm,

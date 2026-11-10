@@ -154,6 +154,8 @@ impl XpcObject {
     /// Create a bool object, e.g. as the expected value of a
     /// peer-entitlement requirement.
     pub fn new_bool(value: bool) -> Self {
+        // SAFETY: `xpc_bool_create` returns a new +1 object, and `from_raw`
+        // takes ownership of that reference (it asserts non-null).
         unsafe { XpcObject::from_raw(xpc_bool_create(value)) }
     }
     pub fn into_raw(self) -> xpc_object_t {
@@ -220,6 +222,8 @@ impl XpcDictionary {
     pub fn set_string(&mut self, key: &str, value: &str) {
         let ck = CString::new(key).unwrap();
         let cv = CString::new(value).unwrap();
+        // SAFETY: the receiver is a retained dictionary owned by this wrapper,
+        // and both C strings outlive the call.
         unsafe {
             xpc_dictionary_set_string(self.object.as_raw(), ck.as_ptr(), cv.as_ptr());
         }
@@ -447,6 +451,10 @@ pub struct XpcSharedMemory {
 }
 impl XpcSharedMemory {
     pub fn allocate(size: usize) -> Result<Self, String> {
+        // SAFETY: `mmap` returns a fresh anonymous mapping of `size` bytes (or
+        // `MAP_FAILED`, checked below); `xpc_shmem_create` takes ownership of
+        // that mapping; the `munmap` in the error path releases the mapping
+        // `xpc_shmem_create` rejected.
         unsafe {
             let p = libc::mmap(
                 ptr::null_mut(),
@@ -484,6 +492,8 @@ impl XpcSharedMemory {
         let mut region: *mut c_void = ptr::null_mut();
         // xpc_shmem_map writes the mapped region into the out-param and
         // returns its length.
+        // SAFETY: the caller guarantees `object` is a valid XPC shmem object
+        // that outlives the returned mapping; the out-param is a live local.
         let size = unsafe { xpc_shmem_map(object.as_raw(), &mut region) };
         if region.is_null() {
             return Err("xpc_shmem_map failed".into());

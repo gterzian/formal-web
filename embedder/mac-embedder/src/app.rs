@@ -398,6 +398,8 @@ impl Delegate {
         // The flexible-space item must be the system constant object, not
         // a string with the same content: AppKit matches space items by
         // identity.
+        // SAFETY: `NSToolbarFlexibleSpaceItemIdentifier` is an immutable
+        // AppKit constant; objc2 exposes extern statics as unsafe to access.
         let flexible_space = unsafe { NSToolbarFlexibleSpaceItemIdentifier };
         // A flexible space on each side of the address field keeps it
         // horizontally centered (Safari-style). The new-tab button sits at
@@ -762,6 +764,8 @@ impl MacApp {
     fn create_display_link(&mut self) -> Result<(), String> {
         let mut link_ptr: *mut CVDisplayLink = std::ptr::null_mut();
         #[allow(deprecated)]
+        // SAFETY: `link_ptr` is a live local out-parameter; the call writes a
+        // newly created display link into it and returns the status.
         let ret =
             unsafe { CVDisplayLink::create_with_active_cg_displays(NonNull::from(&mut link_ptr)) };
         if ret != kCVReturnSuccess || link_ptr.is_null() {

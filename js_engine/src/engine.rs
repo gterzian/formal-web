@@ -2,6 +2,8 @@
 //!
 //! See `js_engine/README.md` for design notes and remaining work.
 
+use std::rc::Rc;
+
 use log::error;
 
 use crate::enums::{
@@ -1081,12 +1083,12 @@ pub trait JsEngine<T: JsTypes> {
 // ────────────────────────────────────────────────────────────────────────────
 
 pub type EnsureCanCompileStringsHook<T> =
-    Box<dyn Fn(&<T as JsTypesWithRealm>::Realm) -> Completion<(), T>>;
+    Rc<dyn Fn(&<T as JsTypesWithRealm>::Realm) -> Completion<(), T>>;
 pub type PromiseRejectionTrackerHook<T> =
-    Box<dyn Fn(<T as JsTypes>::Promise, PromiseRejectionOperation)>;
+    Rc<dyn Fn(<T as JsTypes>::Promise, PromiseRejectionOperation)>;
 pub type EnqueuePromiseJobHook<T> =
-    Box<dyn Fn(Box<dyn FnOnce()>, Option<<T as JsTypesWithRealm>::Realm>)>;
-pub type LoadImportedModuleHook<T> = Box<dyn Fn(ModuleRequest<T>, PromiseCapability<T>)>;
+    Rc<dyn Fn(Box<dyn FnOnce()>, Option<<T as JsTypesWithRealm>::Realm>)>;
+pub type LoadImportedModuleHook<T> = Rc<dyn Fn(ModuleRequest<T>, PromiseCapability<T>)>;
 
 /// <https://html.spec.whatwg.org/#javascript-specification-host-hooks>
 pub struct HostHooks<T: JsTypesWithRealm> {

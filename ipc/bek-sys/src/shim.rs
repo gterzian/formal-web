@@ -171,6 +171,8 @@ pub unsafe fn make_xpc_connection(
     kind: c_int,
 ) -> Result<ConnectionHandle, String> {
     let mut error_message: *mut c_char = ptr::null_mut();
+    // SAFETY: the caller guarantees `handle` is a live process handle for
+    // `kind`; `error_message` is a live out-parameter.
     let connection =
         unsafe { ffi::bek_process_make_xpc_connection(handle, kind, &mut error_message) };
     if connection.is_null() {
@@ -189,6 +191,8 @@ pub unsafe fn make_xpc_connection(
 /// given `kind`; it is consumed and must not be used again.
 #[cfg(target_os = "ios")]
 pub unsafe fn invalidate(handle: ProcessHandle, kind: c_int) {
+    // SAFETY: the caller guarantees `handle` is a live process handle for
+    // `kind`, consumed by the call.
     unsafe { ffi::bek_process_invalidate(handle, kind) };
 }
 
@@ -205,6 +209,8 @@ pub unsafe fn grant_capability(
     capability: c_int,
 ) -> Result<GrantHandle, String> {
     let mut error_message: *mut c_char = ptr::null_mut();
+    // SAFETY: the caller guarantees `handle` is a live process handle for
+    // `kind`; `error_message` is a live out-parameter.
     let grant =
         unsafe { ffi::bek_process_grant_capability(handle, kind, capability, &mut error_message) };
     if grant.is_null() {
@@ -223,6 +229,8 @@ pub unsafe fn grant_capability(
 /// consumed and must not be used again.
 #[cfg(target_os = "ios")]
 pub unsafe fn invalidate_grant(handle: GrantHandle) {
+    // SAFETY: the caller guarantees `handle` is a live grant handle, consumed
+    // by the call.
     unsafe { ffi::bek_grant_invalidate(handle) };
 }
 

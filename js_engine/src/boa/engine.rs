@@ -3109,4 +3109,18 @@ mod tests {
             "the mutable borrow must succeed once the shared guard is dropped"
         );
     }
+
+    #[test]
+    fn build_installs_the_global_platform_data() {
+        let engine = BoaContext::build(|_| 42u32).expect("the realm must build");
+        let global = engine.context_ref().global_object();
+        let data = engine
+            .with_object_any(&global)
+            .expect("the realm global carries platform data");
+        assert_eq!(
+            data.downcast_ref::<u32>(),
+            Some(&42),
+            "the factory result must be installed on the realm global"
+        );
+    }
 }
