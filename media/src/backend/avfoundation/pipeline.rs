@@ -90,9 +90,10 @@ impl PipelineHandle for AvfPipeline {
         }
 
         // Drain run loop so AVFoundation can service URL loading,
-        // KVO, and video output timing.
+        // KVO, and video output timing. Non-blocking: the select loop's
+        // sample tick already bounds how often this runs.
         let rl = objc2_foundation::NSRunLoop::currentRunLoop();
-        let until = objc2_foundation::NSDate::dateWithTimeIntervalSinceNow(0.008);
+        let until = objc2_foundation::NSDate::dateWithTimeIntervalSinceNow(0.0);
         rl.runUntilDate(&until);
 
         // Duration check (once).

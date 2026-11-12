@@ -286,6 +286,7 @@ impl SurfaceRenderer for CpuRenderer {
             child_frame_to_webview,
             animating,
             animating_frame_ids,
+            settles_content_update,
         } = composed;
         info!(
             "[render-pipe] Graphics CPU submit layers webview={} layers={} child_frames={} animating={}",
@@ -302,6 +303,7 @@ impl SurfaceRenderer for CpuRenderer {
             child_frame_to_webview,
             animating,
             animating_frame_ids,
+            settles_content_update,
         );
 
         let mut rendered = Vec::new();
@@ -472,6 +474,7 @@ impl SurfaceRenderer for CpuRenderer {
                 layers: topology,
                 animating: metadata.animating,
                 animating_frame_ids: metadata.animating_frame_ids,
+                settles_content_update: metadata.settles_content_update,
                 generation: self.gpu.generation,
                 frame_hit_info: metadata.frame_hit_info,
                 child_viewports: metadata.child_viewports,
@@ -609,6 +612,7 @@ impl SurfaceRenderer for CpuRenderer {
                         layers: pending.layers,
                         animating: pending.metadata.animating,
                         animating_frame_ids: pending.metadata.animating_frame_ids,
+                        settles_content_update: pending.metadata.settles_content_update,
                         generation: pending.generation,
                         frame_hit_info: pending.metadata.frame_hit_info,
                         child_viewports: pending.metadata.child_viewports,

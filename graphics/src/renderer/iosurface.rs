@@ -112,6 +112,7 @@ impl SurfaceRenderer for IosurfaceRenderer {
             child_frame_to_webview,
             animating,
             animating_frame_ids,
+            settles_content_update,
         } = composed;
         info!(
             "[render-pipe] Graphics GPU submit layers webview={} layers={} child_frames={} animating={}",
@@ -128,6 +129,7 @@ impl SurfaceRenderer for IosurfaceRenderer {
             child_frame_to_webview,
             animating,
             animating_frame_ids,
+            settles_content_update,
         );
 
         let mut delivered = Vec::new();
@@ -208,6 +210,7 @@ impl SurfaceRenderer for IosurfaceRenderer {
                 layers: topology,
                 animating: metadata.animating,
                 animating_frame_ids: metadata.animating_frame_ids,
+                settles_content_update: metadata.settles_content_update,
                 generation,
                 frame_hit_info: metadata.frame_hit_info,
                 child_viewports: metadata.child_viewports,
@@ -274,6 +277,7 @@ impl SurfaceRenderer for IosurfaceRenderer {
             layers,
             animating: metadata.animating,
             animating_frame_ids: metadata.animating_frame_ids,
+            settles_content_update: metadata.settles_content_update,
             generation,
             frame_hit_info: metadata.frame_hit_info,
             child_viewports: metadata.child_viewports,

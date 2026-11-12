@@ -226,13 +226,35 @@ composes the last committed root with any dirty out-of-band layer (a worker
 top-level frame clears the deadline. `PixelFrameReady` carries the composed
 layers, hit-test info, child viewport data, and the animating frame ids.
 
+### Video frames: a composition with no content update
+
+A playing video does not make the document animating, so it queues no
+`update the rendering`: its layer's content is produced by the media pipeline
+inside the graphics process, and the document's own scene is unchanged.
+Graphics stores the frame and reports `GraphicsEvent::OutOfBandLayerChanged`;
+the UA answers with `GraphicsCommand::ComposeOutOfBand`, and graphics composes
+the committed root with the stored frame. The relay keeps composition a UA
+decision, like every other composition in the cycle, and the model covers it
+as its own action (`verification/tla_specs/RenderingOpportunity.tla`,
+`OutOfBandComputed`) — a composition that moves no content counter, allowed
+only while no content update is in flight. That gate is what makes the video
+frame wait for a cycle already in flight: that cycle's frame composes the
+stored video frame, so one composition never preempts or repeats another.
+
+`PixelFrameReady` carries `settles_content_update`: true when the composition
+presents a top-level frame or the render cycle's deadline expires, false for an
+out-of-band composition (a video frame). Only a settling composition clears
+`pending_update_the_rendering`; an out-of-band composition that cleared it
+would let the UA queue a second update while the first is still in flight.
+
 ### Completing the cycle
 
 On `PixelFrameReady` the UA:
 
-- clears the in-flight state for the top-level and composed child frames. A
-  same-event-loop child has no pending update of its own (its changes note the
-  event loop root); a cross-origin child's queued update is released here when
+- clears the in-flight state for the top-level and composed child frames when
+  the composition settles the content update (see above). A same-event-loop
+  child has no pending update of its own (its changes note the event loop
+  root); a cross-origin child's queued update is released here when
   its frame is composed, which lets its next note queue again;
 - forwards the layers to the embedder (`new_web_content_layers`), which
   presents them;

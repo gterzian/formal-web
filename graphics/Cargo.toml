@@ -32,7 +32,6 @@ name = "formal-web-graphics"
 path = "src/bin/graphics_process.rs"
 
 [dependencies]
-verification = { path = "../verification" }
 anyrender = { version = "0.11", features = ["serde"] }
 anyrender_vello = "0.11.0"
 ipc = { path = "../ipc" }

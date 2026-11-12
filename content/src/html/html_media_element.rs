@@ -399,8 +399,13 @@ impl HTMLMediaElement {
                     (event_sender, traversable_id, document_id)
                 {
                     // Allocate pipeline ID and send CreatePipeline+Play directly to media.
+                    // The pipeline is recorded on the document that owns the
+                    // media element, so destroying the document (a navigation)
+                    // destroys the pipeline with it.
                     let pipeline_id = with_global_scope(job_ec, |global_scope, _ec| {
-                        Ok(global_scope.allocate_media_pipeline_id())
+                        let pipeline_id = global_scope.allocate_media_pipeline_id();
+                        global_scope.register_media_pipeline(document_id, pipeline_id);
+                        Ok(pipeline_id)
                     })
                     .ok();
 

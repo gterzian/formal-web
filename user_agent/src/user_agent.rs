@@ -1647,14 +1647,6 @@ impl UserAgentWorker {
             }) {
                 Ok((mut handle, connection)) => {
                     let sender = connection.sender.clone();
-                    // Forward the trace sender to the graphics process.
-                    if let Err(error) =
-                        sender.send(ipc_messages::graphics::GraphicsCommand::SetTraceSender(
-                            trace_sender.clone(),
-                        ))
-                    {
-                        log::error!("failed to send trace sender to graphics: {error}");
-                    }
                     let receiver = connection.receiver;
                     let child = handle.take_child();
                     (Some(sender), ipc::crossbeam_proxy(receiver), child)
@@ -5741,11 +5733,26 @@ impl UserAgentWorker {
                 layers,
                 animating,
                 animating_frame_ids,
+                settles_content_update,
                 generation: _,
                 frame_hit_info,
                 child_viewports,
                 child_frame_to_webview,
             } => {
+                // The composed frame reached the user agent. The model's
+                // GraphicsComputed action applies here: this is where the
+                // frame's output is released and, when a rendering
+                // opportunity is held, the next update is queued. Tracing on
+                // receipt keeps the event ordered with those queue decisions;
+                // tracing it in the graphics process recorded it after the
+                // frame had already been sent, so a queued update could reach
+                // the trace first.
+                verification::tla_log!(
+                    self.tla_tracer,
+                    -> "RenderingOpportunity",
+                    "GraphicsComputed",
+                    webview_id.0
+                );
                 debug!(
                     "[graphics] received surface frame for {:?} ({} layers)",
                     webview_id,
@@ -5790,22 +5797,27 @@ impl UserAgentWorker {
                     webview_id
                 );
 
-                // When the top-level traversable's composed scene completes,
-                // all child frames included in the composition have also been
-                // rendered and composed.  Clear their pending state so they
-                // can receive new rendering opportunities.  Queued
-                // opportunities are kept: they are requests for a new render
-                // (e.g. a hover state change in the child) that were batched
-                // while no frame was needed and must survive this
-                // composition, or the child never repaints.
-                for (_child_frame_id, child_wv) in child_frame_to_webview.iter() {
-                    self.pending_update_the_rendering.remove(&child_wv.0);
+                // Only a composition that settles the navigable's in-flight
+                // content update (the top-level frame rendered, or the cycle's
+                // deadline presented the committed root) completes that
+                // update. An out-of-band composition (a video frame) or a
+                // deferred child-frame composition does not serve the pending
+                // update: clearing the flag for it would let the UA queue a
+                // second update while the first is still in flight.
+                let completed_pending_update = *settles_content_update
+                    && self.pending_update_the_rendering.remove(&webview_id.0);
+                if completed_pending_update {
+                    // All child frames included in the composition have also
+                    // been rendered and composed. Clear their pending state so
+                    // they can receive new rendering opportunities. Queued
+                    // opportunities are kept: they are requests for a new
+                    // render (e.g. a hover state change in the child) that
+                    // were batched while no frame was needed and must survive
+                    // this composition, or the child never repaints.
+                    for (_child_frame_id, child_wv) in child_frame_to_webview.iter() {
+                        self.pending_update_the_rendering.remove(&child_wv.0);
+                    }
                 }
-
-                // The frame was produced; the update for the top-level
-                // traversable is complete. The texture is forwarded to the
-                // embedder below.
-                self.pending_update_the_rendering.remove(&webview_id.0);
                 info!(
                     "[render-pipe] UA composed scene navigable={} animating={} pending_remaining={}",
                     webview_id.0,
@@ -5840,10 +5852,12 @@ impl UserAgentWorker {
                         // top-level frame itself, already noted above.
                     }
                 }
-                // If the embedder already has a rendering opportunity
-                // (a paint arrived while this render was in flight), start
-                // the next render now.
-                if self.rendering_opportunities.contains(&webview_id.0) {
+                // If the composition completed a content update and the
+                // embedder already has a rendering opportunity (a paint
+                // arrived while that render was in flight), start the next
+                // render now. An out-of-band composition must not start one.
+                if completed_pending_update && self.rendering_opportunities.contains(&webview_id.0)
+                {
                     self.queue_update_the_rendering_for_navigables(webview_id.0);
                 } else if !*animating
                     && self.queued_ui_state_updates.keys().any(|candidate| {
@@ -5912,26 +5926,20 @@ impl UserAgentWorker {
                     }
                 }
             }
-            GraphicsEvent::VideoEnded {
-                webview_id,
-                video_paint_id,
-            } => {
-                let event_loop_id = match self.state.traversable_handles.get(&webview_id.0) {
-                    Some(event_loop_id) => *event_loop_id,
-                    None => return,
-                };
-                let Some(agent) = window_agent(&self.state, event_loop_id) else {
-                    return;
-                };
-                if let Err(error) =
-                    agent
-                        .event_loop
-                        .command_sender
-                        .send(ContentCommand::NotifyVideoEnded {
-                            video_paint_id: *video_paint_id,
-                        })
+            GraphicsEvent::OutOfBandLayerChanged { webview_id } => {
+                // A video frame was stored for the webview's composition. The
+                // document's own layer is unchanged, so no update the rendering
+                // is queued: graphics composes the stored frame when the UA
+                // asks it to, which keeps the video's presentation on the same
+                // path (and the same pacing owner) as every other composition.
+                if let Some(graphics_sender) = &self.graphics_extension_sender
+                    && let Err(error) = graphics_sender.send(
+                        ipc_messages::graphics::GraphicsCommand::ComposeOutOfBand {
+                            webview_id: *webview_id,
+                        },
+                    )
                 {
-                    error!("failed to send video-ended to event loop {event_loop_id}: {error}");
+                    error!("failed to request an out-of-band composition: {error}");
                 }
             }
             GraphicsEvent::ImageDecoded {

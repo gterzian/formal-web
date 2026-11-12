@@ -21,7 +21,7 @@ The verification crate owns trace recording, TLA+ validation, and the shutdown w
 | Spec | Events traced (producer) | Validates |
 |---|---|---|
 | `Navigation` | UA navigation lifecycle | navigable/navigation state machine |
-| `RenderingOpportunity` | UA `CreateFrame` (the navigable-creation part of the navigation path, traced from `CreateNavigable`/`CreateChildNavigable`) /`NoteUiStateUpdate`/`RenderingOpportunity`, content `UpdateTheRendering`, graphics `GraphicsComputed` (traced when the pixels are actually sent) | the render cycle documented in `user_agent/README.md` ("Rendering pipeline"): the rendering-opportunity gate, update the rendering, composition, and the two-buffer bound |
+| `RenderingOpportunity` | UA `CreateFrame` (the navigable-creation part of the navigation path, traced from `CreateNavigable`/`CreateChildNavigable`) /`NoteUiStateUpdate`/`RenderingOpportunity`, content `UpdateTheRendering`, UA `GraphicsComputed` (traced on receipt of the composed frame) | the render cycle documented in `user_agent/README.md` ("Rendering pipeline"): the rendering-opportunity gate, update the rendering, composition, and the two-buffer bound |
 | `MessagePort` | content `NewChannel`/`PostMessage`/`ReceiveMessage`/`Transfer`/`TransferReceive`, UA `RouteMessage`, content `RunTask` (the last two are the implementation-level routing/task events, skipped by the coarse trace consumer) | the cross-process port workflow mapped to the HTML spec's channel messaging steps: channel creation, the FIFO port message queue ordering (each `ReceiveMessage` pop is checked against the abstract queue head), and the transfer/transfer-receive transitions |
 
 ### MessagePort scope
@@ -54,7 +54,7 @@ latter two event kinds.
 The model tracks the frame-production cycle per **top-level traversable** and
 its **child frames** (iframes). `RenderingOpportunity` and `GraphicsComputed`
 only ever fire for top-levels (the embedder sends `frame_needed` for webviews;
-graphics only computes when the root frame arrives), while
+the UA traces `GraphicsComputed` when a top-level composition arrives), while
 `NoteUiStateUpdate`/`UpdateTheRendering` are traced for every frame. The
 pipeline itself is documented in `user_agent/README.md` ("Rendering pipeline");
 this section covers what the trace model records.
@@ -70,6 +70,15 @@ iframe, so the child rendering path is actually traced and validated.
 
 ### RenderingOpportunity remaining work
 
+A playing video in the recorded trace is not part of the standard
+verification session: a trace that includes video frames fails intermittently
+at `UpdateTheRendering` (consecutive updates with no intervening queue event).
+That is the intermittent `RenderingOpportunity` failure already documented in
+`content/README.md` (the content command channel / task queue ordering); the
+video's compositions expose it more often. The model's out-of-band composition
+action (`OutOfBandComputed`) is therefore exercised by TLC on the base model,
+not by the recorded trace.
+
 The model abstracts all UI state update notes into `NoteUiStateUpdate` and
 relies on `RenderingOpportunity` fairness to eventually service a batched
 update, so it does not distinguish a cross-origin content change arriving out
@@ -83,7 +92,7 @@ action, and is deferred.
 ### Adding a spec
 
 1. Write `{Name}.tla` (the model) and `{Name}Trace.tla` (the trace consumer) plus `{Name}.cfg` / `{Name}Trace.cfg` in `verification/tla_specs/`. Discovery is automatic from the flat `.tla` files.
-2. Emit events from code with `verification::tla_log!(tracer, -> "{Name}", "Event", args...)`. Producers holding a `TraceSender`/`TLATracer` are the UA, the graphics process, and the embedder apps.
+2. Emit events from code with `verification::tla_log!(tracer, -> "{Name}", "Event", args...)`. Producers holding a `TraceSender`/`TLATracer` are the UA, content processes, and the embedder apps.
 3. For specs whose event args need TLA+ numeric types (e.g. generation counters), extend `collect_trace_ids_for_spec` / `render_trace_data_module_for_spec` in `verification/src/validate.rs` with a custom event renderer (see `render_gpu_rendering_trace_event`, which renders generation/region args as integer literals).
 4. `./verification/verify-specs.sh` picks the new spec up automatically; a `CHECK {Name} ... OK` line means the recorded trace is consistent with the model.
 

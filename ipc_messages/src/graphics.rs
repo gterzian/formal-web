@@ -62,6 +62,14 @@ pub enum GraphicsCommand {
         /// the last committed root.
         deadline_ms: u64,
     },
+    /// Compose the webview's committed hierarchy for an out-of-band layer
+    /// (a video frame) that changed without a content update. The UA sends it
+    /// in answer to `GraphicsEvent::OutOfBandLayerChanged`, so graphics
+    /// composes only when asked, and the video frame's presentation stays a
+    /// UA decision rather than the media pipeline's. Graphics defers the
+    /// composition when a content render cycle is in flight: that cycle's
+    /// frame composes the stored video frame instead.
+    ComposeOutOfBand { webview_id: WebviewId },
     /// A committed scene for an offscreen canvas, from the worker (or window)
     /// realm that owns the transferred `OffscreenCanvas`. The scene bytes
     /// travel in the IPC shared-memory map under `scene_shmem_key`.
@@ -133,9 +141,6 @@ pub enum GraphicsCommand {
     /// Notify the compositor that a top-level navigation finalized.
     /// Resets the compositor so the next PaintFrame replaces the old root scene.
     NavigationFinalized { webview_id: WebviewId },
-    /// Forward a TLA+ trace sender (dev only, ipc-channel mode).
-    /// Sent by the UA right after launch, before any other commands.
-    SetTraceSender(Option<verification::TraceSender>),
     /// Shut down the graphics process.
     Shutdown,
 }
@@ -194,19 +199,24 @@ pub enum GraphicsEvent {
         /// frames) that carry the animating flag; the UA notes UI state
         /// updates for these navigables.
         animating_frame_ids: Vec<FrameId>,
+        /// True when this composition settles the navigable's in-flight
+        /// content update (the top-level frame rendered, or the render
+        /// cycle's deadline presented the committed root). The UA clears
+        /// `pending_update_the_rendering` only for such a composition; an
+        /// out-of-band composition (a video frame) or a deferred child-frame
+        /// composition must not release an update it did not serve.
+        settles_content_update: bool,
         generation: u64,
         frame_hit_info: Vec<FrameHitInfo>,
         child_viewports: Vec<ChildViewport>,
         child_frame_to_webview: HashMap<FrameId, WebviewId>,
     },
 
-    /// A media pipeline reached end of stream. The UA should forward
-    /// this to the relevant content process so it can unset any
-    /// animating flags.
-    VideoEnded {
-        webview_id: WebviewId,
-        video_paint_id: VideoPaintId,
-    },
+    /// A video frame was stored for `webview_id`'s composition: an
+    /// out-of-band layer changed without a content update, so the UA asks
+    /// graphics to compose it (`GraphicsCommand::ComposeOutOfBand`).
+    OutOfBandLayerChanged { webview_id: WebviewId },
+
     /// The graphics process finished decoding an `<img>` resource registered
     /// with `GraphicsCommand::RegisterImage`. The UA forwards the result to
     /// the content process that registered the image, which runs the

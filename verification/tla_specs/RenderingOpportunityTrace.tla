@@ -91,8 +91,10 @@ UpdateTheRenderingTrace ==
 
 \* A graphics composition. Normally the top-level content rendered first
 \* (GraphicsComputed); when the render cycle's deadline expired first, the
-\* composition is the Deadline action instead. The two are distinguished by
-\* their guards, not by the event name (both are traced as GraphicsComputed).
+\* composition is the Deadline action instead; when a video frame was stored
+\* and no content update was in flight, the composition is OutOfBandComputed.
+\* They are distinguished by their guards, not by the event name (all three
+\* are traced as GraphicsComputed).
 GraphicsComputedTrace ==
     /\ trace_index \in 1..TraceLength
     /\ CurrentEvent = "GraphicsComputed"
@@ -113,6 +115,16 @@ DeadlineTrace ==
        /\ Base!Deadline(f)
        /\ Advance
 
+OutOfBandComputedTrace ==
+    /\ trace_index \in 1..TraceLength
+    /\ CurrentEvent = "GraphicsComputed"
+    /\ Len(CurrentArgs) = 1
+    /\ LET f == EventArg(1)
+       IN
+       /\ f \in live
+       /\ Base!OutOfBandComputed(f)
+       /\ Advance
+
 Done ==
     /\ trace_index > TraceLength
     /\ UNCHANGED vars
@@ -124,6 +136,7 @@ Next ==
     \/ UpdateTheRenderingTrace
     \/ GraphicsComputedTrace
     \/ DeadlineTrace
+    \/ OutOfBandComputedTrace
     \/ Done
 
 TypeOK == Base!TypeOK

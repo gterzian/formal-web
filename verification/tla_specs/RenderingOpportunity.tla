@@ -18,6 +18,14 @@ EXTENDS Naturals, FiniteSets, TLC
    starts the top-level's update too (their frames compose together), mirroring
    the user-agent scheduling.
 
+   A video's frames are decoded in the graphics process, which composes the
+   video's own layer as they arrive: OutOfBandComputed presents a frame
+   against the committed root while no content update is in flight. Content
+   is not involved, so no counter moves — the composition presents no new
+   content state. The action is therefore a stutter of the base state
+   machine: it constrains the trace (a video composition requires an idle
+   pipeline) without enlarging the explored state space.
+
    The per-frame state (parent, pending, ...) is a function over the whole
    constant Frame universe, with default values for frames not yet created;
    the live set tracks which frames exist. This keeps every expression
@@ -261,6 +269,21 @@ Deadline(top) ==
           ELSE ui_state_update_count[g]]
   /\ UNCHANGED <<animating, live, parent>>
 
+\* Graphics presented a video frame — an embedded layer whose content the
+\* media pipeline produces — against the committed root. No content update
+\* ran for it (content is not involved: the document's own scene is
+\* unchanged), so no counter moves. The action requires an idle pipeline:
+\* composing while a render cycle is in flight would present the stale root
+\* and then compose again when the cycle's frame arrives; the code's gate
+\* (`cycle_deadline`) defers the frame to that cycle's composition, which
+\* the model covers as GraphicsComputed or Deadline.
+OutOfBandComputed(top) ==
+  /\ top \in live
+  /\ IsTopLevel(top)
+  /\ pending[top] = composed[top]
+  /\ rendering_updated[top] = composed[top]
+  /\ UNCHANGED vars
+
 \* ---- Next-state relation ----
 
 Next ==
@@ -270,6 +293,7 @@ Next ==
   \/ \E f \in live: UpdateTheRendering(f)
   \/ \E f \in live: IsTopLevel(f) /\ GraphicsComputed(f)
   \/ \E f \in live: IsTopLevel(f) /\ Deadline(f)
+  \/ \E f \in live: IsTopLevel(f) /\ OutOfBandComputed(f)
 
 \* ---- Fairness ----
 

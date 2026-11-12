@@ -1279,9 +1279,11 @@ requires rendering_updated < pending (content is behind the request). "
         }
         "GraphicsComputed" => {
             "The model tried to apply a GraphicsComputed action. Graphics finished \
-the frame's output, advancing composed to match rendering_updated. This step \
-requires rendering_updated > composed (content rendered something not yet \
-output). "
+the frame's output. Normally it advances composed to match rendering_updated, \
+which requires rendering_updated > composed (content rendered something not \
+yet output); the Deadline and OutOfBandComputed actions cover the two cases \
+with no new content state, the latter requiring an idle pipeline \
+(pending = composed = rendering_updated) and an out-of-band layer frame."
         }
         _ => {
             "The model could not apply this event. Check the trace model \

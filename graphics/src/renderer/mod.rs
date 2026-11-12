@@ -50,6 +50,9 @@ pub struct FrameMetadata {
     /// that carry the animating flag; the UA notes UI state updates for these
     /// navigables.
     pub animating_frame_ids: Vec<FrameId>,
+    /// The composition settles the navigable's in-flight content update; the
+    /// UA clears `pending_update_the_rendering` only for such a composition.
+    pub settles_content_update: bool,
 }
 
 /// The outcome of delivering a completed frame, reported to the run loop so
@@ -397,6 +400,7 @@ pub(crate) fn frame_metadata(
     child_frame_to_webview: HashMap<FrameId, WebviewId>,
     animating: bool,
     animating_frame_ids: Vec<FrameId>,
+    settles_content_update: bool,
 ) -> FrameMetadata {
     let child_ports: Vec<ChildViewport> = child_viewports
         .into_iter()
@@ -412,6 +416,7 @@ pub(crate) fn frame_metadata(
         child_frame_to_webview,
         animating,
         animating_frame_ids,
+        settles_content_update,
     }
 }
 

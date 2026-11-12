@@ -24,7 +24,7 @@ use ipc_messages::content::{
     CanvasId, DocumentId, Event as ContentEvent, EventLoopId, ImageElementId, NavigableId,
     WindowTimerKey, WorkerId,
 };
-use ipc_messages::media::VideoPaintId;
+use ipc_messages::media::{MediaPipelineId, VideoPaintId};
 use ipc_messages::network::Request as NetworkRequest;
 use js_engine::gc::{GcCell, gc_cell_new};
 use js_engine::{Completion, ExecutionContext, JsTypes, JsTypesGcExt, PromiseResolvers, gc_struct};
@@ -370,6 +370,15 @@ pub struct GlobalScope {
     video_paint_registry:
         Rc<RefCell<Option<Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>>>>,
 
+    /// Shared registry of the media pipelines each document's `<video>`
+    /// elements created, keyed by document id. Set by `ContentProcess` during
+    /// document creation so the media element load algorithm can record a
+    /// pipeline and `ContentProcess::destroy_document` can destroy the
+    /// document's pipelines with it.
+    #[ignore_trace]
+    media_pipeline_registry:
+        Rc<RefCell<Option<Rc<RefCell<HashMap<DocumentId, Vec<MediaPipelineId>>>>>>>,
+
     /// Shared registry mapping (document_id, node_id) → CanvasId. Set by
     /// `ContentProcess` during document creation so that both
     /// `HTMLCanvasElement.transferControlToOffscreen` (to insert) and
@@ -471,6 +480,7 @@ impl GlobalScope {
 
             new_document_registry: Rc::new(RefCell::new(None)),
             video_paint_registry: Rc::new(RefCell::new(None)),
+            media_pipeline_registry: Rc::new(RefCell::new(None)),
             canvas_registry: Rc::new(RefCell::new(None)),
             graphics_sender: Rc::new(RefCell::new(None)),
             epoch_anchor: Rc::new(std::cell::Cell::new(None)),
@@ -1817,6 +1827,33 @@ impl GlobalScope {
                 .borrow_mut()
                 .entry((document_id, node_id))
                 .or_insert(paint_id);
+        }
+    }
+
+    /// Set the shared registry that records the media pipelines each document
+    /// created. ContentProcess sets this during document creation so the media
+    /// element load algorithm can record its pipeline and document teardown can
+    /// destroy it.
+    pub(crate) fn set_media_pipeline_registry(
+        &self,
+        registry: Rc<RefCell<HashMap<DocumentId, Vec<MediaPipelineId>>>>,
+    ) {
+        *self.media_pipeline_registry.borrow_mut() = Some(registry);
+    }
+
+    /// Record a media pipeline as owned by `document_id`, so destroying the
+    /// document destroys the pipeline.
+    pub(crate) fn register_media_pipeline(
+        &self,
+        document_id: DocumentId,
+        pipeline_id: MediaPipelineId,
+    ) {
+        if let Some(registry) = self.media_pipeline_registry.borrow().as_ref() {
+            registry
+                .borrow_mut()
+                .entry(document_id)
+                .or_default()
+                .push(pipeline_id);
         }
     }
 

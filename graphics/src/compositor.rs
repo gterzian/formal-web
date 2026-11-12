@@ -793,6 +793,7 @@ impl Compositor {
             child_frame_to_webview: HashMap::new(),
             animating: self.composing_animating,
             animating_frame_ids: std::mem::take(&mut self.composing_animating_frames),
+            settles_content_update: false,
         })
     }
 
