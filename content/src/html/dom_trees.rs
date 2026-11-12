@@ -23,7 +23,28 @@ impl MutationHooks for DocumentProviders {
         new_value: Option<&str>,
         namespace: &str,
     ) {
-        self.request_redraw();
+        // An `<img>`'s image attributes change the embed layer the graphics
+        // process draws, never anything the document's own scene paints: while
+        // the image is available the document draws nothing for the element,
+        // and a source swap between two available images leaves the alt text
+        // and the element's box where they were. The presentation the decode
+        // produces decides between a repaint (the image became available, or
+        // the new intrinsic size moved the box) and a composition update.
+        // Note: blitz inserts restyle damage for every attribute change, so the
+        // damage this one recorded is dropped once the operation's hooks have
+        // run (`ContentProcess::drain_dom_hook_steps`); otherwise the next
+        // resolve pass would repaint the page for a change that cannot affect
+        // it.
+        let embed_only = is_html_element(element)
+            && element.name.local.as_ref() == "img"
+            && images_processing_model::is_relevant_attribute_change(
+                local_name, old_value, new_value, namespace,
+            );
+        if embed_only {
+            self.record_embed_only_attribute_change(node_id);
+        } else {
+            self.request_redraw();
+        }
         if is_html_element(element) && element.name.local.as_ref() == "img" {
             images_processing_model::attribute_change_steps(
                 self, node_id, element, local_name, old_value, new_value, namespace,
@@ -42,7 +63,7 @@ impl MutationHooks for DocumentProviders {
             // document and navigable state, which a DOM hook cannot reach while
             // blitz holds the document mutably borrowed, so the hook records the
             // step and the content process runs it when it has the document back
-            // (`ContentProcess::drain_pending_iframe_steps`), before the current
+            // (`ContentProcess::drain_dom_hook_steps`), before the current
             // operation ends.  The recorded step re-reads the element's current
             // attributes, so a burst of changes processes once; the
             // content-navigable guard and the missing-`srcdoc` guard for `src`
@@ -92,7 +113,7 @@ impl MutationHooks for DocumentProviders {
             // needs the content process's document and navigable state; a DOM hook
             // cannot reach it while blitz holds the document mutably borrowed, so
             // the hook records the step and the content process runs it when it has
-            // the document back (`ContentProcess::drain_pending_iframe_steps`),
+            // the document back (`ContentProcess::drain_dom_hook_steps`),
             // before the current operation ends.
             self.record_iframe_post_connection_steps(node_id);
         }

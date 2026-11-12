@@ -17,7 +17,7 @@
 
 `ContentProcess::drain_detached_nodes` frees the Blitz slab entries of detached
 subtrees once no node in them has a live wrapper.  It runs at the end of every
-operation that also runs `drain_pending_iframe_steps`, with no outstanding
+operation that also runs `drain_dom_hook_steps`, with no outstanding
 borrow of a Blitz document.  It is the only place content frees nodes reached
 from a DOM operation; the innerHTML parser frees its own parser-internal
 fragment root directly (`JsTreeSink::parse_inner_html_into_mutator`), since no
@@ -81,13 +81,19 @@ own frame.
   driven by the DOM mutation hooks in `dom_trees.rs`.  Those hooks run while
   blitz holds the document mutably borrowed and cannot reach the navigable
   state, so they record the step and
-  `ContentProcess::drain_pending_iframe_steps` runs it at the end of the current
+  `ContentProcess::drain_dom_hook_steps` runs it at the end of the current
   operation.  The `<img>` steps in the same hooks do not need this: they only
-  touch the document's providers and run synchronously.
+  touch the document's providers and run synchronously.  Their attribute change
+  is recorded so the content process drops the restyle damage blitz inserted
+  for it: an `<img>`'s image attributes are owned by the image processing model
+  and the presentation the decode produces decides whether the document's own
+  scene changes (see "Render invalidation" in `content/README.md`).
 - Child navigables nest at any depth, and a same-origin child's document is
-  another document of this process.  Every DOM tree step marks the document
-  that owns the hook as needing a repaint, and a change to any document notes
-  the event loop root, whose update renders every document of the process.
+  another document of this process.  Every DOM tree step that can change what
+  the document draws (an insertion, a removal, an attribute change other than
+  an `<img>`'s image attributes) marks the document as needing a repaint, and a
+  change to any document notes the event loop root, whose update renders every
+  document of the process.
 
 Remaining gaps:
 

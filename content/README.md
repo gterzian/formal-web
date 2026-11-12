@@ -219,39 +219,77 @@ this crate.
 
 ## Render invalidation
 
-`ContentDocument`'s `PaintDirty` carries two answers, and
+`ContentDocument`'s `PaintDirty` carries three answers, and
 `update_the_rendering` treats them differently:
 
-- **Paint** — content changed something blitz does not model: a script ran
-  (`mark_document_dirty`), an offscreen canvas or video embed site appeared,
-  the viewport changed, a resource loaded, or blitz made a change that is only
-  visible in paint (text selection, IME). `ShellProvider::request_redraw` and
-  `GlobalScope::mark_document_dirty` set it. It repaints whatever the resolve
-  pass says.
+- **Paint** — content changed something the resolve pass cannot report: a
+  stylesheet or font loaded, an offscreen canvas or video embed site appeared,
+  the viewport changed, or blitz made a change that is only visible in paint
+  (text selection, IME). `ShellProvider::request_redraw` and
+  `GlobalScope::mark_document_dirty` set it, as does every DOM mutation: the
+  document tree hooks (attribute changes other than an `<img>`'s image
+  attributes, insertions, removals) and the text-node data setter
+  (`Node::run_set_text_content`). It repaints whatever the resolve pass says.
 - **Restyle** — blitz reported that a computed style may have changed:
   `ShellProvider::request_restyle` (a `:hover` state change, from
   `set_hover_to`/`clear_hover`). The document is resolved and repainted **only
-  if `BaseDocument::resolve` reports that the pass produced restyle damage**,
-  so crossing elements on a page whose `:hover` rules match nothing leaves the
-  layer clean.
+  if `BaseDocument::resolve` reports that the pass produced restyle damage**.
+- **Composition** — the document's embed sites changed while its own recorded
+  scene did not: an `<img>` layer switched to a newly decoded image
+  (`apply_pending_image_presentation`). The frame is re-sent with a freshly
+  built composition and `scene_unchanged` set, so graphics recomputes every
+  embed site's placement from it and re-presents only the layers that changed
+  (`graphics/README.md`, "Surface delivery invariants").
 
-A UI event that reaches no listener on its path sets neither (it cannot have
-run script); a listener that mutates the DOM is covered by the paint flag
-because content marks the document dirty around event dispatch. Any new input
-path that mutates the document without going through blitz must set the paint
-flag itself.
+Nothing marks a document merely because script ran. Event listeners, timers and
+message handlers reach the document only through blitz's mutator (whose hooks
+mark it, see above) or through content's own mutation sites, so a handler that
+changes nothing the document draws — the demo page's "Swap sources", which only
+sets an `<img>`'s `src` — re-composes without re-recording the page's scene. A
+new mutation path must mark the document itself.
+
+An `<img>`'s image attributes (`src`, `srcset`, `sizes`, `crossorigin`,
+`referrerpolicy`) are the exception among attribute changes: the hook records the
+node instead of marking a repaint, and the content process drops the restyle
+damage blitz inserted for it once the operation has run
+(`ContentProcess::clear_embed_only_attribute_damage`). The image processing model
+then decides at presentation time: if the element already had an embed site and
+its computed `width` and `height` are both specified, the new intrinsic size
+cannot move anything the document draws, so only the damage that one call added
+is dropped and the document is re-composed; otherwise the document repaints
+(the image became available, so the alt text it painted goes away, or its box
+moved).
 
 An animating document also resolves every cycle: blitz reports CSS animation
 damage only when the resolve pass runs, and it does not request a redraw per
 animation tick. Painting still depends on the pass reporting a change, so a
 video-driven cycle reuses the document's scene instead of repainting it.
 
+Animation frame callbacks are not a repaint reason by themselves. A callback
+that mutates the document marks it as any other mutation does, and the change is
+painted in the same frame; a callback that changes only an `<img>` source marks
+nothing, and the cycle re-composes. A document whose callbacks re-registered
+themselves (a script-driven animation loop) reports `animating` on its frame,
+which keeps the UA queueing rendering opportunities — that is what drives the
+demo page's "Animate sources".
+
 ## Known issues
 
-- **A hover-driven repaint still happens where it should not.** Pointer
-  crossings repaint less than before (a resolved document that reports no
-  restyle damage keeps its layer clean), but pages still repaint on pointer
-  moves, including cases where no `:hover` rule seems to apply. blitz's own
+- **A physical click repaints the whole document.** blitz focuses the clicked
+  element on pointer-down (`set_focus_to`) and requests a repaint for it, so
+  pressing a button re-records the page's scene. Separately, a document that
+  contains a `<button>` makes `BaseDocument::resolve` report restyle damage on
+  every pass, with no click and nothing focused: a page holding a `div` and a
+  `button` reports a change on two consecutive resolves in the same cycle,
+  while the same page without the button reports none on the second, so the
+  damage is inserted during the pass itself. The source of that damage was not
+  investigated. Content runs no resolve pass for a listener run, so both show
+  up only where blitz itself asks for a repaint or a restyle.
+
+- **A hover-driven repaint still happens where it should not.** A resolved
+  document that reports no restyle damage keeps its layer clean, but pages still
+  repaint on pointer moves, including cases where no `:hover` rule seems to
+  apply. blitz's own
   `blitz-html/tests/resolve_change.rs` shows the damage signal distinguishes a
   matching `:hover` rule from none, so the remaining cause is either UA
   stylesheet `:hover` rules matching, or stylo reporting damage for restyled

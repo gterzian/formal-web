@@ -53,21 +53,30 @@ pub(crate) enum AssetRequest {
 pub(crate) struct PaintDirty {
     paint: Cell<bool>,
     restyle: Cell<bool>,
+    composition: Cell<bool>,
 }
 
 impl PaintDirty {
-    /// Content changed something the repaint must not skip: a script may have
-    /// mutated the document, an embed site may have appeared, the viewport may
-    /// have changed.
+    /// Content changed something the repaint must not skip: a stylesheet or a
+    /// font loaded, an embed site appeared, the viewport changed.
     pub(crate) fn note_paint(&self) {
         self.paint.set(true);
     }
 
     /// A restyle may have changed a computed style (`:hover` state, a
-    /// selection, an IME update). The document is repainted only when
-    /// `BaseDocument::resolve` reports that the pass changed something.
+    /// selection, an IME update, a DOM mutation a script made). The document is
+    /// repainted only when `BaseDocument::resolve` reports that the pass
+    /// changed something.
     pub(crate) fn note_restyle(&self) {
         self.restyle.set(true);
+    }
+
+    /// The document's embed sites changed while its own recorded scene did not:
+    /// an `<img>` layer switched to a newly decoded image. The frame is re-sent
+    /// with a rebuilt composition and its scene marked unchanged, so the
+    /// graphics process re-presents only the embed layer.
+    pub(crate) fn note_composition(&self) {
+        self.composition.set(true);
     }
 
     pub(crate) fn needs_paint(&self) -> bool {
@@ -78,9 +87,14 @@ impl PaintDirty {
         self.restyle.get()
     }
 
+    pub(crate) fn needs_composition(&self) -> bool {
+        self.composition.get()
+    }
+
     pub(crate) fn clear(&self) {
         self.paint.set(false);
         self.restyle.set(false);
+        self.composition.set(false);
     }
 }
 
@@ -103,6 +117,14 @@ pub(crate) struct PendingIframeSteps {
     pub(crate) document_id: DocumentId,
     pub(crate) iframe_node_id: usize,
     pub(crate) steps: IframeMutationSteps,
+}
+
+/// An `<img>` attribute change whose only effect on the document is the embed
+/// layer the image pipeline draws, recorded for the content process to drop the
+/// restyle damage blitz inserted for it once the operation has run.
+pub(crate) struct PendingEmbedOnlyAttributeChange {
+    pub(crate) document_id: DocumentId,
+    pub(crate) img_node_id: usize,
 }
 
 /// The service providers of one content document, handed to `blitz-dom` as
@@ -212,7 +234,7 @@ impl DocumentProviders {
     /// runs while blitz holds the document (and, during script execution, the
     /// realm) mutably borrowed, so the hook records the step and the process runs
     /// it at the end of the current DOM operation (see
-    /// `ContentProcess::drain_pending_iframe_steps`).
+    /// `ContentProcess::drain_dom_hook_steps`).
     fn record_iframe_steps(&self, iframe_node_id: usize, steps: IframeMutationSteps) {
         self.local_state
             .borrow_mut()
@@ -242,6 +264,21 @@ impl DocumentProviders {
     /// <https://html.spec.whatwg.org/#html-element-removing-steps>
     pub(crate) fn record_iframe_removing_steps(&self, iframe_node_id: usize) {
         self.record_iframe_steps(iframe_node_id, IframeMutationSteps::Removing);
+    }
+
+    /// Record an `<img>` attribute change the image processing model runs on
+    /// (`is_relevant_attribute_change`), so the content process can drop the
+    /// restyle damage blitz inserted for it: whether the document's own scene
+    /// changes is decided by the presentation the image's decode produces, not
+    /// by the attribute write.
+    pub(crate) fn record_embed_only_attribute_change(&self, img_node_id: usize) {
+        self.local_state
+            .borrow_mut()
+            .pending_embed_only_attribute_changes
+            .push(PendingEmbedOnlyAttributeChange {
+                document_id: self.document_id,
+                img_node_id,
+            });
     }
 
     fn start_fetch(

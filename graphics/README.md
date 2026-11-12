@@ -83,8 +83,10 @@ completed on the GPU. A change to the cycle must keep the model's checks true
   instead. The dirty bit comes from the process that produced the content —
   content reports `PaintFrame.scene_unchanged` for a cycle that recorded
   nothing, either because it skipped the paint (`content/README.md`, "Render
-  invalidation") or because the resolve pass changed no computed style —
-  never from comparing the content in graphics: that would walk the whole
+  invalidation"), because the resolve pass changed no computed style, or
+  because only the document's embed sites changed (it re-sends the scene it
+  kept with a rebuilt composition) — never from comparing the content in
+  graphics: that would walk the whole
   scene every cycle, and `RecordedScene`'s derived `PartialEq` cannot compare
   it anyway (a `Paint::Custom` compares by `Arc` identity, floats by `==`).
   The rule also keeps a layer that was dropped and re-presented (a

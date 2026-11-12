@@ -342,8 +342,13 @@ impl Node {
             // Step 3: "Replace data of node with 0, node’s length, and value."
             // DocumentMutator applies the full replacement in one operation.
             let mut document = self.document.borrow_mut();
-            let mut mutator = document.mutate();
-            mutator.set_node_text(self.node_id, value);
+            document.mutate().set_node_text(self.node_id, value);
+            // The text a node draws changed. This is the one DOM mutation that
+            // reaches neither the document's mutation hooks (attribute changes,
+            // insertions, removals) nor the image processing model, so it marks
+            // the repaint here; `PaintDirty::note_paint` is what the hooks use
+            // for the same purpose.
+            document.shell_provider.request_redraw();
             return;
         }
 
