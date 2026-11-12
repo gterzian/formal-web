@@ -450,8 +450,10 @@
           <code>&lt;img&gt;</code> holding an invisible placeholder; that DOM
           change updates the page's own texture. <strong>Add sources</strong>
           then swaps in the real images: only their layers change, not the page
-          texture. Use Quartz Debug's flash-screen-updates to see the
-          difference.
+          texture. <strong>Animate sources</strong> advances every loaded image
+          to its next source once per animation frame, so the image layers keep
+          changing while the page stays still. Use Quartz Debug's
+          flash-screen-updates to see the difference.
         </p>
 
         <div class="image-grid" id="image-grid"></div>
@@ -460,9 +462,10 @@
           <button class="btn btn-primary" id="image-add-empty-btn" type="button">Add empty image</button>
           <button class="btn btn-primary" id="image-load-btn" type="button">Add sources</button>
           <button class="btn btn-primary" id="image-swap-btn" type="button">Swap sources</button>
+          <button class="btn btn-success" id="image-animate-btn" type="button">Animate sources</button>
           <button class="btn btn-outline" id="image-clear-btn" type="button">Clear</button>
         </div>
-        <div class="output-box" style="margin-top:0.6rem;">
+        <div class="output-box" id="image-output" style="margin-top:0.6rem;">
           Add empty images, then load their sources.
         </div>
       </section>
@@ -804,7 +807,7 @@
           }
         });
 
-        document.getElementById("image-swap-btn").addEventListener("click", function() {
+        function swapLoadedSources() {
           var images = grid.querySelectorAll("img");
           for (var index = 0; index < images.length; index += 1) {
             var image = images[index];
@@ -822,9 +825,51 @@
             var next = sources[(sourceIndex + 1) % sources.length];
             image.setAttribute("src", next.url);
           }
+        }
+
+        document.getElementById("image-swap-btn").addEventListener("click", function() {
+          swapLoadedSources();
+        });
+
+        // Each animation frame advances every loaded image to its next source.
+        // The page's own content does not change, so only the image layers are
+        // presented again. The status box is written on start and stop only: a
+        // text update per frame would dirty the page's own layer.
+        var animationHandle = null;
+        var animationFrames = 0;
+        var output = document.getElementById("image-output");
+        var animateBtn = document.getElementById("image-animate-btn");
+
+        function swapOnAnimationFrame() {
+          swapLoadedSources();
+          animationFrames += 1;
+          animationHandle = window.requestAnimationFrame(swapOnAnimationFrame);
+        }
+
+        animateBtn.addEventListener("click", function() {
+          if (animationHandle !== null) {
+            window.cancelAnimationFrame(animationHandle);
+            animationHandle = null;
+            animateBtn.textContent = "Animate sources";
+            output.textContent = "Stopped after " + animationFrames + " animation frames";
+            output.className = "output-box";
+            return;
+          }
+          animationFrames = 0;
+          animateBtn.textContent = "Stop animation";
+          output.textContent = "Animating the image layers";
+          output.className = "output-box success";
+          animationHandle = window.requestAnimationFrame(swapOnAnimationFrame);
         });
 
         document.getElementById("image-clear-btn").addEventListener("click", function() {
+          if (animationHandle !== null) {
+            window.cancelAnimationFrame(animationHandle);
+            animationHandle = null;
+            animateBtn.textContent = "Animate sources";
+            output.textContent = "Cleared";
+            output.className = "output-box";
+          }
           nextSlot = 0;
           while (grid.firstChild) {
             grid.removeChild(grid.firstChild);

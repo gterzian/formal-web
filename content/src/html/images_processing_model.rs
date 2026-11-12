@@ -287,6 +287,10 @@ pub(crate) fn obtain_images(document: &DocumentProviders, node_id: usize, elemen
     // implemented).
     let document_id = document.document_id();
     let attributes = ImageAttributes::from_element(element);
+    let was_available = {
+        let registry = document.image_registry().borrow();
+        is_available(&registry.element(document_id, node_id))
+    };
     let update = {
         let mut registry = document.image_registry().borrow_mut();
         update_the_image_data(
@@ -299,7 +303,20 @@ pub(crate) fn obtain_images(document: &DocumentProviders, node_id: usize, elemen
             &document.partition().origin,
         )
     };
-    document.request_redraw();
+    // Only an availability change reaches the document's own scene: while the
+    // image is available the document paints nothing for the element (the
+    // graphics process draws the image on its own layer), while an unavailable
+    // one shows the alt text. A source swap between two images changes neither
+    // what the document paints nor, with a fixed box, its layout; the
+    // presentation the decode produces notes the composition change instead
+    // (`ContentProcess::apply_pending_image_presentation`).
+    let is_available_now = {
+        let registry = document.image_registry().borrow();
+        is_available(&registry.element(document_id, node_id))
+    };
+    if was_available != is_available_now {
+        document.request_redraw();
+    }
     // Step 8 of "update the image data" queues a microtask; this runs without
     // an execution context, so it hands the continuation to the realm's queue,
     // which keeps it in the same order relative to the microtasks the current
@@ -372,16 +389,7 @@ pub(crate) fn attribute_change_steps(
     // "The element's crossorigin attribute's state is changed."
     // "The element's referrerpolicy attribute's state is changed."
     // Note: The remaining relevant mutations (`<source>` sibling changes under a `<picture>` parent, the adopting steps, and auto-sizes) are not observed.
-    if !namespace.is_empty() {
-        return;
-    }
-    let relevant = match local_name {
-        "src" | "srcset" | "sizes" => true,
-        "crossorigin" => cors_settings_mode(old_value) != cors_settings_mode(new_value),
-        "referrerpolicy" => referrer_policy_state(old_value) != referrer_policy_state(new_value),
-        _ => false,
-    };
-    if !relevant {
+    if !is_relevant_attribute_change(local_name, old_value, new_value, namespace) {
         return;
     }
     // Note: The restart animation flag is not implemented because image animation is not.
@@ -389,6 +397,27 @@ pub(crate) fn attribute_change_steps(
     // images immediately updates the image data
     // (<https://html.spec.whatwg.org/#when-to-obtain-images>).
     obtain_images(document, node_id, element);
+}
+
+/// Whether an attribute change is one of an `<img>` element's relevant
+/// mutations: the attributes whose write is owned by the image processing
+/// model rather than by the document's own rendering.
+/// <https://html.spec.whatwg.org/#reacting-to-dom-mutations:relevant-mutations>
+pub(crate) fn is_relevant_attribute_change(
+    local_name: &str,
+    old_value: Option<&str>,
+    new_value: Option<&str>,
+    namespace: &str,
+) -> bool {
+    if !namespace.is_empty() {
+        return false;
+    }
+    match local_name {
+        "src" | "srcset" | "sizes" => true,
+        "crossorigin" => cors_settings_mode(old_value) != cors_settings_mode(new_value),
+        "referrerpolicy" => referrer_policy_state(old_value) != referrer_policy_state(new_value),
+        _ => false,
+    }
 }
 
 /// The CORS settings attribute mode of a `crossorigin` attribute value.

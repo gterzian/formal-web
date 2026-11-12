@@ -101,7 +101,7 @@ impl TestProcess {
     }
 
     fn settle(&mut self) {
-        self.process.drain_pending_iframe_steps();
+        self.process.drain_dom_hook_steps();
         self.process.drain_detached_nodes();
     }
 

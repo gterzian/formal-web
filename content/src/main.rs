@@ -22,8 +22,8 @@ pub mod webidl;
 
 use crate::dom::{EventTargetAccess, dispatch_with_path, fire_event, simple_path};
 use crate::html::document_providers::{
-    AssetRequest, DocumentProviders, IframeMutationSteps, PaintDirty, PendingIframeSteps,
-    install_resource,
+    AssetRequest, DocumentProviders, IframeMutationSteps, PaintDirty,
+    PendingEmbedOnlyAttributeChange, PendingIframeSteps, install_resource,
 };
 use crate::html::environment_settings_object::{Origin as SettingsOrigin, RealmWiring};
 use crate::html::event_loop::{EventLoopTaskSources, Task, TaskQueue};
@@ -93,6 +93,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+use style::values::computed::Size as ComputedSize;
 use url::Url;
 use verification::{TLATracer, TraceSender};
 
@@ -178,8 +179,12 @@ pub(crate) struct LocalContentState {
     /// The iframe DOM mutation steps the document tree mutation hooks recorded.
     /// They run as part of the operation that produced them, as soon as this
     /// process has the document and realm state back
-    /// (`ContentProcess::drain_pending_iframe_steps`).
+    /// (`ContentProcess::drain_dom_hook_steps`).
     pub(crate) pending_iframe_steps: Vec<PendingIframeSteps>,
+    /// The `<img>` attribute changes the hooks recorded that only the image
+    /// pipeline acts on. Their blitz restyle damage is dropped as part of the
+    /// same operation (`ContentProcess::drain_dom_hook_steps`).
+    pub(crate) pending_embed_only_attribute_changes: Vec<PendingEmbedOnlyAttributeChange>,
 }
 
 pub(crate) type LocalContentStateRef = Rc<RefCell<LocalContentState>>;
@@ -382,9 +387,8 @@ pub(crate) struct ContentDocument {
     /// are not re-sent on a clean cycle (they are already registered on the
     /// graphics side).
     last_scene: Option<RecordedScene>,
-    /// The last frame composition metadata, reused when the scene is clean
-    /// (embed sites, viewport, and frame id are unchanged when nothing dirtied
-    /// the document).
+    /// The last frame composition metadata, reused when the scene is clean and
+    /// no embed site changed (see `PaintDirty::note_composition`).
     last_composition: Option<FrameCompositionMetadata>,
 }
 
@@ -399,6 +403,14 @@ struct RenderingDocument {
     must_paint: bool,
     needs_resolve: bool,
     should_paint: bool,
+    /// The document's embed sites changed while its scene did not: the frame is
+    /// re-sent with a rebuilt composition and its scene marked unchanged.
+    needs_composition: bool,
+    /// The document's global scope held animation frame callbacks after step
+    /// 3.14 ran them: a callback that re-registered itself is an animation
+    /// loop, so the frame is reported animating and the UA queues the next
+    /// rendering opportunity.
+    has_pending_animation_frame_callbacks: bool,
 }
 
 #[derive(Clone)]
@@ -567,6 +579,7 @@ impl ContentProcess {
             local_state: Rc::new(RefCell::new(LocalContentState {
                 pending_handlers: HashMap::new(),
                 pending_iframe_steps: Vec::new(),
+                pending_embed_only_attribute_changes: Vec::new(),
             })),
             default_viewport: None,
             traversable_viewports: HashMap::new(),
@@ -1180,7 +1193,7 @@ impl ContentProcess {
             warn!("failed to drain new traversable documents: {error}");
         }
         // The same scripts may have inserted, changed or removed an iframe.
-        self.drain_pending_iframe_steps();
+        self.drain_dom_hook_steps();
         self.drain_detached_nodes();
 
         let content_document = self
@@ -1782,7 +1795,11 @@ impl ContentProcess {
             warn!("failed to set up new document registry: {error}");
         }
 
-        self.mark_traversable_dirty(traversable_id);
+        // Note: the document needs no mark here. Every DOM mutation goes through
+        // blitz's mutator, which reaches this document's mutation hooks (a
+        // hard repaint) or the text-node data setter (`Node::run_set_text_content`,
+        // a hard repaint); an `<img>` source swap is left to the presentation
+        // the image's decode produces.
         let document_id = *self
             .active_documents_by_traversable
             .get(&traversable_id)
@@ -1801,7 +1818,7 @@ impl ContentProcess {
             warn!("failed to drain new traversable documents: {error}");
         }
         // The same scripts may have inserted, changed or removed an iframe.
-        self.drain_pending_iframe_steps();
+        self.drain_dom_hook_steps();
         self.drain_detached_nodes();
 
         result
@@ -1817,7 +1834,7 @@ impl ContentProcess {
             warn!("failed to set up new document registry: {error}");
         }
 
-        self.mark_traversable_dirty(traversable_id);
+        // Note: the document needs no mark here; see `evaluate_script`.
         let document_id = *self
             .active_documents_by_traversable
             .get(&traversable_id)
@@ -2131,20 +2148,20 @@ impl ContentProcess {
             // Continues <https://dom.spec.whatwg.org/#concept-event-fire> after the
             // user agent writes the serialized UI event batch to the content process.
             let event = deserialize_ui_event(&event)?;
-            let listener_reached = dispatch_ui_event(
+            // Note: the event needs no mark here. A listener that runs mutates
+            // the document through blitz's mutator, which reaches this
+            // document's mutation hooks or the text-node data setter (both mark
+            // a repaint); blitz requests its own repaints for the state changes
+            // it makes while handling the event (a hover, a click), and an
+            // `<img>` source swap is left to the presentation the image's
+            // decode produces.
+            dispatch_ui_event(
                 Rc::clone(&document.document),
                 &mut document.settings,
                 document.viewport_offset_x,
                 document.viewport_offset_y,
                 event,
             )?;
-            // An event that reaches no listener cannot have run script, so
-            // nothing recorded in the document changed; blitz reports the
-            // changes it makes to it while handling the event (a hover state
-            // change) by requesting a repaint, which sets the same flag.
-            if listener_reached {
-                self.mark_document_dirty(document_id);
-            }
 
             if let Err(error) = self.tear_down_new_document_registry(traversable_id) {
                 warn!("failed to tear down new document registry: {error}");
@@ -2153,7 +2170,7 @@ impl ContentProcess {
                 warn!("failed to drain new traversable documents: {error}");
             }
             // The same script may have inserted, changed or removed an iframe.
-            self.drain_pending_iframe_steps();
+            self.drain_dom_hook_steps();
             self.drain_detached_nodes();
         }
 
@@ -2187,10 +2204,10 @@ impl ContentProcess {
             return Ok(());
         }
 
-        // The message handler may mutate the target document.
-        self.mark_traversable_dirty(request.target_navigable_id);
-        // Request a UI state update from the UA so the target's render cycle
-        // is driven and it receives UpdateTheRendering: the handler runs here
+        // The message handler may mutate the target document; the mutation
+        // marks the document (see `evaluate_script`). Request a UI state update
+        // from the UA so the target's render cycle is driven and it receives
+        // UpdateTheRendering: the handler runs here
         // (in the target's content process) and mutates the document, but
         // without this note the UA never knows to re-render the navigable, so
         // a cross-origin iframe's change waits for an unrelated input event to
@@ -2334,7 +2351,7 @@ impl ContentProcess {
                 warn!("failed to drain new traversable documents: {error}");
             }
             // The same script may have inserted, changed or removed an iframe.
-            self.drain_pending_iframe_steps();
+            self.drain_dom_hook_steps();
             self.drain_detached_nodes();
         }
 
@@ -2448,11 +2465,10 @@ impl ContentProcess {
         })
         .map_err(|error| format!("port message task failed: {}", error.display()))?;
 
-        // The message task's handler may have mutated the target
-        // document; mark it dirty and request a UI state update from the UA
-        // so the target's render cycle is driven, instead of the change
-        // waiting for an unrelated input event to come through.
-        self.mark_document_dirty(document_id);
+        // The message task's handler may have mutated the target document (which
+        // marks the document itself; see `evaluate_script`). Request a UI state
+        // update from the UA so the target's render cycle is driven, instead of
+        // the change waiting for an unrelated input event to come through.
         let traversable_id = self
             .documents
             .get(&document_id)
@@ -2624,7 +2640,6 @@ impl ContentProcess {
         let video_paint_registry = Rc::clone(&self.video_paint_registry);
         let canvas_registry = Rc::clone(&self.canvas_registry);
         let image_registry = Rc::clone(&self.image_registry);
-        let image_registry_guard = image_registry.borrow_mut();
 
         let mut rendering_documents = Vec::with_capacity(event_loop_documents.len());
         for document_id in &event_loop_documents {
@@ -2642,29 +2657,30 @@ impl ContentProcess {
 
             // Step 3.4: "Unnecessary rendering: Remove from docs any Document
             // object doc for which all of the following are true:"
-            // The conditions are inverted here into the paint decision: `docs`
-            // is kept (the document is painted) when `needs_paint` (content
-            // changed something blitz does not model), its map of animation
-            // frame callbacks is not empty, or `last_scene` being absent forces
-            // the first paint so blitz has a scene to reuse.
+            // The conditions are inverted here into the paint decision: every
+            // document of the event loop is processed (its animation frame
+            // callbacks run and it gets a frame), and is repainted when
+            // `needs_paint` (content changed something blitz does not model) or
+            // when `last_scene` being absent forces the first paint so blitz has
+            // a scene to reuse.
             //
             // A paint-dirty document needs the repaint whatever the resolve
             // pass reports: content changed something blitz does not model (a
-            // script may have mutated the DOM, an embed site may have
-            // appeared). A restyle-dirty document (blitz reported that a
-            // computed style may have changed, e.g. a `:hover` state change)
+            // stylesheet loaded, an embed site appeared). A restyle-dirty
+            // document (blitz reported that a computed style may have changed,
+            // e.g. a `:hover` state change or a DOM mutation a script made)
             // needs the resolve pass to find out, and is repainted only when
             // that pass reports a change — otherwise a pointer move that
             // re-targets `:hover` on a page with no `:hover` rule would
-            // re-rasterize the layer for nothing.
+            // re-rasterize the layer for nothing. A document whose embed sites
+            // changed while its scene did not is re-composed, not repainted.
             let paint_dirty = Rc::clone(&document.paint_dirty);
             let needs_restyle = paint_dirty.needs_restyle();
-            let has_pending_r_af = document.settings.has_pending_animation_frame_callbacks();
+            let needs_composition = paint_dirty.needs_composition();
             let (must_paint, is_animating) = {
                 let document_guard = document.document.borrow();
                 (
                     paint_dirty.needs_paint()
-                        || has_pending_r_af
                         // A fresh document has never painted; fail open so the first
                         // frame always runs blitz and populates the cache.
                         || document.last_scene.is_none(),
@@ -2684,19 +2700,32 @@ impl ContentProcess {
                 must_paint,
                 needs_resolve,
                 should_paint: must_paint,
+                needs_composition,
+                has_pending_animation_frame_callbacks: false,
             });
         }
 
         // Step 3.14: "For each doc of docs, run the animation frame callbacks
         // for doc, passing in the relative high resolution time given
         // frameTimestamp and doc's relevant global object as the timestamp."
-        for rendering_document in &rendering_documents {
+        // Note: the paint decision above was made before the callbacks ran, so
+        // a mutation a callback makes is honored here. A callback that changes
+        // only an embed site (`<img>` source) marks no paint, so the document
+        // is re-composed and its own layer keeps the surface it already shows.
+        for rendering_document in &mut rendering_documents {
             let Some(document) = self.documents.get_mut(&rendering_document.document_id) else {
                 continue;
             };
             document
                 .settings
                 .run_animation_frame_callbacks(rendering_document.frame_timestamp_ms)?;
+            if document.paint_dirty.needs_paint() && !rendering_document.must_paint {
+                rendering_document.must_paint = true;
+                rendering_document.needs_resolve = true;
+                rendering_document.should_paint = true;
+            }
+            rendering_document.has_pending_animation_frame_callbacks =
+                document.settings.has_pending_animation_frame_callbacks();
         }
 
         // Step 3.16.2.1: "Recalculate styles and update layout for doc."
@@ -2715,65 +2744,117 @@ impl ContentProcess {
 
         // Step 3.22: "For each doc of docs, update the rendering or user
         // interface of doc and its node navigable to reflect the current state."
+        // The image registry is borrowed only here: the animation frame
+        // callbacks above may run script that mutates an `<img>` (`obtain_images`
+        // borrows the same registry).
+        let image_registry_guard = image_registry.borrow_mut();
         let mut paint_frames = Vec::with_capacity(rendering_documents.len());
         for rendering_document in &rendering_documents {
             let document_id = rendering_document.document_id;
             let Some(document) = self.documents.get_mut(&document_id) else {
                 continue;
             };
+            // The callbacks have run. Animating means the document has
+            // animated content — video elements still producing frames, blitz
+            // is animating (CSS animations/transitions, scroll animations), or
+            // a script holds a pending animation frame callback. Graphics
+            // forwards this to the UA, which keeps noting UI state updates to
+            // drive animation.
+            let document_is_animating = {
+                let document_guard = document.document.borrow();
+                document_guard.is_animating()
+            };
+            let document_animates =
+                document_is_animating || rendering_document.has_pending_animation_frame_callbacks;
             let navigable_id = document.traversable_id;
             let frame = if !rendering_document.should_paint {
-                // Clean render: reuse the last recorded scene and composition,
-                // with no paint recording and no font re-send. A resolve pass
-                // that ran reported no change, and the frame is marked
-                // unchanged, so the graphics process keeps this frame's layer
-                // clean. The render cycle still completes, so a new video frame
-                // is composed against the unchanged content layer.
-                info!(
-                    "[render-pipe] Content clean render navigable={} document={} (reusing the last scene)",
-                    navigable_id, document_id
-                );
+                // Clean render: reuse the last recorded scene, with no paint
+                // recording and no font re-send. A resolve pass that ran
+                // reported no change, and the frame is marked unchanged, so the
+                // graphics process keeps this frame's layer clean. The render
+                // cycle still completes, so a new video frame is composed
+                // against the unchanged content layer.
+                //
+                // A document whose embed sites changed while its scene did not
+                // (an `<img>` layer switched to a newly decoded image) rebuilds
+                // its composition instead of reusing the stored one: the
+                // graphics process recomputes every embed site's placement from
+                // the composition on each compose walk and presents the layers
+                // that changed, so the page's own layer keeps the surface it
+                // already shows.
+                let recompose = rendering_document.needs_composition;
+                if recompose {
+                    info!(
+                        "[render-pipe] Content compose only navigable={} document={} (reusing the last scene)",
+                        navigable_id, document_id
+                    );
+                } else {
+                    info!(
+                        "[render-pipe] Content clean render navigable={} document={} (reusing the last scene)",
+                        navigable_id, document_id
+                    );
+                }
                 let recorded_scene = document.last_scene.clone().ok_or_else(|| {
                     format!(
                         "content render: no cached scene for clean cycle document={document_id}"
                     )
                 })?;
-                let composition = document.last_composition.clone().ok_or_else(|| {
-                    format!("content render: no cached composition for clean cycle document={document_id}")
-                })?;
-                let document_guard = document.document.borrow();
-                let viewport = document_guard.viewport().clone();
-                let (width, height) = viewport.window_size;
-                let has_video = video_paint_registry
-                    .borrow()
-                    .keys()
-                    .any(|(doc_id, node_id)| {
-                        let ended = self.ended_video_nodes.contains(&(*doc_id, *node_id));
-                        *doc_id == document_id && !ended
-                    });
-                let animating = has_video || document_guard.is_animating();
-                // Re-send the recorded scene without font data: the fonts are
-                // already registered on the graphics side, and re-sending them
-                // would reuse stale shared-memory keys.
-                let scene = PreparedScene {
-                    scene: recorded_scene,
-                    registered_fonts: Vec::new(),
-                    font_shmem: HashMap::new(),
+                let (paint_frame, shmem_data, rebuilt_composition) = {
+                    let document_guard = document.document.borrow();
+                    let viewport = document_guard.viewport().clone();
+                    let (width, height) = viewport.window_size;
+                    let composition = if recompose {
+                        Self::build_frame_composition_metadata(
+                            document_id,
+                            navigable_id,
+                            &document_guard,
+                            &document.navigable_container_states,
+                            viewport.scale_f64(),
+                            &mut video_paint_registry.borrow_mut(),
+                            &canvas_registry.borrow(),
+                            &image_registry_guard,
+                        )
+                    } else {
+                        document.last_composition.clone().ok_or_else(|| {
+                            format!("content render: no cached composition for clean cycle document={document_id}")
+                        })?
+                    };
+                    let has_video =
+                        video_paint_registry
+                            .borrow()
+                            .keys()
+                            .any(|(doc_id, node_id)| {
+                                let ended = self.ended_video_nodes.contains(&(*doc_id, *node_id));
+                                *doc_id == document_id && !ended
+                            });
+                    let animating = has_video || document_animates;
+                    // Re-send the recorded scene without font data: the fonts are
+                    // already registered on the graphics side, and re-sending them
+                    // would reuse stale shared-memory keys.
+                    let scene = PreparedScene {
+                        scene: recorded_scene,
+                        registered_fonts: Vec::new(),
+                        font_shmem: HashMap::new(),
+                    };
+                    let mut next_shmem_key = 0usize;
+                    let (mut paint_frame, shmem_data) = PaintFrame::new(
+                        WebviewId(navigable_id),
+                        document.frame_id,
+                        width,
+                        height,
+                        composition.clone(),
+                        scene,
+                        &mut next_shmem_key,
+                        animating,
+                    )?;
+                    // The scene is the one this document recorded last time, so the
+                    // graphics process keeps the frame's layer clean.
+                    paint_frame.scene_unchanged = true;
+                    (paint_frame, shmem_data, recompose.then_some(composition))
                 };
-                let mut next_shmem_key = 0usize;
-                let (mut paint_frame, shmem_data) = PaintFrame::new(
-                    WebviewId(navigable_id),
-                    document.frame_id,
-                    width,
-                    height,
-                    composition,
-                    scene,
-                    &mut next_shmem_key,
-                    animating,
-                )?;
-                // The scene is the one this document recorded last time, so the
-                // graphics process keeps the frame's layer clean.
-                paint_frame.scene_unchanged = true;
+                if let Some(composition) = rebuilt_composition {
+                    document.last_composition = Some(composition);
+                }
                 (paint_frame, shmem_data)
             } else {
                 info!(
@@ -2819,11 +2900,6 @@ impl ContentProcess {
                         "emit paint navigable={} document={} size=({}, {})",
                         navigable_id, document_id, width, height,
                     ));
-                    // Set animating=true when this document has animated content:
-                    // video elements still producing frames, or blitz is
-                    // animating (CSS animations/transitions, scroll animations).
-                    // Graphics forwards this to the UA, which keeps noting UI
-                    // state updates to drive animation.
                     let has_video =
                         video_paint_registry
                             .borrow()
@@ -2832,7 +2908,7 @@ impl ContentProcess {
                                 let ended = self.ended_video_nodes.contains(&(*doc_id, *node_id));
                                 *doc_id == document_id && !ended
                             });
-                    let animating = has_video || document_guard.is_animating();
+                    let animating = has_video || document_animates;
                     info!(
                         "[render-pipe] Content paint_frame ready navigable={} frame={} size=({},{}) has_video={} animating={} embed_sites={}",
                         navigable_id,
@@ -3510,13 +3586,14 @@ impl ContentProcess {
         }
     }
 
-    /// Runs the iframe DOM mutation steps the document tree hooks recorded.
-    /// The DOM mutation algorithms run these steps synchronously; a DOM hook
-    /// runs while blitz holds the document (and, during script execution, the
-    /// realm) mutably borrowed, so the hook records the step and this process
-    /// runs it as soon as it has the state back, at the end of the current
-    /// operation (see `dom_trees.rs`, "Iframes" in content/src/html/README.md).
-    fn drain_pending_iframe_steps(&mut self) {
+    /// Runs the DOM mutation bookkeeping the document tree hooks recorded.  The
+    /// DOM mutation algorithms run their steps synchronously; a DOM hook runs
+    /// while blitz holds the document (and, during script execution, the realm)
+    /// mutably borrowed, so the hook records the step and this process runs it as
+    /// soon as it has the state back, at the end of the current operation (see
+    /// `dom_trees.rs`, "Iframes" in content/src/html/README.md).
+    fn drain_dom_hook_steps(&mut self) {
+        self.clear_embed_only_attribute_damage();
         let pending = {
             let mut local_state = self.local_state.borrow_mut();
             std::mem::take(&mut local_state.pending_iframe_steps)
@@ -3539,6 +3616,30 @@ impl ContentProcess {
                 error!(
                     "failed to run iframe DOM mutation steps document={document_id} node={iframe_node_id}: {error}"
                 );
+            }
+        }
+    }
+
+    /// Drops the blitz restyle damage an `<img>`'s image attribute change
+    /// inserted.  Blitz inserts damage for every attribute change, while these
+    /// attributes are owned by the image processing model: whether the
+    /// document's own scene changes is decided by the presentation the image's
+    /// decode produces (`apply_pending_image_presentation`), and the embed layer
+    /// is re-presented from the composition either way. Left in place, the
+    /// damage would make the next resolve pass repaint the whole page for a
+    /// change that cannot affect it.
+    fn clear_embed_only_attribute_damage(&mut self) {
+        let pending = {
+            let mut local_state = self.local_state.borrow_mut();
+            std::mem::take(&mut local_state.pending_embed_only_attribute_changes)
+        };
+        for change in pending {
+            let Some(content_document) = self.documents.get(&change.document_id) else {
+                continue;
+            };
+            let mut document = content_document.document.borrow_mut();
+            if let Some(node) = document.get_node_mut(change.img_node_id) {
+                node.clear_damage_mut();
             }
         }
     }
@@ -3649,19 +3750,107 @@ impl ContentProcess {
             let Some(content_document) = self.documents.get(&presentation.document_id) else {
                 continue;
             };
-            content_document
-                .document
-                .borrow_mut()
-                .set_image_intrinsic_size(
-                    presentation.node_id,
-                    presentation.width,
-                    presentation.height,
-                );
-            content_document.paint_dirty.note_paint();
             let traversable_id = content_document.traversable_id;
+            let paint_id = ImagePaintId::for_node(traversable_id, presentation.node_id);
+            // The document's own scene draws nothing for an available `<img>`
+            // (the graphics process draws the image on its own layer), so a
+            // presentation reaches it only when the element becomes available
+            // (the alt text it painted goes away) or when the new intrinsic size
+            // moves the element's box. Otherwise only the embed layer changes:
+            // the composition is rebuilt and the element's layer is
+            // re-presented with the new image, and the page's own layer keeps
+            // the surface it already shows.
+            let composition_only = {
+                let mut document = content_document.document.borrow_mut();
+                let had_embed_site =
+                    content_document
+                        .last_composition
+                        .as_ref()
+                        .is_some_and(|composition| {
+                            composition.embed_sites.iter().any(|site| {
+                            matches!(site, EmbedSite::Image(image) if image.paint_id == paint_id)
+                        })
+                        });
+                let fixed_box = Self::image_box_is_independent_of_intrinsic_size(
+                    &document,
+                    presentation.node_id,
+                );
+                let composition_only = had_embed_site && fixed_box;
+                if composition_only {
+                    // `set_image_intrinsic_size` inserts restyle damage on the
+                    // element and on every element with an inline layout,
+                    // unconditionally. The document's own scene cannot change
+                    // here (the element already draws its image on its own
+                    // layer, and its box cannot move), so only the damage this
+                    // one call added is dropped: leaving it in place would make
+                    // the resolve pass repaint the whole page. Damage another
+                    // change had already put on a node is kept, so a script
+                    // that changed something the document draws in the same
+                    // task still repaints.
+                    let damaged_before = Self::damaged_nodes(&document);
+                    document.set_image_intrinsic_size(
+                        presentation.node_id,
+                        presentation.width,
+                        presentation.height,
+                    );
+                    let added_damage: Vec<usize> = Self::damaged_nodes(&document)
+                        .difference(&damaged_before)
+                        .copied()
+                        .collect();
+                    for node_id in added_damage {
+                        if let Some(node) = document.get_node_mut(node_id) {
+                            node.clear_damage_mut();
+                        }
+                    }
+                } else {
+                    document.set_image_intrinsic_size(
+                        presentation.node_id,
+                        presentation.width,
+                        presentation.height,
+                    );
+                }
+                composition_only
+            };
+            if composition_only {
+                content_document.paint_dirty.note_composition();
+            } else {
+                content_document.paint_dirty.note_paint();
+            }
             self.note_ui_state_update(traversable_id);
         }
         Ok(())
+    }
+
+    /// Whether an `<img>`'s used box is fixed by its computed style. With both
+    /// `width` and `height` specified, the image's intrinsic size only affects
+    /// how the image is fitted inside that box, never the box itself, so a newly
+    /// decoded image cannot move anything the document's own scene draws.
+    // Note: a percentage resolves against the containing block's used width, so
+    // it is fixed here only while the containing block does not size itself
+    // from its contents (a float or an auto-width `inline-block` does, and the
+    // element then keeps the layout of the previous image until something else
+    // repaints the document).
+    fn image_box_is_independent_of_intrinsic_size(document: &BaseDocument, node_id: usize) -> bool {
+        let Some(node) = document.get_node(node_id) else {
+            return false;
+        };
+        let Some(style) = node.primary_styles() else {
+            return false;
+        };
+        let position_style = style.get_position();
+        matches!(position_style.width, ComputedSize::LengthPercentage(_))
+            && matches!(position_style.height, ComputedSize::LengthPercentage(_))
+    }
+
+    /// The nodes whose restyle damage is not empty.
+    fn damaged_nodes(document: &BaseDocument) -> HashSet<usize> {
+        let mut damaged = HashSet::new();
+        document.visit(|node_id, node| {
+            if node.damage().is_some_and(|damage| !damage.is_empty()) {
+                damaged.insert(node_id);
+            }
+        });
+        damaged
     }
 
     fn complete_document_fetch(
@@ -4075,7 +4264,7 @@ impl ContentProcess {
             warn!("failed to drain new traversable documents: {error}");
         }
         // The same scripts may have inserted, changed or removed an iframe.
-        self.drain_pending_iframe_steps();
+        self.drain_dom_hook_steps();
         self.drain_detached_nodes();
         Ok(())
     }
@@ -4270,7 +4459,7 @@ impl ContentProcess {
         let result = self.handle_command_inner(command);
         // Run the iframe DOM mutation steps the command's DOM work recorded,
         // before the task checkpoint and the microtasks see the result.
-        self.drain_pending_iframe_steps();
+        self.drain_dom_hook_steps();
         self.drain_detached_nodes();
         if let Err(error) = self.apply_pending_image_presentation() {
             error!("failed to apply pending image presentation after a command: {error}");
@@ -4325,8 +4514,8 @@ impl ContentProcess {
                 timer_key,
                 nesting_level,
             } => {
-                // The timer callback may mutate the document.
-                self.mark_document_dirty(document_id);
+                // Note: the callback's DOM mutations mark the document
+                // themselves; see `evaluate_script`.
                 self.run_window_timer(document_id, timer_id, timer_key, nesting_level)
             }
             Task::RunPortMessage { port } => self.handle_run_port_message_task(port),
@@ -4388,7 +4577,7 @@ impl ContentProcess {
         steps?;
 
         // Run the iframe DOM mutation steps the task's DOM work recorded.
-        self.drain_pending_iframe_steps();
+        self.drain_dom_hook_steps();
         self.drain_detached_nodes();
 
         // Image mutations observed by the DOM hooks produce presentation state;
@@ -4587,7 +4776,7 @@ impl ContentProcess {
                 .map_err(|error| format!("microtask checkpoint failed: {error}"))?;
         }
         // A promise job may have inserted, changed or removed an iframe.
-        self.drain_pending_iframe_steps();
+        self.drain_dom_hook_steps();
         self.drain_detached_nodes();
         Ok(())
     }
@@ -4620,23 +4809,15 @@ impl ContentProcess {
         }
     }
 
-    /// Mark a document as needing a repaint. Called whenever content runs a
-    /// script or dispatches an event that may mutate the document: blitz does
-    /// not model every such change (a canvas embed site, an offscreen commit),
-    /// so the repaint cannot wait for the resolve pass to report a style
-    /// change. A render cycle driven solely by external animation (a video
-    /// frame arriving at the graphics process) does not call this, so a static
-    /// document that keeps being asked to render neither resolves nor paints.
+    /// Mark a document as needing a repaint. Called for the changes content
+    /// makes that the resolve pass cannot report: a stylesheet or font loaded,
+    /// an embed site appeared or changed, a video ended. A render cycle driven
+    /// solely by external animation (a video frame arriving at the graphics
+    /// process) does not call this, so a static document that keeps being asked
+    /// to render neither resolves nor paints.
     fn mark_document_dirty(&self, document_id: DocumentId) {
         if let Some(document) = self.documents.get(&document_id) {
             document.paint_dirty.note_paint();
-        }
-    }
-
-    /// Mark the active document for a traversable as needing a render.
-    fn mark_traversable_dirty(&self, traversable_id: NavigableId) {
-        if let Some(document_id) = self.active_documents_by_traversable.get(&traversable_id) {
-            self.mark_document_dirty(*document_id);
         }
     }
 
