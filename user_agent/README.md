@@ -238,7 +238,7 @@ with the stored frame. The relay keeps composition a UA decision, like every
 other composition in the cycle, and the model covers it as its own action
 (`verification/tla_specs/RenderingOpportunity.tla`, `OutOfBandComputed`): a
 composition that moves no content counter, available while no content cycle is
-in flight (`cycle` in the model, `cycle_deadline` in the graphics process).
+in flight.
 That gate makes the video frame wait for a cycle already in flight: that
 cycle's frame composes the stored video frame.
 

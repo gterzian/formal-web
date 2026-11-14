@@ -1,34 +1,9 @@
 ---------------------------- MODULE RenderingOpportunity ----------------------------
 EXTENDS Naturals, FiniteSets, TLC
 
-(* Validates the rendering-opportunity-gated render cycle. The UA notes a
-   rendering opportunity when the embedder can present a frame (HTML
-   <https://html.spec.whatwg.org/multipage/webappapis.html#rendering-opportunity>);
-   a UI state update is rendered only when one is pending since the last
-   opportunity, the Unnecessary rendering step of
-   <https://html.spec.whatwg.org/multipage/webappapis.html#update-the-rendering>.
-   Frames are created dynamically by the CreateFrame action: the initial
-   top-level traversable is created with parent NoParent, and child frames
-   (iframes) are created at any time with their parent. The embedder paints
-   top-level traversables only, so RenderingOpportunity and the composition
-   actions are traced for top-level frames, while NoteUiStateUpdate and
-   UpdateTheRendering are traced for every frame. A top-level paint services
-   the batched UI state updates of its whole hierarchy, and a child's update
-   starts the top-level's update too (their frames compose together), mirroring
-   the user-agent scheduling.
-
-   `pending_update` and `cycle` are the two flags the pipeline is paced by:
-   the UA's `pending_update_the_rendering` (an update was queued and no
-   composition released it; a note noted meanwhile is batched instead of
-   queued) and the graphics process's `cycle_deadline` (armed for the update
-   it was armed for, cleared once content produced that frame — which is what
-   lets a composition present the committed root when it expires).
-
-   The per-frame state (parent, queued, ...) is a function over the whole
-   constant Frame universe, with default values for frames not yet created;
-   the live set tracks which frames exist. This keeps every expression
-   total (TLC errors on applying a function outside its domain), so the
-   temporal formulas can quantify over Frame without special-casing. *)
+(* Validates the render cycle the RenderingOpportunity trace events record: the
+   rendering-opportunity gate, update the rendering, and the three composition
+   kinds. *)
 
 CONSTANTS
   Frame,        \* the universe of frame ids the trace can reference
@@ -48,8 +23,8 @@ VARIABLES
   queued,                \* update the rendering commands content was sent and has not run yet
   rendering_updated,     \* content ran update the rendering (UpdateTheRendering)
   composed,              \* top-level content compositions that presented a render (GraphicsComputed)
-  pending_update,        \* the UA waits for an update: pending_update_the_rendering
-  cycle,                 \* graphics armed the cycle's deadline for the queued update: cycle_deadline
+  pending_update,        \* the user agent waits for an update: its pending_update_the_rendering
+  cycle,                 \* graphics holds the update's deadline: its cycle_deadline
   ui_state_update_count, \* a batched UI state update (UA queued_ui_state_updates, 0 or 1)
   animating,             \* the last composed frame had animated content
   rendering_opportunity  \* the embedder can present a frame (`frame_needed`, sent at each paint)
@@ -193,9 +168,9 @@ NoteUiStateUpdate(f) ==
                IF queues_update(g) THEN 0 ELSE ui_state_update_count[g]]
           /\ UNCHANGED <<rendering_updated, composed, animating, live, parent>>
 
-\* Content runs one queued update the rendering: one queued command becomes
-\* one render, and the frame it produces is on its way to the compositor, so
-\* the cycle the queued update armed no longer has a deadline.
+\* Content runs one queued update the rendering: one queued command becomes one
+\* render, and the frame it produces is on its way to the compositor, so
+\* `cycle` is FALSE for it while `pending_update` still holds.
 UpdateTheRendering(f) ==
   /\ f \in live
   /\ rendering_updated[f] < queued[f]
@@ -260,11 +235,10 @@ GraphicsComputed(top) ==
 \* OffscreenCanvas commit or a video frame. The composition presents no new
 \* content state, so no render counter moves; the late top-level frame
 \* composes separately when it arrives (GraphicsComputed). Like a content
-\* composition it releases the update the user agent waited for — the deadline
-\* composition stops waiting for the late frame, which is what lets the next
-\* note queue an update (and dispatch the worker's animation frame callback)
-\* while content is blocked — and it services the batched UI state updates
-\* under the same gate.
+\* composition it releases the update the user agent waited for, so the next
+\* note queues an update (and dispatches the worker's animation frame callback)
+\* while content is blocked, and it services the batched UI state updates under
+\* the same gate.
 Deadline(top) ==
   /\ top \in live
   /\ IsTopLevel(top)
@@ -299,13 +273,10 @@ Deadline(top) ==
 
 \* Graphics presented an out-of-band layer — a video frame — against the
 \* committed root. Content is not involved: the document's own scene is
-\* unchanged, so no counter moves and the user agent's pending update is not
-\* released, because an out-of-band composition that released it would let the
-\* UA queue a second update while the first is still in flight. Graphics
-\* composes it only while no content cycle is in flight (the deadline it armed
-\* for the queued update was cleared by the frame content produced for it);
-\* whether an out-of-band layer actually changed is environment state the
-\* model does not track.
+\* unchanged, so no counter and no flag moves, and the user agent keeps waiting
+\* for the update in flight. Graphics composes it while `cycle` is FALSE, i.e.
+\* while content produced every queued update's frame; whether an out-of-band
+\* layer actually changed is environment state the model does not track.
 OutOfBandComputed(top) ==
   /\ top \in live
   /\ IsTopLevel(top)
@@ -314,10 +285,9 @@ OutOfBandComputed(top) ==
 
 \* ---- Next-state relation ----
 
-\* Every queued counter is at the model's cap, so no update can be queued any
-\* more and the batch cannot drain: the bounded model has run out of room and
-\* stutters, which keeps every execution infinite (the real pipeline has no
-\* such cap).
+\* Every queued counter is at the model's cap, so no update can be queued and
+\* no batch can drain. The stutter keeps every execution infinite where the
+\* bounded model has run out of room; the pipeline itself has no such cap.
 Done ==
   /\ live # {}
   /\ \A f \in live: queued[f] = CommandDepth
