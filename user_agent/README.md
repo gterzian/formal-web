@@ -228,26 +228,27 @@ layers, hit-test info, child viewport data, and the animating frame ids.
 
 ### Video frames: a composition with no content update
 
-A playing video does not make the document animating, so it queues no
-`update the rendering`: its layer's content is produced by the media pipeline
-inside the graphics process, and the document's own scene is unchanged.
-Graphics stores the frame and reports `GraphicsEvent::OutOfBandLayerChanged`;
-the UA answers with `GraphicsCommand::ComposeOutOfBand`, and graphics composes
-the committed root with the stored frame. The relay keeps composition a UA
-decision, like every other composition in the cycle, and the model covers it
-as its own action (`verification/tla_specs/RenderingOpportunity.tla`,
-`OutOfBandComputed`) — a composition that moves no content counter, allowed
-only while no content update is in flight. That gate is what makes the video
-frame wait for a cycle already in flight: that cycle's frame composes the
-stored video frame, so one composition never preempts or repeats another.
+A video frame leaves the document's own scene untouched: the media pipeline
+inside the graphics process produces the video layer's content, so
+`PaintFrame.animating` reports document animation only (blitz CSS or scroll
+animation, a pending `requestAnimationFrame`). Graphics stores each decoded
+frame and reports `GraphicsEvent::OutOfBandLayerChanged`; the UA answers with
+`GraphicsCommand::ComposeOutOfBand`, and graphics composes the committed root
+with the stored frame. The relay keeps composition a UA decision, like every
+other composition in the cycle, and the model covers it as its own action
+(`verification/tla_specs/RenderingOpportunity.tla`, `OutOfBandComputed`): a
+composition that moves no content counter, available while no content cycle is
+in flight (`cycle` in the model, `cycle_deadline` in the graphics process).
+That gate makes the video frame wait for a cycle already in flight: that
+cycle's frame composes the stored video frame.
 
 `PixelFrameReady` carries the composition kind: `ContentUpdate` when a
 composition presents a top-level frame, `Deadline` when the render cycle's
 deadline presents the committed root, `OutOfBand` for an out-of-band video
 frame. The UA traces the action of that name for the frame and clears
-`pending_update_the_rendering` for every kind but `OutOfBand`; an out-of-band
-composition that cleared it would let the UA queue a second update while the
-first is still in flight.
+`pending_update_the_rendering` for `ContentUpdate` and `Deadline`; an
+`OutOfBand` composition leaves it set, so a composition releases only the
+update it served.
 
 ### Completing the cycle
 

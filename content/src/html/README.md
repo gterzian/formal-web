@@ -492,12 +492,12 @@ window canvas and a worker `OffscreenCanvas`.  Registration must happen
 before the next update-the-rendering can include the embed site.  The
 registration is released symmetrically: `destroy_document` and the
 node-wrapper collection path send `GraphicsCommand::UnregisterCanvas` and drop
-the `canvas_registry` entry, so a page's canvases do not keep their compositor
-layers and shared surfaces in the graphics process after the page is gone.
-Both `getContext` methods record the context mode (a shared cell) and cache the
-context object, so a second call returns the same object; the mode also
-makes `transferControlToOffscreen()` after a 2D context throw, and makes a
-transferred `OffscreenCanvas` throw from `getContext`.
+the `canvas_registry` entry, which releases a page's canvas layers and shared
+surfaces in the graphics process.  Both `getContext` methods record the context
+mode (a shared cell) and cache the context object, so a second call returns the
+same object; the mode also makes `transferControlToOffscreen()` after a 2D
+context throw, and makes a transferred `OffscreenCanvas` throw from
+`getContext`.
 
 Wiring a canvas that draws on a worker:
 

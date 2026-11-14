@@ -295,15 +295,13 @@ two-submit layout.
 ## Video frames drive their own composition
 
 A video frame changes only the video's own layer; the document's recorded scene
-is untouched. A playing video therefore never queues an `update the rendering`:
-content does not run a render cycle per video frame, and `PaintFrame.animating`
-reports document animation only (blitz CSS/scroll animation, a pending
-`requestAnimationFrame`), never a video. The media pipeline stores each decoded
-frame and graphics reports `GraphicsEvent::OutOfBandLayerChanged`; the UA
-answers with `GraphicsCommand::ComposeOutOfBand` and graphics composes the
-committed root with the stored frame (`ComposeOutOfBand` in `lib.rs`). The
-embedder needs no display link for this: the video's own frame arrivals pace the
-presentations.
+is untouched, so content runs no render cycle for it and `PaintFrame.animating`
+reports document animation (blitz CSS/scroll animation, a pending
+`requestAnimationFrame`). The media pipeline stores each decoded frame and
+graphics reports `GraphicsEvent::OutOfBandLayerChanged`; the UA answers with
+`GraphicsCommand::ComposeOutOfBand` and graphics composes the committed root
+with the stored frame (`ComposeOutOfBand` in `lib.rs`). The video's own frame
+arrivals pace those presentations.
 
 Two gates keep that path from doing redundant work:
 
@@ -311,18 +309,17 @@ Two gates keep that path from doing redundant work:
   `RenderStarted` when it queues a cycle and the arriving `PaintFrame` clears
   it, so an armed `cycle_deadline` means content is rendering. A
   `ComposeOutOfBand` that arrives then is dropped: the cycle's frame composes
-  the stored video frame, which is newer than anything a composition against
-  the last committed root could show. Without the gate, the video would present
-  the stale root and then compose a second time when the cycle's frame arrives.
+  the stored video frame, which is newer than a composition against the last
+  committed root presents.
 - **A clean out-of-band layer is not recomposed.** `has_dirty_out_of_band_layer`
-  is false once a composition delivered the video layer, so a stale
-  `ComposeOutOfBand` (a frame that was already presented) composes nothing.
+  is false once a composition delivered the video layer, so a
+  `ComposeOutOfBand` for a frame that was already presented composes nothing.
 
 Every composition reports its kind in `PixelFrameReady`: `ContentUpdate` when
 it presents a top-level frame, `Deadline` when the render cycle's deadline
 presents the committed root, `OutOfBand` for an out-of-band video frame. The UA
 traces the render-cycle action that kind names and releases the in-flight
-content update for every kind but `OutOfBand` (see `user_agent/README.md`,
+content update for the two kinds that serve one (see `user_agent/README.md`,
 "Video frames: a composition with no content update").
 
 ## Open risks and questions
