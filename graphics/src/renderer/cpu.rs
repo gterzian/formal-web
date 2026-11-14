@@ -6,8 +6,8 @@
 
 use super::image::StoredImageResult;
 use super::{
-    FrameDelivery, FrameMetadata, GpuContext, MAX_SURFACE_DIMENSION, PollRequest, ReadbackChannels,
-    RenderError, SubmitOutcome, SurfaceBuffers, SurfaceRenderer, SurfaceRingState, frame_metadata,
+    FrameMetadata, GpuContext, MAX_SURFACE_DIMENSION, PollRequest, ReadbackChannels, RenderError,
+    SubmitOutcome, SurfaceBuffers, SurfaceRenderer, SurfaceRingState, frame_metadata,
 };
 use ipc_messages::content::{ImageIdentifier, WebviewId};
 use ipc_messages::graphics::{CompositingLayerId, GraphicsEvent, LayerTopology, SurfacePayload};
@@ -286,7 +286,7 @@ impl SurfaceRenderer for CpuRenderer {
             child_frame_to_webview,
             animating,
             animating_frame_ids,
-            settles_content_update,
+            composition_kind,
         } = composed;
         info!(
             "[render-pipe] Graphics CPU submit layers webview={} layers={} child_frames={} animating={}",
@@ -303,7 +303,7 @@ impl SurfaceRenderer for CpuRenderer {
             child_frame_to_webview,
             animating,
             animating_frame_ids,
-            settles_content_update,
+            composition_kind,
         );
 
         let mut rendered = Vec::new();
@@ -474,7 +474,7 @@ impl SurfaceRenderer for CpuRenderer {
                 layers: topology,
                 animating: metadata.animating,
                 animating_frame_ids: metadata.animating_frame_ids,
-                settles_content_update: metadata.settles_content_update,
+                composition_kind: metadata.composition_kind,
                 generation: self.gpu.generation,
                 frame_hit_info: metadata.frame_hit_info,
                 child_viewports: metadata.child_viewports,
@@ -493,11 +493,7 @@ impl SurfaceRenderer for CpuRenderer {
         })
     }
 
-    fn handle_render_done(
-        &mut self,
-        data: CpuRenderData,
-        sender: &ipc::IpcSender<GraphicsEvent>,
-    ) -> FrameDelivery {
+    fn handle_render_done(&mut self, data: CpuRenderData, sender: &ipc::IpcSender<GraphicsEvent>) {
         let CpuRenderData {
             webview_id,
             generation,
@@ -508,9 +504,6 @@ impl SurfaceRenderer for CpuRenderer {
             readback_index,
             result,
         } = data;
-        let mut delivery = FrameDelivery {
-            graphics_computed: false,
-        };
         let Some(cycle) = self.pending_cycle.as_mut() else {
             error!(
                 "[graphics] readback for unknown cycle {:?} gen={}",
@@ -521,7 +514,7 @@ impl SurfaceRenderer for CpuRenderer {
                 &self.readback_buffers,
                 readback_index,
             );
-            return delivery;
+            return;
         };
         if cycle.generation != generation {
             error!(
@@ -533,7 +526,7 @@ impl SurfaceRenderer for CpuRenderer {
                 &self.readback_buffers,
                 readback_index,
             );
-            return delivery;
+            return;
         }
 
         let mut usable = false;
@@ -603,7 +596,7 @@ impl SurfaceRenderer for CpuRenderer {
 
         if cycle.received == cycle.total {
             let Some(pending) = self.pending_cycle.take() else {
-                return delivery;
+                return;
             };
             if sender
                 .send_with_shmem_map(
@@ -612,7 +605,7 @@ impl SurfaceRenderer for CpuRenderer {
                         layers: pending.layers,
                         animating: pending.metadata.animating,
                         animating_frame_ids: pending.metadata.animating_frame_ids,
-                        settles_content_update: pending.metadata.settles_content_update,
+                        composition_kind: pending.metadata.composition_kind,
                         generation: pending.generation,
                         frame_hit_info: pending.metadata.frame_hit_info,
                         child_viewports: pending.metadata.child_viewports,
@@ -626,11 +619,8 @@ impl SurfaceRenderer for CpuRenderer {
                     "[graphics] failed to send PixelFrameReady for {:?}",
                     pending.webview_id
                 );
-                return delivery;
             }
-            delivery.graphics_computed = true;
         }
-        delivery
     }
 
     fn render_done_webview_id(data: &CpuRenderData) -> WebviewId {

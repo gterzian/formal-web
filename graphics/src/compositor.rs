@@ -8,7 +8,9 @@ use ipc_messages::content::{
     CanvasId, EmbedBackgroundPolicy, EmbedSite, FontTransportReceiver, FrameCompositionMetadata,
     FrameId, IframeEmbedSite, ImageIdentifier, ImagePaintId, PaintFrame, RecordedScene,
 };
-use ipc_messages::graphics::{CompositingLayerId, FrameHitInfo, LayerTopology, SurfacePayload};
+use ipc_messages::graphics::{
+    CompositingLayerId, CompositionKind, FrameHitInfo, LayerTopology, SurfacePayload,
+};
 
 use crate::ComposedScene;
 use ipc_messages::graphics::DecodedImage;
@@ -250,9 +252,10 @@ pub struct Compositor {
     /// Per-instance `<img>` layer state: which shared image it draws and
     /// whether its one-node scene still needs rasterizing.
     image_layers: HashMap<ImagePaintId, ImageLayerState>,
-    /// True when the latest top-level frame arrived but its composition is
-    /// deferred until every embedded frame it references has arrived.
-    composition_pending: bool,
+    /// The pending composition, named by the path that requested it: a
+    /// top-level frame arrived, the render cycle's deadline expired, or an
+    /// out-of-band layer changed. `None` when no composition is pending.
+    pending_composition: Option<CompositionKind>,
     /// Accumulated across the frames of the current composition: whether any
     /// composed frame is animating, and which frames are.
     composing_animating: bool,
@@ -310,7 +313,7 @@ impl Compositor {
         self.root_frame_id = None;
         self.replace_root_on_next_paint = true;
         self.resolved_tree_dirty = true;
-        self.composition_pending = false;
+        self.pending_composition = None;
     }
 
     /// Mark a child frame id as gone: its navigable was removed, so a
@@ -610,8 +613,18 @@ impl Compositor {
 
     /// The latest top-level frame arrived; its composition must wait for every
     /// embedded frame it references to arrive before it can be composed.
-    pub fn mark_composition_pending(&mut self) {
-        self.composition_pending = true;
+    pub fn mark_composition_pending(&mut self, kind: CompositionKind) {
+        // A top-level content frame supersedes any composition pending before
+        // it: the composition that follows presents that frame's content,
+        // whatever deferred the earlier composition. The other kinds keep the
+        // first mark: a video frame that arrives while a deferred content
+        // composition waits on it triggers that composition without becoming
+        // its subject.
+        if matches!(kind, CompositionKind::ContentUpdate) {
+            self.pending_composition = Some(kind);
+        } else {
+            self.pending_composition.get_or_insert(kind);
+        }
     }
 
     /// Record the animating flag of a stored frame: its document contains
@@ -628,7 +641,7 @@ impl Compositor {
     }
 
     pub fn has_pending_composition(&self) -> bool {
-        self.composition_pending
+        self.pending_composition.is_some()
     }
 
     /// Whether an out-of-band embedded layer (canvas or video) changed since
@@ -763,7 +776,7 @@ impl Compositor {
         let root_frame_id = self.root_frame_id?;
         // The pending composition completes now; the next top-level frame
         // arrival re-marks it pending.
-        self.composition_pending = false;
+        let composition_kind = self.pending_composition.take()?;
         self.composing_animating = false;
         self.composing_animating_frames.clear();
         self.reset_composed_frame_state();
@@ -793,7 +806,7 @@ impl Compositor {
             child_frame_to_webview: HashMap::new(),
             animating: self.composing_animating,
             animating_frame_ids: std::mem::take(&mut self.composing_animating_frames),
-            settles_content_update: false,
+            composition_kind,
         })
     }
 

@@ -4,26 +4,31 @@ EXTENDS Naturals, Sequences, TLC, RenderingOpportunityTraceData
 VARIABLES
     live,
     parent,
-    pending,
+    queued,
     rendering_updated,
     composed,
+    pending_update,
+    cycle,
     ui_state_update_count,
     animating,
     rendering_opportunity,
     trace_index
 
-vars == <<live, parent, pending, rendering_updated, composed,
+vars == <<live, parent, queued, rendering_updated, composed, pending_update, cycle,
           ui_state_update_count, animating, rendering_opportunity, trace_index>>
 
 Base == INSTANCE RenderingOpportunity WITH
     Frame <- TraceFrame,
     NoParent <- TraceNoParent,
     BufferCount <- TraceBufferCount,
+    CommandDepth <- TraceCommandDepth,
     live <- live,
     parent <- parent,
-    pending <- pending,
+    queued <- queued,
     rendering_updated <- rendering_updated,
     composed <- composed,
+    pending_update <- pending_update,
+    cycle <- cycle,
     ui_state_update_count <- ui_state_update_count,
     animating <- animating,
     rendering_opportunity <- rendering_opportunity
@@ -89,12 +94,11 @@ UpdateTheRenderingTrace ==
        /\ Base!UpdateTheRendering(f)
        /\ Advance
 
-\* A graphics composition. Normally the top-level content rendered first
-\* (GraphicsComputed); when the render cycle's deadline expired first, the
-\* composition is the Deadline action instead; when a video frame was stored
-\* and no content update was in flight, the composition is OutOfBandComputed.
-\* They are distinguished by their guards, not by the event name (all three
-\* are traced as GraphicsComputed).
+\* A graphics composition. The composition kind travels in the trace's
+\* event name: a cycle whose top-level content frame rendered is
+\* GraphicsComputed, the render cycle's deadline expiring first is
+\* Deadline, and a video frame presented against the committed root with no
+\* content cycle in flight is OutOfBandComputed.
 GraphicsComputedTrace ==
     /\ trace_index \in 1..TraceLength
     /\ CurrentEvent = "GraphicsComputed"
@@ -107,7 +111,7 @@ GraphicsComputedTrace ==
 
 DeadlineTrace ==
     /\ trace_index \in 1..TraceLength
-    /\ CurrentEvent = "GraphicsComputed"
+    /\ CurrentEvent = "Deadline"
     /\ Len(CurrentArgs) = 1
     /\ LET f == EventArg(1)
        IN
@@ -117,7 +121,7 @@ DeadlineTrace ==
 
 OutOfBandComputedTrace ==
     /\ trace_index \in 1..TraceLength
-    /\ CurrentEvent = "GraphicsComputed"
+    /\ CurrentEvent = "OutOfBandComputed"
     /\ Len(CurrentArgs) = 1
     /\ LET f == EventArg(1)
        IN

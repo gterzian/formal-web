@@ -87,6 +87,10 @@ pub enum GraphicsCommand {
         webview_id: WebviewId,
         canvas_id: CanvasId,
     },
+    /// Drop an offscreen canvas whose element is gone (its document was
+    /// unloaded): no further `CanvasPaint` references it, so the graphics
+    /// process removes the canvas layer and releases its shared surfaces.
+    UnregisterCanvas { canvas_id: CanvasId },
     /// Register an `<img>` element's encoded image data with its webview.
     /// The bytes travel in the IPC shared-memory map under `data_shmem_key`;
     /// the graphics process decodes them into the texture keyed by
@@ -176,6 +180,30 @@ pub struct FrameHitInfo {
     pub child_frame_ids: Vec<FrameId>,
 }
 
+/// Which path triggered a composition. The user agent traces the
+/// `RenderingOpportunity` TLA+ action the composition implements on receipt of
+/// `GraphicsEvent::PixelFrameReady`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CompositionKind {
+    /// A top-level content frame arrived and its render cycle composed it.
+    ContentUpdate,
+    /// The render cycle's deadline expired with no top-level content frame:
+    /// the committed hierarchy composed against the last committed root.
+    Deadline,
+    /// An out-of-band layer (a video frame) changed with no content update in
+    /// flight, so the UA asked for the composition
+    /// (`GraphicsCommand::ComposeOutOfBand`).
+    OutOfBand,
+}
+
+impl CompositionKind {
+    /// Whether the composition settles the navigable's in-flight content
+    /// update. Only an out-of-band composition presents no new content state.
+    pub fn settles_content_update(self) -> bool {
+        !matches!(self, Self::OutOfBand)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GraphicsEvent {
     /// A rendered surface frame is ready for one webview. The layers are
@@ -199,13 +227,11 @@ pub enum GraphicsEvent {
         /// frames) that carry the animating flag; the UA notes UI state
         /// updates for these navigables.
         animating_frame_ids: Vec<FrameId>,
-        /// True when this composition settles the navigable's in-flight
-        /// content update (the top-level frame rendered, or the render
-        /// cycle's deadline presented the committed root). The UA clears
-        /// `pending_update_the_rendering` only for such a composition; an
-        /// out-of-band composition (a video frame) or a deferred child-frame
-        /// composition must not release an update it did not serve.
-        settles_content_update: bool,
+        /// Which composition path produced this frame. The UA clears
+        /// `pending_update_the_rendering` for every kind but `OutOfBand`: an
+        /// out-of-band composition (a video frame) must not release an update
+        /// it did not serve.
+        composition_kind: CompositionKind,
         generation: u64,
         frame_hit_info: Vec<FrameHitInfo>,
         child_viewports: Vec<ChildViewport>,

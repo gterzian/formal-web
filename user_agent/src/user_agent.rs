@@ -18,7 +18,7 @@ use ipc_messages::content::{
     NewTraversableInfo, UserNavigationInvolvement, UserScript, WebviewId, WorkerId, WorkerOwner,
     iframe_target_name,
 };
-use ipc_messages::graphics::GraphicsCommand;
+use ipc_messages::graphics::{CompositionKind, GraphicsCommand};
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
 use log::{debug, error, info, trace};
 
@@ -5540,14 +5540,19 @@ impl UserAgentWorker {
         }
     }
 
-    /// removing a child-navigable mapping and stopping any synthetic
-    /// traversable that represented that iframe in the user-agent registry.
+    /// <https://html.spec.whatwg.org/#destroy-a-child-navigable>
     fn handle_iframe_traversable_removed(
         &mut self,
         parent_traversable_id: NavigableId,
         content_navigable_id: NavigableId,
         content_frame_id: FrameId,
     ) {
+        // Step 1: "Let navigable be container's content navigable."
+        // Step 2: "If navigable is null, then return."
+        // Step 3: "Set container's content navigable to null."
+        // Note: Steps 1–3 ran in content: the iframe element's removing steps
+        // retired the content navigable and sent this event with its id
+        // (`run_iframe_removing_steps`).
         info!(
             "[nav] iframe traversable removed parent={} child={} frame={}",
             parent_traversable_id, content_navigable_id, content_frame_id.0
@@ -5565,6 +5570,11 @@ impl UserAgentWorker {
                 (traversable_target_name == &target_name).then_some(*traversable_id)
             })
             .collect::<Vec<_>>();
+
+        // Step 4: "Inform the navigation API about child navigable destruction given
+        // navigable."
+        // Note: Not implemented: the Navigation API's `dispose` event is not
+        // dispatched.
 
         let mut event_loops_to_maybe_stop = HashSet::new();
         let mut removed_document_ids = HashSet::new();
@@ -5591,12 +5601,11 @@ impl UserAgentWorker {
             {
                 // Step 5: "Destroy a document and its descendants given navigable's active
                 // document."
-                // Note: That step of "destroy a child navigable"
-                // (<https://html.spec.whatwg.org/#destroy-a-child-navigable>) runs here: the
-                // content process that owns the document runs the destruction, so the command
-                // is routed by document id — a cross-origin child's document lives in another
-                // content process, and its own child navigables are destroyed the same way when
-                // their removing steps retire them.
+                // Note: The content process that owns the document runs the
+                // destruction, so the command is routed by document id: a
+                // cross-origin child's document lives in another content
+                // process, and its own child navigables are destroyed the same
+                // way when their removing steps retire them.
                 if let Ok(sender) = self.command_sender_for_document(document_id)
                     && let Err(error) = sender.send(ContentCommand::DestroyDocument { document_id })
                 {
@@ -5604,10 +5613,27 @@ impl UserAgentWorker {
                 }
                 removed_document_ids.insert(document_id);
             }
+            // Step 6: "Let parentDocState be container's node navigable's active session
+            // history entry's document state."
+            // Step 7: "Remove the nested history from parentDocState's nested histories
+            // whose id equals navigable's id."
+            // Step 8: "Let traversable be container's node navigable's traversable
+            // navigable."
+            // Step 9: "Append the following session history traversal steps to
+            // traversable:"
+            // Step 9.1: "Update for navigable creation/destruction given traversable."
+            // Step 10: "Invoke WebDriver BiDi navigable destroyed with navigable."
+            // Note: The user agent keeps one session history per traversable and
+            // no nested histories (steps 6–7), runs no queued session history
+            // traversal steps (steps 8–9.1), and does not implement step 10.
             self.state.remove_traversable(*traversable_id);
             self.pending_update_the_rendering.remove(traversable_id);
             self.queued_ui_state_updates.remove(traversable_id);
             self.pending_worker_animation_frames.remove(traversable_id);
+            // The navigable left the user-agent state: no later navigation
+            // can find it in its affected set, and its document was destroyed
+            // above, so no beforeunload check can reach it either.
+            verification::tla_log!(self.tla_tracer, "RemoveNavigable", *traversable_id);
         }
 
         // Release the graphics-process state for the removed webviews
@@ -5733,24 +5759,26 @@ impl UserAgentWorker {
                 layers,
                 animating,
                 animating_frame_ids,
-                settles_content_update,
+                composition_kind,
                 generation: _,
                 frame_hit_info,
                 child_viewports,
                 child_frame_to_webview,
             } => {
-                // The composed frame reached the user agent. The model's
-                // GraphicsComputed action applies here: this is where the
+                // The composed frame reached the user agent. The composition
+                // action it implements applies here: this is where the
                 // frame's output is released and, when a rendering
                 // opportunity is held, the next update is queued. Tracing on
-                // receipt keeps the event ordered with those queue decisions;
-                // tracing it in the graphics process recorded it after the
-                // frame had already been sent, so a queued update could reach
-                // the trace first.
+                // receipt keeps the event ordered with those queue decisions.
+                let composition_action = match composition_kind {
+                    CompositionKind::ContentUpdate => "GraphicsComputed",
+                    CompositionKind::Deadline => "Deadline",
+                    CompositionKind::OutOfBand => "OutOfBandComputed",
+                };
                 verification::tla_log!(
                     self.tla_tracer,
                     -> "RenderingOpportunity",
-                    "GraphicsComputed",
+                    composition_action,
                     webview_id.0
                 );
                 debug!(
@@ -5804,7 +5832,7 @@ impl UserAgentWorker {
                 // deferred child-frame composition does not serve the pending
                 // update: clearing the flag for it would let the UA queue a
                 // second update while the first is still in flight.
-                let completed_pending_update = *settles_content_update
+                let completed_pending_update = composition_kind.settles_content_update()
                     && self.pending_update_the_rendering.remove(&webview_id.0);
                 if completed_pending_update {
                     // All child frames included in the composition have also

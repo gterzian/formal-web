@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Deadline composition trace page</title>
+  </head>
+  <body>
+    <h1>Deadline composition trace page</h1>
+    <canvas id="lifecycle" width="200" height="120"></canvas>
+    <script>
+      // Each pass commits a canvas layer and then blocks the event loop, so
+      // the top-level frame for that pass's render cycle arrives after the
+      // graphics process's composition deadline. The deadline then composes
+      // the committed canvas layer against the last committed root, which is
+      // the Deadline action (no content update is served).
+      const context = document.getElementById("lifecycle").getContext("2d");
+      let pass = 0;
+      function commitAndBlock() {
+        context.fillStyle = pass % 2 === 0 ? "#c33" : "#33c";
+        context.fillRect(0, 0, 200, 120);
+        const blockedUntil = Date.now() + 150;
+        while (Date.now() < blockedUntil) {}
+        pass += 1;
+        if (pass < 5) {
+          setTimeout(commitAndBlock, 300);
+        }
+      }
+      setTimeout(commitAndBlock, 100);
+    </script>
+  </body>
+</html>

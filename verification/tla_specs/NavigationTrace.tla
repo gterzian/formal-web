@@ -64,6 +64,17 @@ CreateChildNavigableTrace ==
        /\ navID \in DOMAIN navigables'
        /\ Advance
 
+RemoveNavigableTrace ==
+    /\ trace_index \in 1..TraceLength
+    /\ CurrentEvent = "RemoveNavigable"
+    /\ Len(CurrentArgs) = 1
+    /\ LET navID == EventArg(1)
+       IN
+       /\ navID \in DOMAIN navigables
+       /\ Base!RemoveNavigable(navID)
+       /\ navID \notin DOMAIN navigables'
+       /\ Advance
+
 CreateNavigationTrace ==
     /\ trace_index \in 1..TraceLength
     /\ CurrentEvent = "CreateNavigation"
@@ -114,6 +125,7 @@ Done ==
 Next ==
     \/ CreateNavigableTrace
     \/ CreateChildNavigableTrace
+    \/ RemoveNavigableTrace
     \/ CreateNavigationTrace
     \/ StartNavigatingTrace
     \/ RunBeforeUnloadTrace

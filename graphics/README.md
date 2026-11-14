@@ -33,10 +33,11 @@ compiled-per-configuration parts.
 
 The cross-process render cycle is documented in `user_agent/README.md`
 ("Rendering pipeline"). The `RenderingOpportunity` TLA+ model
-(`verification/tla_specs/RenderingOpportunity.tla`) checks it; the graphics
-user agent traces `GraphicsComputed` when it receives `PixelFrameReady` — i.e.
-after the poll thread's `device.poll(Wait)` confirmed the render completed on
-the GPU and the frame was delivered. A change to the cycle must keep the model's checks true
+(`verification/tla_specs/RenderingOpportunity.tla`) checks it; the user agent
+traces the composition action named by the `PixelFrameReady` composition kind
+(`GraphicsComputed`, `Deadline`, or `OutOfBandComputed`) — i.e. after the poll
+thread's `device.poll(Wait)` confirmed the render completed on the GPU and the
+frame was delivered. A change to the cycle must keep the model's checks true
 (see `verification/README.md`). The graphics-specific delivery invariants:
 
 - The per-webview buffers **alternate**: each render cycle renders into the
@@ -317,11 +318,12 @@ Two gates keep that path from doing redundant work:
   is false once a composition delivered the video layer, so a stale
   `ComposeOutOfBand` (a frame that was already presented) composes nothing.
 
-Every composition reports `settles_content_update` in `PixelFrameReady`: true
-when it presents a top-level frame or the render cycle's deadline presents the
-committed root, false for an out-of-band video frame. The UA releases the
-in-flight content update only for a settling composition (see
-`user_agent/README.md`, "Video frames: a composition with no content update").
+Every composition reports its kind in `PixelFrameReady`: `ContentUpdate` when
+it presents a top-level frame, `Deadline` when the render cycle's deadline
+presents the committed root, `OutOfBand` for an out-of-band video frame. The UA
+traces the render-cycle action that kind names and releases the in-flight
+content update for every kind but `OutOfBand` (see `user_agent/README.md`,
+"Video frames: a composition with no content update").
 
 ## Open risks and questions
 
@@ -447,16 +449,17 @@ in-flight content update only for a settling composition (see
   depends on the resolve pass reporting damage, so such a page keeps its layer
   clean when nothing actually changed. Not fixable in-repo:
   `is_animating`/`compute_has_canvas` live in the pinned blitz git dependency.
-- **A removed `<video>` element or offscreen canvas keeps its compositor
-  frame until navigation.** The compositor's live set
-  (`Compositor::live_layer_ids`) releases a layer's surfaces only once the
-  layer's entry leaves `video_frames`/`canvas_frames`. `note_navigation_finalized`
-  clears `video_frames`, but nothing clears either map when an element is
-  destroyed inside a live document: `Compositor::remove_canvas_frame` has no
-  caller, and `GraphicsCommand::RemoveVideoFrame` is handled but nothing sends
-  it. A long-lived page that creates and destroys many video elements or
-  offscreen canvases therefore keeps each video's last decoded frame (a
-  `CVPixelBuffer` or pixel bytes), each canvas's recorded scene, and the
-  renderer's surface buffers for both. Content's `video_paint_registry` and
-  `canvas_registry` retain the same keys. A fix needs a destroy signal from
-  content for both.
+- **A removed `<video>` element keeps its compositor frame until navigation.**
+  `MediaDestroy` stops the pipeline and finishes the paint id but keeps the
+  last decoded frame in `video_frames` (a frame stays composed as a static
+  image after end of stream), and `GraphicsCommand::RemoveVideoFrame` is
+  handled but nothing sends it. A long-lived document that creates and
+  destroys many video elements therefore holds each one's last frame (a
+  `CVPixelBuffer` or pixel bytes) and its surface buffers until the next
+  navigation, which clears `video_frames`. A fix needs a per-element destroy
+  signal from content (`RemoveVideoFrame` for a removed `<video>`, the way
+  `UnregisterCanvas` releases a removed canvas). Canvas layers do not share
+  this fate: content sends
+  `GraphicsCommand::UnregisterCanvas` for a destroyed document's canvases and
+  for canvases whose element was collected, and graphics drops the canvas
+  frame and sweeps its surfaces.

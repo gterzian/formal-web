@@ -1,9 +1,8 @@
 ---------------------------- MODULE RenderingOpportunity ----------------------------
 EXTENDS Naturals, FiniteSets, TLC
 
-(* Validates the rendering-opportunity-gated render cycle and its double-buffer
-   bound. The UA notes a rendering opportunity when the embedder can present a
-   frame (HTML
+(* Validates the rendering-opportunity-gated render cycle. The UA notes a
+   rendering opportunity when the embedder can present a frame (HTML
    <https://html.spec.whatwg.org/multipage/webappapis.html#rendering-opportunity>);
    a UI state update is rendered only when one is pending since the last
    opportunity, the Unnecessary rendering step of
@@ -11,48 +10,51 @@ EXTENDS Naturals, FiniteSets, TLC
    Frames are created dynamically by the CreateFrame action: the initial
    top-level traversable is created with parent NoParent, and child frames
    (iframes) are created at any time with their parent. The embedder paints
-   top-level traversables only, so RenderingOpportunity and GraphicsComputed
-   are traced for top-level frames, while NoteUiStateUpdate and
+   top-level traversables only, so RenderingOpportunity and the composition
+   actions are traced for top-level frames, while NoteUiStateUpdate and
    UpdateTheRendering are traced for every frame. A top-level paint services
    the batched UI state updates of its whole hierarchy, and a child's update
    starts the top-level's update too (their frames compose together), mirroring
    the user-agent scheduling.
 
-   A video's frames are decoded in the graphics process, which composes the
-   video's own layer as they arrive: OutOfBandComputed presents a frame
-   against the committed root while no content update is in flight. Content
-   is not involved, so no counter moves — the composition presents no new
-   content state. The action is therefore a stutter of the base state
-   machine: it constrains the trace (a video composition requires an idle
-   pipeline) without enlarging the explored state space.
+   `pending_update` and `cycle` are the two flags the pipeline is paced by:
+   the UA's `pending_update_the_rendering` (an update was queued and no
+   composition released it; a note noted meanwhile is batched instead of
+   queued) and the graphics process's `cycle_deadline` (armed for the update
+   it was armed for, cleared once content produced that frame — which is what
+   lets a composition present the committed root when it expires).
 
-   The per-frame state (parent, pending, ...) is a function over the whole
+   The per-frame state (parent, queued, ...) is a function over the whole
    constant Frame universe, with default values for frames not yet created;
    the live set tracks which frames exist. This keeps every expression
    total (TLC errors on applying a function outside its domain), so the
    temporal formulas can quantify over Frame without special-casing. *)
 
 CONSTANTS
-  Frame,       \* the universe of frame ids the trace can reference
-  NoParent,    \* no parent (top-level frame)
-  BufferCount
+  Frame,        \* the universe of frame ids the trace can reference
+  NoParent,     \* no parent (top-level frame)
+  BufferCount,  \* updates the UA holds per navigable: the one it waits for and the batched one
+  CommandDepth  \* bound on the updates content was sent and has not run (keeps the model finite)
 
 ASSUME
   /\ Frame # {}
   /\ NoParent \notin Frame
   /\ BufferCount > 0
+  /\ CommandDepth > BufferCount
 
 VARIABLES
   live,                  \* created frames (the navigable hierarchy grows)
   parent,                \* parent navigable of f (NoParent at the top level)
-  pending,               \* queued update the rendering for f (UA pending_update_the_rendering)
-  rendering_updated,     \* content completed the update (UpdateTheRendering)
-  composed,              \* graphics sent the pixels (PixelFrameReady)
+  queued,                \* update the rendering commands content was sent and has not run yet
+  rendering_updated,     \* content ran update the rendering (UpdateTheRendering)
+  composed,              \* top-level content compositions that presented a render (GraphicsComputed)
+  pending_update,        \* the UA waits for an update: pending_update_the_rendering
+  cycle,                 \* graphics armed the cycle's deadline for the queued update: cycle_deadline
   ui_state_update_count, \* a batched UI state update (UA queued_ui_state_updates, 0 or 1)
   animating,             \* the last composed frame had animated content
   rendering_opportunity  \* the embedder can present a frame (`frame_needed`, sent at each paint)
 
-vars == <<live, parent, pending, rendering_updated, composed,
+vars == <<live, parent, queued, rendering_updated, composed, pending_update, cycle,
           ui_state_update_count, animating, rendering_opportunity>>
 
 \* ---- Helper operators ----
@@ -68,10 +70,11 @@ TopLevelFrames(top) == {f \in live: TopLevel(f) = top}
 
 \* ---- Type correctness ----
 
-\* Counters are relative to the last paint; the pipeline depth is bounded
-\* by BufferCount. Non-live frames keep default values (parent NoParent, zero
-\* counters, no rendering opportunity); the live set and parent relation carry
-\* the actual hierarchy.
+\* The queued/rendered/composed counters are relative to the last paint (each
+\* paint rebases them by the compositions it consumed) and bounded by
+\* CommandDepth, the model's bound on what content may owe. Non-live frames
+\* keep default values (parent NoParent, zero counters, no flags); the live set
+\* and the parent relation carry the actual hierarchy.
 TypeOK ==
   /\ live \subseteq Frame
   /\ parent \in [Frame -> Frame \cup {NoParent}]
@@ -79,10 +82,14 @@ TypeOK ==
   /\ \A f \in live: parent[f] # NoParent => parent[f] \in live
   /\ \A f \in live: parent[f] # f
   /\ \A f \in live: parent[f] # NoParent => f \notin Ancestors(parent[f])
-  /\ pending \in [Frame -> 0..BufferCount]
-  /\ \A f \in Frame \ live: pending[f] = 0
-  /\ rendering_updated \in [Frame -> 0..BufferCount]
-  /\ composed \in [Frame -> 0..BufferCount]
+  /\ queued \in [Frame -> 0..CommandDepth]
+  /\ rendering_updated \in [Frame -> 0..CommandDepth]
+  /\ composed \in [Frame -> 0..CommandDepth]
+  /\ \A f \in Frame \ live: queued[f] = 0
+  /\ \A f \in Frame \ live: rendering_updated[f] = 0
+  /\ \A f \in Frame \ live: composed[f] = 0
+  /\ pending_update \in [Frame -> BOOLEAN]
+  /\ cycle \in [Frame -> BOOLEAN]
   /\ ui_state_update_count \in [Frame -> 0..1]
   /\ animating \in [Frame -> BOOLEAN]
   /\ rendering_opportunity \in [Frame -> BOOLEAN]
@@ -92,9 +99,11 @@ TypeOK ==
 Init ==
   /\ live = {}
   /\ parent = [f \in Frame |-> NoParent]
-  /\ pending = [f \in Frame |-> 0]
+  /\ queued = [f \in Frame |-> 0]
   /\ rendering_updated = [f \in Frame |-> 0]
   /\ composed = [f \in Frame |-> 0]
+  /\ pending_update = [f \in Frame |-> FALSE]
+  /\ cycle = [f \in Frame |-> FALSE]
   /\ ui_state_update_count = [f \in Frame |-> 0]
   /\ animating = [f \in Frame |-> FALSE]
   /\ rendering_opportunity = [f \in Frame |-> FALSE]
@@ -109,182 +118,210 @@ CreateFrame(f, p) ==
   /\ p \in live \cup {NoParent}
   /\ live' = live \cup {f}
   /\ parent' = [parent EXCEPT ![f] = p]
-  /\ UNCHANGED <<pending, rendering_updated, composed, ui_state_update_count,
-                 animating, rendering_opportunity>>
-
-\* An update is in flight for f when graphics has not yet computed it.
-InFlight(f) == pending[f] > composed[f]
-
-\* The top-level's paint services the batched UI state updates of the frames
-\* that compose with it: a frame whose pipeline is drained with a batched UI
-\* state update or animated content.
-ServicedFrames(top) ==
-  IF InFlight(top)
-  THEN {}
-  ELSE {g \in TopLevelFrames(top): ~InFlight(g) /\ (ui_state_update_count[g] > 0 \/ animating[g])}
+  /\ UNCHANGED <<queued, rendering_updated, composed, pending_update, cycle,
+                 ui_state_update_count, animating, rendering_opportunity>>
 
 \* The embedder started a paint: the top-level navigable has a rendering
-\* opportunity. The paint consumes the composed frames of its hierarchy and
-\* services the batched UI state updates: each serviced frame queues an
-\* update, and the top-level queues one too (a child's update propagates
-\* to the top-level so their frames compose together).
+\* opportunity. The paint presents what was composed since the last paint, so
+\* the counters of the hierarchy rebase by that count. The batched UI state
+\* updates are then serviced: every navigable of the hierarchy with a batched
+\* note or animated content that is not already waiting queues an update, and
+\* the top-level queues one too (a child's update propagates to the top-level
+\* so their frames compose together). A top-level that is already waiting, or
+\* a navigable the model's CommandDepth bound leaves no room for, keeps its
+\* opportunity and its batch, so the next paint can serve them.
 RenderingOpportunity(top) ==
   /\ top \in live
   /\ IsTopLevel(top)
-  /\ LET serviced == ServicedFrames(top)
-         any == serviced # {}
+  /\ LET hierarchy == TopLevelFrames(top)
+         serviced == {g \in hierarchy:
+                        ~pending_update[g]
+                          /\ (ui_state_update_count[g] > 0 \/ animating[g])}
+         queues_update(g) == g \in serviced \/ (g = top /\ serviced # {})
+         fits == \A g \in Frame: queues_update(g) => queued[g] < CommandDepth
+         any == \E g \in Frame: queues_update(g)
+         queued_after == [g \in Frame |->
+              IF g \in hierarchy THEN queued[g] - composed[g] ELSE queued[g]]
+         rendered_after == [g \in Frame |->
+              IF g \in hierarchy THEN rendering_updated[g] - composed[g] ELSE rendering_updated[g]]
      IN
+     /\ fits
      /\ composed' = [g \in Frame |->
-          IF g \in TopLevelFrames(top) THEN 0 ELSE composed[g]]
-     /\ rendering_updated' = [g \in Frame |->
-          IF g \in TopLevelFrames(top)
-          THEN rendering_updated[g] - composed[g]
-          ELSE rendering_updated[g]]
-     /\ pending' = [g \in Frame |->
-          IF g \in TopLevelFrames(top)
-          THEN pending[g] - composed[g]
-               + IF g \in serviced \/ (g = top /\ any) THEN 1 ELSE 0
-          ELSE pending[g]]
+          IF g \in hierarchy THEN 0 ELSE composed[g]]
+     /\ queued' = [g \in Frame |->
+          queued_after[g] + IF queues_update(g) THEN 1 ELSE 0]
+     /\ rendering_updated' = rendered_after
+     /\ pending_update' = [g \in Frame |->
+          IF queues_update(g) THEN TRUE ELSE pending_update[g]]
+     /\ cycle' = [g \in Frame |->
+          IF queues_update(g) THEN TRUE ELSE cycle[g]]
      /\ rendering_opportunity' = [rendering_opportunity EXCEPT ![top] =
           IF any THEN FALSE ELSE TRUE]
      /\ ui_state_update_count' = [g \in Frame |->
-          IF g \in serviced THEN 0 ELSE ui_state_update_count[g]]
-  /\ UNCHANGED <<animating, live, parent>>
+          IF queues_update(g) THEN 0 ELSE ui_state_update_count[g]]
+     /\ UNCHANGED <<animating, live, parent>>
 
 \* The UA noted a UI state update for f (input, navigation, viewport change,
-\* or content request). When an update is in flight or the top-level has no
-\* rendering opportunity, the UI state update is batched (set semantics:
-\* repeated notes stay one batched update); otherwise update the rendering is
-\* queued for f and, when f is a child, for its top-level too — unless the
-\* top-level already has an update in flight, in which case the propagation is
-\* skipped (the code's queue_update_the_rendering early-returns when the
-\* navigable is already pending), and the top-level's batched UI state update
-\* is drained only when the propagation actually queues its update.
+\* content request, or the graphics process reporting a changed embedded
+\* layer). While the UA already waits for an update of f or the top-level has
+\* no rendering opportunity, the note is batched (set semantics: repeated
+\* notes stay one batched update); otherwise update the rendering is queued
+\* for f and, when f is a child, for its top-level too — unless the top-level
+\* already waits for one, in which case the propagation is skipped (the code's
+\* queue_update_the_rendering early-returns), and a drained batched update of
+\* the top-level is cleared only when the propagation actually queues.
 NoteUiStateUpdate(f) ==
   /\ f \in live
-  /\ IF InFlight(f) \/ ~rendering_opportunity[TopLevel(f)]
+  /\ LET top == TopLevel(f)
+         propagate == f # top /\ ~pending_update[top]
+         queues_update(g) == g = f \/ (propagate /\ g = top)
+         fits == \A g \in Frame: queues_update(g) => queued[g] < CommandDepth
+     IN
+     IF pending_update[f] \/ ~rendering_opportunity[top]
      THEN /\ ui_state_update_count' = [ui_state_update_count EXCEPT ![f] = 1]
-          /\ UNCHANGED <<pending, rendering_updated, composed, animating,
-                         rendering_opportunity, live, parent>>
-     ELSE /\ pending' = [pending EXCEPT ![f] = pending[f] + 1,
-                                        ![TopLevel(f)] =
-                                          IF InFlight(TopLevel(f))
-                                          THEN pending[TopLevel(f)]
-                                          ELSE pending[TopLevel(f)] + 1]
-          /\ rendering_opportunity' = [rendering_opportunity EXCEPT ![TopLevel(f)] = FALSE]
-          /\ ui_state_update_count' = [ui_state_update_count EXCEPT ![f] = 0,
-                                        ![TopLevel(f)] =
-                                          IF InFlight(TopLevel(f))
-                                          THEN ui_state_update_count[TopLevel(f)]
-                                          ELSE 0]
+          /\ UNCHANGED <<queued, rendering_updated, composed, pending_update, cycle,
+                         animating, rendering_opportunity, live, parent>>
+     ELSE /\ fits
+          /\ queued' = [g \in Frame |->
+               queued[g] + IF queues_update(g) THEN 1 ELSE 0]
+          /\ pending_update' = [g \in Frame |->
+               IF queues_update(g) THEN TRUE ELSE pending_update[g]]
+          /\ cycle' = [g \in Frame |->
+               IF queues_update(g) THEN TRUE ELSE cycle[g]]
+          /\ rendering_opportunity' = [rendering_opportunity EXCEPT ![top] = FALSE]
+          /\ ui_state_update_count' = [g \in Frame |->
+               IF queues_update(g) THEN 0 ELSE ui_state_update_count[g]]
           /\ UNCHANGED <<rendering_updated, composed, animating, live, parent>>
 
-\* Content runs the queued update: rendering_updated catches up to pending.
+\* Content runs one queued update the rendering: one queued command becomes
+\* one render, and the frame it produces is on its way to the compositor, so
+\* the cycle the queued update armed no longer has a deadline.
 UpdateTheRendering(f) ==
   /\ f \in live
-  /\ rendering_updated[f] < pending[f]
-  /\ rendering_updated' = [rendering_updated EXCEPT ![f] = pending[f]]
-  /\ UNCHANGED <<pending, composed, ui_state_update_count, animating,
-                 rendering_opportunity, live, parent>>
+  /\ rendering_updated[f] < queued[f]
+  /\ rendering_updated' = [g \in Frame |->
+       IF g = f THEN rendering_updated[g] + 1 ELSE rendering_updated[g]]
+  /\ cycle' = [g \in Frame |->
+       IF g = f THEN FALSE ELSE cycle[g]]
+  /\ UNCHANGED <<queued, composed, pending_update, ui_state_update_count,
+                 animating, rendering_opportunity, live, parent>>
 
-\* Graphics sent the top-level's frame (PixelFrameReady): composed catches
-\* up to rendering_updated for the whole hierarchy (the composed scene
-\* includes the child frames), and the in-flight updates of the composed
-\* frames are released (pending drops to composed, mirroring the UA
-\* clearing pending_update_the_rendering at PixelFrameReady). Animated
-\* content batches the next UI state updates, and a held rendering
-\* opportunity with something to render queues the next updates immediately —
-\* the serviced set is computed after the release, so a top-level whose own
-\* update just composed can still service its children.
+\* Graphics sent the top-level's frame (PixelFrameReady, composition kind
+\* ContentUpdate): the composition presents one rendered top-level frame and
+\* the latest frame of every child (a child's frames share one layer, so the
+\* newest replaces the older). The user agent releases the update it waited
+\* for, for the whole hierarchy, since the composed scene includes the
+\* children. Animated content batches the next UI state updates, and a held
+\* rendering opportunity with something to render queues the next updates
+\* immediately — the serviced set is computed after the release, so a
+\* navigable whose update just composed can still service a batched note.
 GraphicsComputed(top) ==
   /\ top \in live
   /\ IsTopLevel(top)
   /\ rendering_updated[top] > composed[top]
   /\ LET hierarchy == TopLevelFrames(top)
-         composed_after == [g \in Frame |->
-              IF g \in hierarchy THEN rendering_updated[g] ELSE composed[g]]
-         any_animating == \E g \in hierarchy: animating[g]
-         serviced == IF rendering_opportunity[top]
+         released == pending_update[top]
+         serviced == IF released /\ rendering_opportunity[top]
                      THEN {g \in hierarchy:
-                             composed_after[g] = pending[g]
-                               /\ (ui_state_update_count[g] > 0 \/ animating[g])}
+                             ui_state_update_count[g] > 0 \/ animating[g]}
                      ELSE {}
-         any == serviced # {}
+         queues_update(g) == g \in serviced \/ (g = top /\ serviced # {})
+         fits == \A g \in Frame: queues_update(g) => queued[g] < CommandDepth
+         any == \E g \in Frame: queues_update(g)
+         any_animating == \E g \in hierarchy: animating[g]
      IN
-     /\ composed' = composed_after
-     /\ pending' = [g \in Frame |->
-          IF g \in hierarchy
-          THEN composed_after[g]
-               + IF g \in serviced \/ (g = top /\ any) THEN 1 ELSE 0
-          ELSE pending[g]]
+     /\ fits
+     /\ composed' = [g \in Frame |->
+          IF g = top THEN composed[g] + 1
+          ELSE IF g \in hierarchy THEN rendering_updated[g]
+          ELSE composed[g]]
+     /\ queued' = [g \in Frame |->
+          queued[g] + IF queues_update(g) THEN 1 ELSE 0]
+     /\ pending_update' = [g \in Frame |->
+          IF queues_update(g) THEN TRUE
+          ELSE IF g \in hierarchy /\ released THEN FALSE
+          ELSE pending_update[g]]
+     /\ cycle' = [g \in Frame |->
+          IF queues_update(g) THEN TRUE
+          ELSE IF g \in hierarchy THEN FALSE
+          ELSE cycle[g]]
      /\ rendering_opportunity' = [rendering_opportunity EXCEPT ![top] =
           IF any THEN FALSE ELSE rendering_opportunity[top]]
      /\ ui_state_update_count' = [g \in Frame |->
-          IF g \in serviced \/ (g = top /\ any) THEN 0
+          IF queues_update(g) THEN 0
           ELSE IF g \in hierarchy /\ animating[g] THEN 1
           ELSE IF g = top /\ any_animating THEN 1
           ELSE ui_state_update_count[g]]
-  /\ UNCHANGED <<rendering_updated, animating, live, parent>>
+     /\ UNCHANGED <<rendering_updated, animating, live, parent>>
 
-\* The render cycle's deadline expired with no top-level content update (the
-\* content event loop is blocked, so no UpdateTheRendering ran): graphics
-\* composes the committed hierarchy anyway, presenting a worker's
-\* OffscreenCanvas commit or a video frame against the last committed root.
-\* The deadline completes the cycle without the content update, so
-\* rendering_updated and composed catch up to pending (the queued update is
-\* treated as consumed). This mirrors GraphicsComputed with the "top-level
-\* rendered" precondition replaced by "a top-level update is queued but has
-\* not rendered": the deadline is the render cycle's bounded wait for the
-\* top-level frame, after which the embedded layers are presented.
+\* The render cycle's deadline expired before the top-level frame arrived (the
+\* content event loop is blocked, so the frame is late): graphics composes the
+\* committed hierarchy against the last committed root, presenting a worker's
+\* OffscreenCanvas commit or a video frame. The composition presents no new
+\* content state, so no render counter moves; the late top-level frame
+\* composes separately when it arrives (GraphicsComputed). Like a content
+\* composition it releases the update the user agent waited for — the deadline
+\* composition stops waiting for the late frame, which is what lets the next
+\* note queue an update (and dispatch the worker's animation frame callback)
+\* while content is blocked — and it services the batched UI state updates
+\* under the same gate.
 Deadline(top) ==
   /\ top \in live
   /\ IsTopLevel(top)
-  /\ rendering_updated[top] = composed[top]
-  /\ pending[top] > composed[top]
+  /\ cycle[top]
   /\ LET hierarchy == TopLevelFrames(top)
-         composed_after == [g \in Frame |->
-              IF g \in hierarchy THEN pending[g] ELSE composed[g]]
-         any_animating == \E g \in hierarchy: animating[g]
          serviced == IF rendering_opportunity[top]
                      THEN {g \in hierarchy:
-                             composed_after[g] = pending[g]
-                               /\ (ui_state_update_count[g] > 0 \/ animating[g])}
+                             ui_state_update_count[g] > 0 \/ animating[g]}
                      ELSE {}
-         any == serviced # {}
+         queues_update(g) == g \in serviced \/ (g = top /\ serviced # {})
+         fits == \A g \in Frame: queues_update(g) => queued[g] < CommandDepth
+         any == \E g \in Frame: queues_update(g)
+         any_animating == \E g \in hierarchy: animating[g]
      IN
-     /\ rendering_updated' = [g \in Frame |->
-          IF g \in hierarchy THEN pending[g] ELSE rendering_updated[g]]
-     /\ composed' = composed_after
-     /\ pending' = [g \in Frame |->
-          IF g \in hierarchy
-          THEN composed_after[g]
-               + IF g \in serviced \/ (g = top /\ any) THEN 1 ELSE 0
-          ELSE pending[g]]
+     /\ fits
+     /\ queued' = [g \in Frame |->
+          queued[g] + IF queues_update(g) THEN 1 ELSE 0]
+     /\ pending_update' = [g \in Frame |->
+          IF queues_update(g) THEN TRUE
+          ELSE IF g \in hierarchy THEN FALSE
+          ELSE pending_update[g]]
+     /\ cycle' = [g \in Frame |->
+          IF g \in hierarchy THEN FALSE ELSE cycle[g]]
      /\ rendering_opportunity' = [rendering_opportunity EXCEPT ![top] =
           IF any THEN FALSE ELSE rendering_opportunity[top]]
      /\ ui_state_update_count' = [g \in Frame |->
-          IF g \in serviced \/ (g = top /\ any) THEN 0
+          IF queues_update(g) THEN 0
           ELSE IF g \in hierarchy /\ animating[g] THEN 1
           ELSE IF g = top /\ any_animating THEN 1
           ELSE ui_state_update_count[g]]
-  /\ UNCHANGED <<animating, live, parent>>
+     /\ UNCHANGED <<rendering_updated, composed, animating, live, parent>>
 
-\* Graphics presented a video frame — an embedded layer whose content the
-\* media pipeline produces — against the committed root. No content update
-\* ran for it (content is not involved: the document's own scene is
-\* unchanged), so no counter moves. The action requires an idle pipeline:
-\* composing while a render cycle is in flight would present the stale root
-\* and then compose again when the cycle's frame arrives; the code's gate
-\* (`cycle_deadline`) defers the frame to that cycle's composition, which
-\* the model covers as GraphicsComputed or Deadline.
+\* Graphics presented an out-of-band layer — a video frame — against the
+\* committed root. Content is not involved: the document's own scene is
+\* unchanged, so no counter moves and the user agent's pending update is not
+\* released, because an out-of-band composition that released it would let the
+\* UA queue a second update while the first is still in flight. Graphics
+\* composes it only while no content cycle is in flight (the deadline it armed
+\* for the queued update was cleared by the frame content produced for it);
+\* whether an out-of-band layer actually changed is environment state the
+\* model does not track.
 OutOfBandComputed(top) ==
   /\ top \in live
   /\ IsTopLevel(top)
-  /\ pending[top] = composed[top]
-  /\ rendering_updated[top] = composed[top]
+  /\ ~cycle[top]
   /\ UNCHANGED vars
 
 \* ---- Next-state relation ----
+
+\* Every queued counter is at the model's cap, so no update can be queued any
+\* more and the batch cannot drain: the bounded model has run out of room and
+\* stutters, which keeps every execution infinite (the real pipeline has no
+\* such cap).
+Done ==
+  /\ live # {}
+  /\ \A f \in live: queued[f] = CommandDepth
+  /\ UNCHANGED vars
 
 Next ==
   \/ \E f \in Frame, p \in live \cup {NoParent}: CreateFrame(f, p)
@@ -294,6 +331,7 @@ Next ==
   \/ \E f \in live: IsTopLevel(f) /\ GraphicsComputed(f)
   \/ \E f \in live: IsTopLevel(f) /\ Deadline(f)
   \/ \E f \in live: IsTopLevel(f) /\ OutOfBandComputed(f)
+  \/ Done
 
 \* ---- Fairness ----
 
@@ -312,30 +350,45 @@ Spec == Init /\ [][Next]_vars /\ Fairness
 
 \* ---- Invariants ----
 
-\* A queued update is completed by content before graphics computes it.
-PendingLeadsRendering ==
-  \A f \in live: pending[f] >= rendering_updated[f]
+\* Content runs an update only after the user agent queued it.
+QueuedLeadsRendering ==
+  \A f \in live: rendering_updated[f] <= queued[f]
 
+\* A composition presents a rendered frame.
 RenderingLeadsComposed ==
-  \A f \in live: rendering_updated[f] >= composed[f]
+  \A f \in live: composed[f] <= rendering_updated[f]
 
-\* The pipeline never holds more than BufferCount updates queued but not yet
-\* consumed by the embedder's paint (the double buffer).
+\* The user agent holds at most BufferCount updates per navigable: the one it
+\* waits for and the one batched for the next rendering opportunity. Content
+\* may owe more than that — a deadline composition releases the update the
+\* user agent stopped waiting for.
 DoubleBufferBound ==
-  \A f \in live: pending[f] <= BufferCount
+  \A f \in live:
+    (IF pending_update[f] THEN 1 ELSE 0) + ui_state_update_count[f] <= BufferCount
+
+\* An update the user agent waits for, and a cycle graphics armed, always have
+\* an uncomposed update behind them: the flags are set by queueing an update
+\* and cleared by a composition that presents it.
+PendingUpdateLeadsComposition ==
+  \A f \in live:
+    /\ pending_update[f] => queued[f] > composed[f]
+    /\ cycle[f] => pending_update[f]
+    /\ cycle[f] => queued[f] > rendering_updated[f]
 
 \* ---- Liveness ----
 
 \* Batched UI state updates are serviced when the top-level has a rendering
-\* opportunity: once a rendering opportunity exists and a render can start,
-\* the batch drains to zero.
+\* opportunity: once one exists, the navigable is not already waiting for an
+\* update, and content has room for another queued one, the batch drains to
+\* zero.
 UiStateUpdatesServiced ==
   \A f \in Frame:
     ((f \in live /\ ui_state_update_count[f] > 0 /\ rendering_opportunity[TopLevel(f)]
-        /\ pending[f] < BufferCount)
+        /\ ~pending_update[f] /\ queued[f] < CommandDepth
+        /\ queued[TopLevel(f)] < CommandDepth)
        ~> (ui_state_update_count[f] = 0))
 
 THEOREM
-    Spec => (TypeOK /\ PendingLeadsRendering /\ RenderingLeadsComposed
-             /\ DoubleBufferBound)
+    Spec => (TypeOK /\ QueuedLeadsRendering /\ RenderingLeadsComposed
+             /\ DoubleBufferBound /\ PendingUpdateLeadsComposition)
 =============================================================================

@@ -489,8 +489,12 @@ for `transferControlToOffscreen()`).  A drawing member serializes the
 accumulated anyrender scene as `GraphicsCommand::CanvasPaint` through the
 current realm's graphics sender, which is why the same commit path serves a
 window canvas and a worker `OffscreenCanvas`.  Registration must happen
-before the next update-the-rendering can include the embed site.  Both
-`getContext` methods record the context mode (a shared cell) and cache the
+before the next update-the-rendering can include the embed site.  The
+registration is released symmetrically: `destroy_document` and the
+node-wrapper collection path send `GraphicsCommand::UnregisterCanvas` and drop
+the `canvas_registry` entry, so a page's canvases do not keep their compositor
+layers and shared surfaces in the graphics process after the page is gone.
+Both `getContext` methods record the context mode (a shared cell) and cache the
 context object, so a second call returns the same object; the mode also
 makes `transferControlToOffscreen()` after a 2D context throw, and makes a
 transferred `OffscreenCanvas` throw from `getContext`.

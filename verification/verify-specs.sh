@@ -166,27 +166,50 @@ if [[ -z "$SESSION_ID" ]]; then
     exit 1
 fi
 
-# Navigate to a page embedding an iframe to trigger initial rendering events
-# for both the top-level frame and a child frame (cross-site file:// URLs run
-# the child in its own content process), plus navigation tracing. The child
-# frame's rendering side effects (note/frame-needed/update/computed) are
-# traced from the UA so the RenderingOpportunity model validates them.
-TRACE_PAGE_URL="file://$ROOT/verification/iframe-trace-page.html"
-webdriver_request POST "/session/${SESSION_ID}/url" "{\"url\":\"${TRACE_PAGE_URL}\"}" >/dev/null
+# Each trace page runs the work it exists to record while it is the current
+# document, so the session settles once per page before navigating away: the
+# next navigation tears the page down, and a step whose work is still due
+# records nothing.
+settle() {
+    local ticks=0
+    while (( ticks < $1 )); do
+        if ! kill -0 "$FORMAL_WEB_PID" 2>/dev/null; then
+            fail_with_log "formal-web exited while a trace page was running"
+        fi
+        sleep 0.1
+        ticks=$(( ticks + 1 ))
+    done
+}
 
-# Then navigate to a page exercising the MessagePort workflow (channel
-# creation, routed messaging, and a transfer), so the MessagePortExtraFG
-# trace consumer has events to validate.
-PORT_TRACE_PAGE_URL="file://$ROOT/verification/messageport-trace.html"
-webdriver_request POST "/session/${SESSION_ID}/url" "{\"url\":\"${PORT_TRACE_PAGE_URL}\"}" >/dev/null
+navigate() {
+    webdriver_request POST "/session/${SESSION_ID}/url" "{\"url\":\"file://$ROOT/$1\"}" >/dev/null
+}
 
-echo "waiting for initial page load..."
-for i in {1..100}; do
-    if ! kill -0 "$FORMAL_WEB_PID" 2>/dev/null; then
-        fail_with_log "formal-web exited during initial page load"
-    fi
-    sleep 0.1
-done
+# A page embedding an iframe triggers initial rendering events for both the
+# top-level frame and a child frame (cross-site file:// URLs run the child in
+# its own content process), plus navigation tracing. The child frame's
+# rendering side effects (note/frame-needed/update/computed) are traced from
+# the UA so the RenderingOpportunity model validates them.
+navigate "verification/iframe-trace-page.html"
+settle 10
+
+# A page exercising the MessagePort workflow (channel creation, routed
+# messaging, and a transfer), so the MessagePort trace consumer has events to
+# validate.
+navigate "verification/messageport-trace.html"
+settle 10
+
+# A page whose canvas commits land while the content event loop is blocked:
+# the graphics process's composition deadline expires first and composes the
+# committed root, recording the RenderingOpportunity model's Deadline action.
+navigate "verification/deadline-trace-page.html"
+settle 30
+
+# A page playing a video: the graphics process decodes the frames and composes
+# the video's layer without a content render cycle, recording the model's
+# OutOfBandComputed action.
+navigate "verification/outofband-trace-page.html"
+settle 30
 
 webdriver_request DELETE "/session/${SESSION_ID}" >/dev/null
 SESSION_ID=""

@@ -241,11 +241,13 @@ only while no content update is in flight. That gate is what makes the video
 frame wait for a cycle already in flight: that cycle's frame composes the
 stored video frame, so one composition never preempts or repeats another.
 
-`PixelFrameReady` carries `settles_content_update`: true when the composition
-presents a top-level frame or the render cycle's deadline expires, false for an
-out-of-band composition (a video frame). Only a settling composition clears
-`pending_update_the_rendering`; an out-of-band composition that cleared it
-would let the UA queue a second update while the first is still in flight.
+`PixelFrameReady` carries the composition kind: `ContentUpdate` when a
+composition presents a top-level frame, `Deadline` when the render cycle's
+deadline presents the committed root, `OutOfBand` for an out-of-band video
+frame. The UA traces the action of that name for the frame and clears
+`pending_update_the_rendering` for every kind but `OutOfBand`; an out-of-band
+composition that cleared it would let the UA queue a second update while the
+first is still in flight.
 
 ### Completing the cycle
 

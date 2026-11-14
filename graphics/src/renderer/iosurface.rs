@@ -5,8 +5,8 @@
 
 use super::image::StoredImageResult;
 use super::{
-    FrameDelivery, FrameMetadata, GpuContext, MAX_SURFACE_DIMENSION, PollRequest, ReadbackChannels,
-    RenderError, SubmitOutcome, SurfaceBuffers, SurfaceRenderer, SurfaceRingState, frame_metadata,
+    FrameMetadata, GpuContext, MAX_SURFACE_DIMENSION, PollRequest, ReadbackChannels, RenderError,
+    SubmitOutcome, SurfaceBuffers, SurfaceRenderer, SurfaceRingState, frame_metadata,
 };
 use crate::iosurface::{IosurfaceTexture, create_shared_texture};
 use ipc_messages::content::{ImageIdentifier, WebviewId};
@@ -112,7 +112,7 @@ impl SurfaceRenderer for IosurfaceRenderer {
             child_frame_to_webview,
             animating,
             animating_frame_ids,
-            settles_content_update,
+            composition_kind,
         } = composed;
         info!(
             "[render-pipe] Graphics GPU submit layers webview={} layers={} child_frames={} animating={}",
@@ -129,7 +129,7 @@ impl SurfaceRenderer for IosurfaceRenderer {
             child_frame_to_webview,
             animating,
             animating_frame_ids,
-            settles_content_update,
+            composition_kind,
         );
 
         let mut delivered = Vec::new();
@@ -210,7 +210,7 @@ impl SurfaceRenderer for IosurfaceRenderer {
                 layers: topology,
                 animating: metadata.animating,
                 animating_frame_ids: metadata.animating_frame_ids,
-                settles_content_update: metadata.settles_content_update,
+                composition_kind: metadata.composition_kind,
                 generation,
                 frame_hit_info: metadata.frame_hit_info,
                 child_viewports: metadata.child_viewports,
@@ -261,23 +261,20 @@ impl SurfaceRenderer for IosurfaceRenderer {
         &mut self,
         data: SharedRenderData,
         sender: &ipc::IpcSender<GraphicsEvent>,
-    ) -> FrameDelivery {
+    ) {
         let SharedRenderData {
             webview_id,
             generation,
             layers,
             metadata,
         } = data;
-        let mut delivery = FrameDelivery {
-            graphics_computed: false,
-        };
 
         let frame_event = GraphicsEvent::PixelFrameReady {
             webview_id,
             layers,
             animating: metadata.animating,
             animating_frame_ids: metadata.animating_frame_ids,
-            settles_content_update: metadata.settles_content_update,
+            composition_kind: metadata.composition_kind,
             generation,
             frame_hit_info: metadata.frame_hit_info,
             child_viewports: metadata.child_viewports,
@@ -288,10 +285,7 @@ impl SurfaceRenderer for IosurfaceRenderer {
                 "[graphics] failed to send PixelFrameReady for {:?} gen={}: {send_error}",
                 webview_id, generation
             );
-            return delivery;
         }
-        delivery.graphics_computed = true;
-        delivery
     }
 
     fn render_done_webview_id(data: &SharedRenderData) -> WebviewId {

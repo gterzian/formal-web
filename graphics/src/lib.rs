@@ -18,7 +18,7 @@ use crossbeam_channel::{select, tick};
 use ipc_messages::content::{
     CanvasId, FrameId, ImageIdentifier, WebviewId, deserialize_scene_from_slice,
 };
-use ipc_messages::graphics::{FrameHitInfo, GraphicsCommand, GraphicsEvent};
+use ipc_messages::graphics::{CompositionKind, FrameHitInfo, GraphicsCommand, GraphicsEvent};
 use ipc_messages::media::{MediaPipelineId, VideoPaintId};
 use log::{debug, error, info};
 use media::backend::{MediaBackend, MediaBackendEvent, PipelineHandle};
@@ -49,11 +49,11 @@ pub struct ComposedScene {
     /// siblings).
     pub animating: bool,
     pub animating_frame_ids: Vec<FrameId>,
-    /// The composition settles the navigable's in-flight content update (a
-    /// top-level frame rendered, or the cycle's deadline presented the
-    /// committed root). Set by `maybe_compose` from the webview's pending
-    /// composition; the UA uses it to clear `pending_update_the_rendering`.
-    pub settles_content_update: bool,
+    /// Which composition path produced this scene (a top-level content
+    /// frame, the render cycle's deadline, or an out-of-band layer). The UA
+    /// traces the render-cycle action it implements and uses it to decide
+    /// whether the composition settles the content update.
+    pub composition_kind: CompositionKind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -78,11 +78,6 @@ struct WebviewState<R> {
     /// worker's OffscreenCanvas keeps animating while the content event loop
     /// is blocked.
     cycle_deadline: Option<std::time::Instant>,
-    /// Whether the pending composition settles the navigable's in-flight
-    /// content update. Set when a top-level frame arrives (or the deadline
-    /// presents the committed root); an out-of-band composition leaves it
-    /// unchanged.
-    pending_composition_settles_content_update: bool,
 }
 
 impl<R: SurfaceRenderer> WebviewState<R> {
@@ -91,7 +86,6 @@ impl<R: SurfaceRenderer> WebviewState<R> {
             compositor: Compositor::default(),
             renderer: R::new(channels).unwrap_or_else(|error| panic!("renderer init: {error}")),
             cycle_deadline: None,
-            pending_composition_settles_content_update: false,
         }
     }
 }
@@ -614,8 +608,8 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
                 // top-level frame references has arrived, so a child frame
                 // racing behind it is still included (never dropped). The
                 // top-level frame arrived: the cycle's deadline is satisfied.
-                slot.compositor.mark_composition_pending();
-                slot.pending_composition_settles_content_update = true;
+                slot.compositor
+                    .mark_composition_pending(CompositionKind::ContentUpdate);
                 slot.cycle_deadline = None;
             } else {
                 // A cross-origin iframe's content changed: note a UI state
@@ -664,7 +658,8 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
                 return false;
             }
             if let Some(slot) = webviews.get_mut(&webview_id) {
-                slot.compositor.mark_composition_pending();
+                slot.compositor
+                    .mark_composition_pending(CompositionKind::OutOfBand);
             }
             maybe_compose(
                 webviews,
@@ -779,6 +774,23 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
             );
             canvas_to_webview.insert(canvas_id, webview_id);
         }
+        GraphicsCommand::UnregisterCanvas { canvas_id } => {
+            let Some(webview_id) = canvas_to_webview.remove(&canvas_id) else {
+                return false;
+            };
+            let Some(slot) = webviews.get_mut(&webview_id) else {
+                return false;
+            };
+            info!(
+                "[render-pipe] Graphics unregister canvas canvas={:?} webview={:?}",
+                canvas_id, webview_id
+            );
+            slot.compositor.remove_canvas_frame(canvas_id);
+            // Release the layer's shared surfaces now: no composition will
+            // render it again, and nothing else would trigger the sweep.
+            slot.renderer
+                .retain_layers(&slot.compositor.live_layer_ids());
+        }
         GraphicsCommand::CanvasPaint {
             canvas_id,
             width,
@@ -854,7 +866,6 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
             );
             if let Some(slot) = webviews.get_mut(&webview_id) {
                 slot.compositor.note_navigation_finalized();
-                slot.pending_composition_settles_content_update = false;
             }
         }
         GraphicsCommand::CreateMediaPipeline {
@@ -998,10 +1009,8 @@ fn compose_expired_deadlines<R: SurfaceRenderer>(
         }
         if let Some(slot) = webviews.get_mut(&webview_id) {
             slot.cycle_deadline = None;
-            slot.compositor.mark_composition_pending();
-            // The deadline completes the render cycle without the content
-            // update (the model's Deadline action): it settles that update.
-            slot.pending_composition_settles_content_update = true;
+            slot.compositor
+                .mark_composition_pending(CompositionKind::Deadline);
         }
         maybe_compose(
             webviews,
@@ -1079,8 +1088,6 @@ fn maybe_compose<R: SurfaceRenderer>(
     let Some(mut composed) = slot.compositor.compose_scene(webview_id) else {
         return;
     };
-    composed.settles_content_update = slot.pending_composition_settles_content_update;
-    slot.pending_composition_settles_content_update = false;
     // Populate child data for the UA to publish and route.
     let (child_viewports, child_frame_to_webview) =
         build_child_data(&mut slot.compositor, child_webview_to_parent);
@@ -1140,10 +1147,9 @@ fn build_child_data(
     (viewports, frame_to_webview)
 }
 
-/// Deliver a completed frame: look up the webview's renderer, hand the
+/// Deliver a completed frame: look up the webview's renderer and hand the
 /// backend's `RenderData` to its `handle_render_done` (which marks the ring
-/// buffer pending and sends `PixelFrameReady`), then emit the trace events
-/// the delivery reports.
+/// buffer pending and sends `PixelFrameReady`).
 fn handle_render_done<R: SurfaceRenderer>(
     webviews: &mut HashMap<WebviewId, WebviewState<R>>,
     sender: &ipc::IpcSender<GraphicsEvent>,

@@ -6,7 +6,7 @@ The verification crate owns trace recording, TLA+ validation, and the shutdown w
 - Trace specs live under `verification/tla_specs/`, and recorded NDJSON logs plus TLC working files live in temporary directories that are removed after validation.
 - `VerificationRun::finish()` requires all top-level `TraceSender` clones to be dropped so shutdown can observe channel closure and complete.
 - Verification uses the local TLA+ Toolbox jar at `/Applications/TLA+ Toolbox.app/Contents/Eclipse/tla2tools.jar` by default.
-- `./verification/verify-specs.sh` is the canonical end-of-task verification: it starts the embedder headless with TLA+ tracing, runs a minimal WebDriver session against `verification/iframe-trace-page.html`, collects trace events, and validates all specs (Navigation, RenderingOpportunity, …) against their models.
+- `./verification/verify-specs.sh` is the canonical end-of-task verification: it starts the embedder headless with TLA+ tracing, runs a WebDriver session through the trace pages under `verification/` (an iframe page, the port workflow page, a page whose canvas commits outrun a blocked content event loop, and a page playing a video), collects trace events, and validates all specs (Navigation, RenderingOpportunity, …) against their models. Each page is settled before the next navigation, since a page reached by the next navigation stops recording its step.
 - Both verification scripts rebuild every helper they spawn (embedder, content, net, graphics); keep that list complete, since a stale helper can leave the embedder blocked in shutdown (see `AGENTS.md`, "IPC wire format consistency").
 - `webdriver-screenshot-check` decodes WebDriver screenshots with the `image`
   crate, which no other target in this crate uses. It is therefore behind the
@@ -20,8 +20,8 @@ The verification crate owns trace recording, TLA+ validation, and the shutdown w
 
 | Spec | Events traced (producer) | Validates |
 |---|---|---|
-| `Navigation` | UA navigation lifecycle | navigable/navigation state machine |
-| `RenderingOpportunity` | UA `CreateFrame` (the navigable-creation part of the navigation path, traced from `CreateNavigable`/`CreateChildNavigable`) /`NoteUiStateUpdate`/`RenderingOpportunity`, content `UpdateTheRendering`, UA `GraphicsComputed` (traced on receipt of the composed frame) | the render cycle documented in `user_agent/README.md` ("Rendering pipeline"): the rendering-opportunity gate, update the rendering, composition, and the two-buffer bound |
+| `Navigation` | UA `CreateNavigable`/`CreateChildNavigable`/`RemoveNavigable`/`CreateNavigation`/`StartNavigating`/`ContinueNavigation`, content `RunBeforeUnload` | navigable/navigation state machine |
+| `RenderingOpportunity` | UA `CreateFrame` (the navigable-creation part of the navigation path, traced from `CreateNavigable`/`CreateChildNavigable`) /`NoteUiStateUpdate`/`RenderingOpportunity`, content `UpdateTheRendering`, UA `GraphicsComputed`/`Deadline`/`OutOfBandComputed` (traced on receipt of the composed frame; the event name is the composition kind) | the render cycle documented in `user_agent/README.md` ("Rendering pipeline"): the rendering-opportunity gate, update the rendering, the three composition kinds, and the depth of the updates the user agent holds |
 | `MessagePort` | content `NewChannel`/`PostMessage`/`ReceiveMessage`/`Transfer`/`TransferReceive`, UA `RouteMessage`, content `RunTask` (the last two are the implementation-level routing/task events, skipped by the coarse trace consumer) | the cross-process port workflow mapped to the HTML spec's channel messaging steps: channel creation, the FIFO port message queue ordering (each `ReceiveMessage` pop is checked against the abstract queue head), and the transfer/transfer-receive transitions |
 
 ### MessagePort scope
@@ -52,9 +52,10 @@ latter two event kinds.
 ### RenderingOpportunity scope
 
 The model tracks the frame-production cycle per **top-level traversable** and
-its **child frames** (iframes). `RenderingOpportunity` and `GraphicsComputed`
-only ever fire for top-levels (the embedder sends `frame_needed` for webviews;
-the UA traces `GraphicsComputed` when a top-level composition arrives), while
+its **child frames** (iframes). `RenderingOpportunity` and the composition
+actions (`GraphicsComputed`, `Deadline`, `OutOfBandComputed`) only ever fire for
+top-levels (the embedder sends `frame_needed` for webviews; the UA traces the
+composition action named by the `PixelFrameReady` composition kind), while
 `NoteUiStateUpdate`/`UpdateTheRendering` are traced for every frame. The
 pipeline itself is documented in `user_agent/README.md` ("Rendering pipeline");
 this section covers what the trace model records.
@@ -64,20 +65,31 @@ top-level traversable (parent `NoParent`) and iframes (parent is an existing fra
 can be born at any time. The navigation path's graphics-relevant part —
 `CreateNavigable`/`CreateChildNavigable` — is therefore traced for this spec
 too as `CreateFrame`, so the model's frame set grows from the trace alone.
-The verification session (`verify-specs.sh`) navigates to
+The verification session (`verify-specs.sh`) navigates through
 `verification/iframe-trace-page.html`, which embeds a cross-site `file://`
-iframe, so the child rendering path is actually traced and validated.
+iframe, so the child rendering path is actually traced and validated; its
+`deadline-trace-page.html` and `outofband-trace-page.html` record the
+deadline and out-of-band composition kinds.
+
+The model keeps its state space finite with a cap (`CommandDepth`) on the
+updates content was sent and has not run, and a `Done` action that stutters
+once every cap is hit: the real pipeline has no such cap, so a trace that
+overflows it fails validation. The base-model configuration caps the frame
+universe at one top-level and one child (`RenderingOpportunity.cfg`) to keep
+the invariant and liveness check fast; the trace validation uses every frame
+id the trace references.
 
 ### RenderingOpportunity remaining work
 
-A playing video in the recorded trace is not part of the standard
-verification session: a trace that includes video frames fails intermittently
-at `UpdateTheRendering` (consecutive updates with no intervening queue event).
-That is the intermittent `RenderingOpportunity` failure already documented in
-`content/README.md` (the content command channel / task queue ordering); the
-video's compositions expose it more often. The model's out-of-band composition
-action (`OutOfBandComputed`) is therefore exercised by TLC on the base model,
-not by the recorded trace.
+The model's counters are relative to the last paint: a paint rebases them by
+the compositions it consumed (the embedder presents what was composed), which
+is what keeps them within `CommandDepth` across a long trace.
+
+What graphics composes out of band depends on environment state the model does
+not carry: `Deadline` needs a changed out-of-band layer (a video frame or a
+worker's canvas commit) and `OutOfBandComputed` needs one to present, so the
+two actions are enabled by the model's own gates (`cycle` armed, no content
+cycle in flight) and not by layer state.
 
 The model abstracts all UI state update notes into `NoteUiStateUpdate` and
 relies on `RenderingOpportunity` fairness to eventually service a batched

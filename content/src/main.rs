@@ -2003,10 +2003,34 @@ impl ContentProcess {
                     error!("failed to unregister images with graphics: {error}");
                 }
             }
+            // The document's offscreen canvases are gone with it: no paint
+            // will commit them again, so the graphics process drops their
+            // layers and shared surfaces instead of holding them for the
+            // process's lifetime.
+            let canvas_ids: Vec<CanvasId> = self
+                .canvas_registry
+                .borrow_mut()
+                .extract_if(|(owner_document_id, _), _| *owner_document_id == document_id)
+                .map(|(_, canvas_id)| canvas_id)
+                .collect();
+            if !canvas_ids.is_empty()
+                && let Some(graphics_sender) = &self.graphics_sender
+            {
+                for canvas_id in canvas_ids {
+                    if let Err(error) =
+                        graphics_sender.send(GraphicsCommand::UnregisterCanvas { canvas_id })
+                    {
+                        error!("failed to unregister canvas with graphics: {error}");
+                    }
+                }
+            }
             // The document's media elements are gone with it, so their
-            // pipelines must stop producing frames: a surviving pipeline would
+            // paint ids and pipelines must go too: a surviving pipeline would
             // keep reporting (and composing) video frames for a document that
             // no longer exists.
+            self.video_paint_registry
+                .borrow_mut()
+                .retain(|(owner_document_id, _), _| *owner_document_id != document_id);
             let media_pipelines = self
                 .media_pipeline_registry
                 .borrow_mut()
@@ -3694,15 +3718,33 @@ impl ContentProcess {
             return;
         }
 
-        {
+        let released_canvas_ids = {
             let mut image_registry = self.image_registry.borrow_mut();
             let mut canvas_registry = self.canvas_registry.borrow_mut();
             let mut video_paint_registry = self.video_paint_registry.borrow_mut();
+            let mut released_canvas_ids = Vec::new();
             for (_, node_ids) in &droppable {
                 for node_id in node_ids.iter().copied() {
                     image_registry.forget_element(document_id, node_id);
-                    canvas_registry.remove(&(document_id, node_id));
+                    if let Some(canvas_id) = canvas_registry.remove(&(document_id, node_id)) {
+                        released_canvas_ids.push(canvas_id);
+                    }
                     video_paint_registry.remove(&(document_id, node_id));
+                }
+            }
+            released_canvas_ids
+        };
+        // A canvas whose element was collected is gone: its committed layer
+        // and shared surfaces are released in the graphics process, the same
+        // way a destroyed document's canvases are.
+        if !released_canvas_ids.is_empty()
+            && let Some(graphics_sender) = &self.graphics_sender
+        {
+            for canvas_id in released_canvas_ids {
+                if let Err(error) =
+                    graphics_sender.send(GraphicsCommand::UnregisterCanvas { canvas_id })
+                {
+                    error!("failed to unregister canvas with graphics: {error}");
                 }
             }
         }

@@ -16,7 +16,9 @@
 use anyrender::PaintScene;
 use image::ImageDecoder;
 use ipc_messages::content::{FrameId, ImageIdentifier, WebviewId};
-use ipc_messages::graphics::{ChildViewport, CompositingLayerId, FrameHitInfo, GraphicsEvent};
+use ipc_messages::graphics::{
+    ChildViewport, CompositingLayerId, CompositionKind, FrameHitInfo, GraphicsEvent,
+};
 use ipc_messages::media::VideoPaintId;
 use kurbo::Affine;
 use std::collections::{HashMap, HashSet};
@@ -50,18 +52,9 @@ pub struct FrameMetadata {
     /// that carry the animating flag; the UA notes UI state updates for these
     /// navigables.
     pub animating_frame_ids: Vec<FrameId>,
-    /// The composition settles the navigable's in-flight content update; the
-    /// UA clears `pending_update_the_rendering` only for such a composition.
-    pub settles_content_update: bool,
-}
-
-/// The outcome of delivering a completed frame, reported to the run loop so
-/// the TLA tracing stays there. `graphics_computed` gates the
-/// `GraphicsComputed` RenderingOpportunity trace event (PixelFrameReady was
-/// actually sent).
-pub struct FrameDelivery {
-    /// PixelFrameReady was delivered to the UA (the frame is fully computed).
-    pub graphics_computed: bool,
+    /// Which composition path produced this frame; the UA traces the
+    /// render-cycle action it implements.
+    pub composition_kind: CompositionKind,
 }
 
 /// The outcome of one composition: which layer surfaces reached the embedder
@@ -76,8 +69,7 @@ pub struct SubmitOutcome {
     /// True when GPU work was submitted and the frame is delivered on
     /// completion. False when nothing was rendered (every layer clean): the
     /// renderer then sends a surface-less `PixelFrameReady` itself, so the
-    /// frame never reaches [`handle_render_done`](SurfaceRenderer::handle_render_done)
-    /// and the run loop traces `GraphicsComputed` for it directly.
+    /// frame never reaches [`handle_render_done`](SurfaceRenderer::handle_render_done).
     pub gpu_work: bool,
 }
 
@@ -400,7 +392,7 @@ pub(crate) fn frame_metadata(
     child_frame_to_webview: HashMap<FrameId, WebviewId>,
     animating: bool,
     animating_frame_ids: Vec<FrameId>,
-    settles_content_update: bool,
+    composition_kind: CompositionKind,
 ) -> FrameMetadata {
     let child_ports: Vec<ChildViewport> = child_viewports
         .into_iter()
@@ -416,7 +408,7 @@ pub(crate) fn frame_metadata(
         child_frame_to_webview,
         animating,
         animating_frame_ids,
-        settles_content_update,
+        composition_kind,
     }
 }
 
@@ -449,15 +441,13 @@ pub trait SurfaceRenderer {
         sender: &ipc::IpcSender<GraphicsEvent>,
     ) -> Result<SubmitOutcome, RenderError>;
 
-    /// The GPU completed a frame: deliver
-    /// the frame to the embedder. The run loop emits the `GraphicsComputed`
-    /// RenderingOpportunity trace event from the returned
-    /// [`FrameDelivery`].
+    /// The GPU completed a frame: deliver the frame to the user agent as
+    /// `PixelFrameReady`.
     fn handle_render_done(
         &mut self,
         data: Self::RenderData,
         sender: &ipc::IpcSender<GraphicsEvent>,
-    ) -> FrameDelivery;
+    );
 
     /// The webview a completed frame belongs to (used to look up the
     /// webview's renderer).
