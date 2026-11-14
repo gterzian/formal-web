@@ -1,5 +1,5 @@
 use crate::graphics::DecodedImage;
-use crate::media::{VideoEmbedData, VideoPaintId};
+use crate::media::VideoEmbedData;
 use crate::safe_passing_of_structured_data::{PortMessagePayload, PostMessageRequest};
 use anyrender::{
     Scene,
@@ -1181,11 +1181,6 @@ pub enum Command {
         /// the user agent. A fetch for one of them goes to the user agent as
         /// `Event::EmbedderSchemeFetchRequested` and never reaches net.
         embedder_schemes: Vec<String>,
-    },
-    /// A video pipeline reached end of stream. Content should unset any
-    /// animating flags associated with this pipeline.
-    NotifyVideoEnded {
-        video_paint_id: VideoPaintId,
     },
     /// The graphics process finished decoding an `<img>` resource.  Content
     /// records the result and settles the `decode()` promises waiting on that

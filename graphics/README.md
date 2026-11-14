@@ -33,10 +33,11 @@ compiled-per-configuration parts.
 
 The cross-process render cycle is documented in `user_agent/README.md`
 ("Rendering pipeline"). The `RenderingOpportunity` TLA+ model
-(`verification/tla_specs/RenderingOpportunity.tla`) checks it; the graphics
-process traces `GraphicsComputed` when `PixelFrameReady` is actually sent —
-i.e. after the poll thread's `device.poll(Wait)` confirmed the render
-completed on the GPU. A change to the cycle must keep the model's checks true
+(`verification/tla_specs/RenderingOpportunity.tla`) checks it; this process
+traces the composition action its kind names (`GraphicsComputed`, `Deadline`, or
+`OutOfBandComputed`) immediately before sending `PixelFrameReady`, so the stamp
+precedes everything the user agent does with the frame. A change to the cycle
+must keep the model's checks true
 (see `verification/README.md`). The graphics-specific delivery invariants:
 
 - The per-webview buffers **alternate**: each render cycle renders into the
@@ -291,6 +292,37 @@ that 0.9 does not expose.  The modified vello source with
 `../../Projects/vello` for now; the build uses stock vello 0.9.0 with the
 two-submit layout.
 
+## Video frames drive their own composition
+
+A video frame changes only the video's own layer; the document's recorded scene
+is untouched, so content runs no render cycle for it and `PaintFrame.animating`
+reports document animation (blitz CSS/scroll animation, a pending
+`requestAnimationFrame`). The media pipeline stores each decoded frame and
+graphics reports `GraphicsEvent::OutOfBandLayerChanged`; the UA answers with
+`GraphicsCommand::ComposeOutOfBand` and graphics composes the committed root
+with the stored frame (`ComposeOutOfBand` in `lib.rs`). The video's own frame
+arrivals pace those presentations.
+
+Two gates keep that path from doing redundant work:
+
+- **A content render cycle in flight owns the next composition.** The UA arms
+  `RenderStarted` when it queues a cycle and the arriving `PaintFrame` clears
+  it, so an armed `cycle_deadline` means content is rendering. A
+  `ComposeOutOfBand` that arrives then is dropped: the cycle's frame composes
+  the stored video frame, which is newer than a composition against the last
+  committed root presents.
+- **A clean out-of-band layer is not recomposed.** `has_dirty_out_of_band_layer`
+  is false once a composition delivered the video layer, so a
+  `ComposeOutOfBand` for a frame that was already presented composes nothing.
+
+Every composition reports its kind in `PixelFrameReady`: `ContentUpdate` when
+it presents a top-level frame, `Deadline` when the render cycle's deadline
+presents the committed root, `OutOfBand` for an out-of-band video frame. The
+graphics process traces the render-cycle action that kind names before the send;
+the UA releases the in-flight content update for the two kinds that serve one
+(see `user_agent/README.md`, "Video frames: a composition with no content
+update").
+
 ## Open risks and questions
 
 - **The windowed winit embedder panics on a playing video (unfixed).** With
@@ -306,24 +338,18 @@ two-submit layout.
   Observed in 3 of 5 headed runs. CDP screenshots cannot observe it because
   `automation_screenshot_png` returns a blank image in both hosts. Not
   investigated further.
-- **Video still drives the render cycle via the coarse `animating` flag
-  (follow-up).** Content still sets `PaintFrame.animating = has_video ||
-  document.is_animating()`, so a page with any non-ended video keeps the
-  render cycle alive even when the video is not producing frames (failed/
-  blocked load, ended-but-not-marked, muted autoplay blocked). The content
-  process reuses its last recorded scene on a clean cycle instead of re-running
-  resolve + paint (see `content/src/main.rs` `update_the_rendering`), and marks
-  the frame `scene_unchanged` so the graphics process keeps the content layer
-  clean. The remaining waste is the render cycle itself (compose + forward)
-  running at vsync.  Remaining follow-up:
-  - Set `animating` only when the document has a **pending rAF callback**
-    (script-driven animation) or blitz is genuinely advancing CSS
-    animations, and handle video-driven flow separately: a
-    video-frame arrival should note a UI state update through the
-    UA, and the composition still happens on the top-level `PaintFrame`
-    within the cycle (the "never compose independently from the video
-    handler" rule, to keep the RenderingOpportunity TLA pipeline model
-    valid).
+- **A playing video never notifies content that it ended.** Nothing needs the
+  signal: a video's layer is composed per stored frame (above), and the last
+  frame stays in the compositor, so an ended pipeline only stops being
+  sampled. Playing a second clip through the same element, or a second
+  `src` change, has no pipeline lifecycle to drive it.
+- **An offscreen video keeps requesting compositions.** Arrivals are not
+  filtered by visibility: `ShowsLayer` skips the video's pixels in
+  `compose_layers`, so the layer is never delivered, its `dirty` flag stays
+  set, and each arriving frame reports a change and composes a composition whose
+  only dirty layer is skipped. The composition rasterizes nothing, so the cost
+  is the compose walk plus a `PixelFrameReady` per frame, but it is spent on a
+  video nobody sees.
 - **A clean cycle ships the scene it marks unchanged.** Content
   re-serializes `last_scene` into shared memory and graphics deserializes it,
   only for `store_frame` to replace the copy it already holds.
@@ -421,16 +447,17 @@ two-submit layout.
   depends on the resolve pass reporting damage, so such a page keeps its layer
   clean when nothing actually changed. Not fixable in-repo:
   `is_animating`/`compute_has_canvas` live in the pinned blitz git dependency.
-- **A removed `<video>` element or offscreen canvas keeps its compositor
-  frame until navigation.** The compositor's live set
-  (`Compositor::live_layer_ids`) releases a layer's surfaces only once the
-  layer's entry leaves `video_frames`/`canvas_frames`. `note_navigation_finalized`
-  clears `video_frames`, but nothing clears either map when an element is
-  destroyed inside a live document: `Compositor::remove_canvas_frame` has no
-  caller, and `GraphicsCommand::RemoveVideoFrame` is handled but nothing sends
-  it. A long-lived page that creates and destroys many video elements or
-  offscreen canvases therefore keeps each video's last decoded frame (a
-  `CVPixelBuffer` or pixel bytes), each canvas's recorded scene, and the
-  renderer's surface buffers for both. Content's `video_paint_registry` and
-  `canvas_registry` retain the same keys. A fix needs a destroy signal from
-  content for both.
+- **A removed `<video>` element keeps its compositor frame until navigation.**
+  `MediaDestroy` stops the pipeline and finishes the paint id but keeps the
+  last decoded frame in `video_frames` (a frame stays composed as a static
+  image after end of stream), and `GraphicsCommand::RemoveVideoFrame` is
+  handled but nothing sends it. A long-lived document that creates and
+  destroys many video elements therefore holds each one's last frame (a
+  `CVPixelBuffer` or pixel bytes) and its surface buffers until the next
+  navigation, which clears `video_frames`. A fix needs a per-element destroy
+  signal from content (`RemoveVideoFrame` for a removed `<video>`, the way
+  `UnregisterCanvas` releases a removed canvas). Canvas layers do not share
+  this fate: content sends
+  `GraphicsCommand::UnregisterCanvas` for a destroyed document's canvases and
+  for canvases whose element was collected, and graphics drops the canvas
+  frame and sweeps its surfaces.

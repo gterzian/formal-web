@@ -226,13 +226,38 @@ composes the last committed root with any dirty out-of-band layer (a worker
 top-level frame clears the deadline. `PixelFrameReady` carries the composed
 layers, hit-test info, child viewport data, and the animating frame ids.
 
+### Video frames: a composition with no content update
+
+A video frame leaves the document's own scene untouched: the media pipeline
+inside the graphics process produces the video layer's content, so
+`PaintFrame.animating` reports document animation only (blitz CSS or scroll
+animation, a pending `requestAnimationFrame`). Graphics stores each decoded
+frame and reports `GraphicsEvent::OutOfBandLayerChanged`; the UA answers with
+`GraphicsCommand::ComposeOutOfBand`, and graphics composes the committed root
+with the stored frame. The relay keeps composition a UA decision, like every
+other composition in the cycle, and the model covers it as its own action
+(`verification/tla_specs/RenderingOpportunity.tla`, `OutOfBandComputed`): a
+composition that moves no content counter, available while no content cycle is
+in flight.
+That gate makes the video frame wait for a cycle already in flight: that
+cycle's frame composes the stored video frame.
+
+`PixelFrameReady` carries the composition kind: `ContentUpdate` when a
+composition presents a top-level frame, `Deadline` when the render cycle's
+deadline presents the committed root, `OutOfBand` for an out-of-band video
+frame. The graphics process traces the action of that name before it sends the
+frame; the UA clears `pending_update_the_rendering` for `ContentUpdate` and
+`Deadline`, and an `OutOfBand` composition leaves it set, so a composition
+releases only the update it served.
+
 ### Completing the cycle
 
 On `PixelFrameReady` the UA:
 
-- clears the in-flight state for the top-level and composed child frames. A
-  same-event-loop child has no pending update of its own (its changes note the
-  event loop root); a cross-origin child's queued update is released here when
+- clears the in-flight state for the top-level and composed child frames when
+  the composition settles the content update (see above). A same-event-loop
+  child has no pending update of its own (its changes note the event loop
+  root); a cross-origin child's queued update is released here when
   its frame is composed, which lets its next note queue again;
 - forwards the layers to the embedder (`new_web_content_layers`), which
   presents them;

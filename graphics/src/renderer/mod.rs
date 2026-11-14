@@ -16,7 +16,9 @@
 use anyrender::PaintScene;
 use image::ImageDecoder;
 use ipc_messages::content::{FrameId, ImageIdentifier, WebviewId};
-use ipc_messages::graphics::{ChildViewport, CompositingLayerId, FrameHitInfo, GraphicsEvent};
+use ipc_messages::graphics::{
+    ChildViewport, CompositingLayerId, CompositionKind, FrameHitInfo, GraphicsEvent,
+};
 use ipc_messages::media::VideoPaintId;
 use kurbo::Affine;
 use std::collections::{HashMap, HashSet};
@@ -36,6 +38,34 @@ use vello::{
 use wgpu::{Texture, TextureViewDescriptor};
 
 use crate::ComposedScene;
+use verification::TLATracer;
+
+/// Trace the composition kind a frame implements, immediately before the
+/// frame is sent to the user agent: the model's composition action must not be
+/// stamped after `PixelFrameReady`, or the user agent's acting on the frame
+/// (releasing the update it waited for, queueing the next one) can reach the
+/// trace first.
+pub(crate) fn trace_composition(
+    tracer: &mut TLATracer,
+    webview_id: WebviewId,
+    kind: CompositionKind,
+) {
+    if !tracer.is_enabled() {
+        return;
+    }
+    let action = match kind {
+        CompositionKind::ContentUpdate => "GraphicsComputed",
+        CompositionKind::Deadline => "Deadline",
+        CompositionKind::OutOfBand => "OutOfBandComputed",
+    };
+    tracer.log_with_location(
+        Some("RenderingOpportunity"),
+        action,
+        vec![webview_id.0.to_string()],
+        file!(),
+        line!(),
+    );
+}
 
 /// Frame metadata captured at submit time and delivered with the frame when
 /// the GPU completes it.
@@ -50,15 +80,9 @@ pub struct FrameMetadata {
     /// that carry the animating flag; the UA notes UI state updates for these
     /// navigables.
     pub animating_frame_ids: Vec<FrameId>,
-}
-
-/// The outcome of delivering a completed frame, reported to the run loop so
-/// the TLA tracing stays there. `graphics_computed` gates the
-/// `GraphicsComputed` RenderingOpportunity trace event (PixelFrameReady was
-/// actually sent).
-pub struct FrameDelivery {
-    /// PixelFrameReady was delivered to the UA (the frame is fully computed).
-    pub graphics_computed: bool,
+    /// Which composition path produced this frame; the UA traces the
+    /// render-cycle action it implements.
+    pub composition_kind: CompositionKind,
 }
 
 /// The outcome of one composition: which layer surfaces reached the embedder
@@ -73,8 +97,7 @@ pub struct SubmitOutcome {
     /// True when GPU work was submitted and the frame is delivered on
     /// completion. False when nothing was rendered (every layer clean): the
     /// renderer then sends a surface-less `PixelFrameReady` itself, so the
-    /// frame never reaches [`handle_render_done`](SurfaceRenderer::handle_render_done)
-    /// and the run loop traces `GraphicsComputed` for it directly.
+    /// frame never reaches [`handle_render_done`](SurfaceRenderer::handle_render_done).
     pub gpu_work: bool,
 }
 
@@ -397,6 +420,7 @@ pub(crate) fn frame_metadata(
     child_frame_to_webview: HashMap<FrameId, WebviewId>,
     animating: bool,
     animating_frame_ids: Vec<FrameId>,
+    composition_kind: CompositionKind,
 ) -> FrameMetadata {
     let child_ports: Vec<ChildViewport> = child_viewports
         .into_iter()
@@ -412,6 +436,7 @@ pub(crate) fn frame_metadata(
         child_frame_to_webview,
         animating,
         animating_frame_ids,
+        composition_kind,
     }
 }
 
@@ -438,21 +463,24 @@ pub trait SurfaceRenderer {
     /// delivered on `ReadbackChannels::render_done_tx` as `Self::RenderData`.
     /// When nothing was rendered, `sender` is used to emit a surface-less
     /// `PixelFrameReady` so the UA still learns the composition completed.
+    /// `tracer` records the composition action the frame implements before the
+    /// frame is sent (see [`trace_composition`]).
     fn submit_layers(
         &mut self,
         composed: ComposedScene,
         sender: &ipc::IpcSender<GraphicsEvent>,
+        tracer: &mut TLATracer,
     ) -> Result<SubmitOutcome, RenderError>;
 
-    /// The GPU completed a frame: deliver
-    /// the frame to the embedder. The run loop emits the `GraphicsComputed`
-    /// RenderingOpportunity trace event from the returned
-    /// [`FrameDelivery`].
+    /// The GPU completed a frame: trace the composition action the frame
+    /// implements, then deliver the frame to the user agent as
+    /// `PixelFrameReady`.
     fn handle_render_done(
         &mut self,
         data: Self::RenderData,
         sender: &ipc::IpcSender<GraphicsEvent>,
-    ) -> FrameDelivery;
+        tracer: &mut TLATracer,
+    );
 
     /// The webview a completed frame belongs to (used to look up the
     /// webview's renderer).

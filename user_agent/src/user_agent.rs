@@ -1647,14 +1647,6 @@ impl UserAgentWorker {
             }) {
                 Ok((mut handle, connection)) => {
                     let sender = connection.sender.clone();
-                    // Forward the trace sender to the graphics process.
-                    if let Err(error) =
-                        sender.send(ipc_messages::graphics::GraphicsCommand::SetTraceSender(
-                            trace_sender.clone(),
-                        ))
-                    {
-                        log::error!("failed to send trace sender to graphics: {error}");
-                    }
                     let receiver = connection.receiver;
                     let child = handle.take_child();
                     (Some(sender), ipc::crossbeam_proxy(receiver), child)
@@ -1665,6 +1657,17 @@ impl UserAgentWorker {
                 }
             }
         };
+
+        // Hand the graphics process the TLA+ trace sender as its first
+        // command, so the compositions it records from then on carry a stamp
+        // from before the frame reaches the user agent.
+        if let Some(sender) = &graphics_extension_sender
+            && let Err(error) = sender.send(
+                ipc_messages::graphics::GraphicsCommand::SetTraceSender(trace_sender.clone()),
+            )
+        {
+            log::error!("failed to send the trace sender to the graphics process: {error}");
+        }
 
         // HR Time "estimated monotonic time of the Unix epoch": simultaneous
         // wall-clock and monotonic readings at process start, so monotonic
@@ -5548,14 +5551,19 @@ impl UserAgentWorker {
         }
     }
 
-    /// removing a child-navigable mapping and stopping any synthetic
-    /// traversable that represented that iframe in the user-agent registry.
+    /// <https://html.spec.whatwg.org/#destroy-a-child-navigable>
     fn handle_iframe_traversable_removed(
         &mut self,
         parent_traversable_id: NavigableId,
         content_navigable_id: NavigableId,
         content_frame_id: FrameId,
     ) {
+        // Step 1: "Let navigable be container's content navigable."
+        // Step 2: "If navigable is null, then return."
+        // Step 3: "Set container's content navigable to null."
+        // Note: Steps 1–3 ran in content: the iframe element's removing steps
+        // retired the content navigable and sent this event with its id
+        // (`run_iframe_removing_steps`).
         info!(
             "[nav] iframe traversable removed parent={} child={} frame={}",
             parent_traversable_id, content_navigable_id, content_frame_id.0
@@ -5573,6 +5581,11 @@ impl UserAgentWorker {
                 (traversable_target_name == &target_name).then_some(*traversable_id)
             })
             .collect::<Vec<_>>();
+
+        // Step 4: "Inform the navigation API about child navigable destruction given
+        // navigable."
+        // Note: Not implemented: the Navigation API's `dispose` event is not
+        // dispatched.
 
         let mut event_loops_to_maybe_stop = HashSet::new();
         let mut removed_document_ids = HashSet::new();
@@ -5599,12 +5612,11 @@ impl UserAgentWorker {
             {
                 // Step 5: "Destroy a document and its descendants given navigable's active
                 // document."
-                // Note: That step of "destroy a child navigable"
-                // (<https://html.spec.whatwg.org/#destroy-a-child-navigable>) runs here: the
-                // content process that owns the document runs the destruction, so the command
-                // is routed by document id — a cross-origin child's document lives in another
-                // content process, and its own child navigables are destroyed the same way when
-                // their removing steps retire them.
+                // Note: The content process that owns the document runs the
+                // destruction, so the command is routed by document id: a
+                // cross-origin child's document lives in another content
+                // process, and its own child navigables are destroyed the same
+                // way when their removing steps retire them.
                 if let Ok(sender) = self.command_sender_for_document(document_id)
                     && let Err(error) = sender.send(ContentCommand::DestroyDocument { document_id })
                 {
@@ -5612,10 +5624,27 @@ impl UserAgentWorker {
                 }
                 removed_document_ids.insert(document_id);
             }
+            // Step 6: "Let parentDocState be container's node navigable's active session
+            // history entry's document state."
+            // Step 7: "Remove the nested history from parentDocState's nested histories
+            // whose id equals navigable's id."
+            // Step 8: "Let traversable be container's node navigable's traversable
+            // navigable."
+            // Step 9: "Append the following session history traversal steps to
+            // traversable:"
+            // Step 9.1: "Update for navigable creation/destruction given traversable."
+            // Step 10: "Invoke WebDriver BiDi navigable destroyed with navigable."
+            // Note: The user agent keeps one session history per traversable and
+            // no nested histories (steps 6–7), runs no queued session history
+            // traversal steps (steps 8–9.1), and does not implement step 10.
             self.state.remove_traversable(*traversable_id);
             self.pending_update_the_rendering.remove(traversable_id);
             self.queued_ui_state_updates.remove(traversable_id);
             self.pending_worker_animation_frames.remove(traversable_id);
+            // The navigable left the user-agent state: no later navigation
+            // can find it in its affected set, and its document was destroyed
+            // above, so no beforeunload check can reach it either.
+            verification::tla_log!(self.tla_tracer, "RemoveNavigable", *traversable_id);
         }
 
         // Release the graphics-process state for the removed webviews
@@ -5741,11 +5770,17 @@ impl UserAgentWorker {
                 layers,
                 animating,
                 animating_frame_ids,
+                composition_kind,
                 generation: _,
                 frame_hit_info,
                 child_viewports,
                 child_frame_to_webview,
             } => {
+                // The composed frame reached the user agent: the graphics
+                // process traced the composition action and stamped it before
+                // sending the frame, so this handler's effects (releasing the
+                // update the user agent waited for, queueing the next one)
+                // stay ordered after the composition that caused them.
                 debug!(
                     "[graphics] received surface frame for {:?} ({} layers)",
                     webview_id,
@@ -5790,22 +5825,27 @@ impl UserAgentWorker {
                     webview_id
                 );
 
-                // When the top-level traversable's composed scene completes,
-                // all child frames included in the composition have also been
-                // rendered and composed.  Clear their pending state so they
-                // can receive new rendering opportunities.  Queued
-                // opportunities are kept: they are requests for a new render
-                // (e.g. a hover state change in the child) that were batched
-                // while no frame was needed and must survive this
-                // composition, or the child never repaints.
-                for (_child_frame_id, child_wv) in child_frame_to_webview.iter() {
-                    self.pending_update_the_rendering.remove(&child_wv.0);
+                // Only a composition that settles the navigable's in-flight
+                // content update (the top-level frame rendered, or the cycle's
+                // deadline presented the committed root) completes that
+                // update. An out-of-band composition (a video frame) or a
+                // deferred child-frame composition does not serve the pending
+                // update: clearing the flag for it would let the UA queue a
+                // second update while the first is still in flight.
+                let completed_pending_update = composition_kind.settles_content_update()
+                    && self.pending_update_the_rendering.remove(&webview_id.0);
+                if completed_pending_update {
+                    // All child frames included in the composition have also
+                    // been rendered and composed. Clear their pending state so
+                    // they can receive new rendering opportunities. Queued
+                    // opportunities are kept: they are requests for a new
+                    // render (e.g. a hover state change in the child) that
+                    // were batched while no frame was needed and must survive
+                    // this composition, or the child never repaints.
+                    for (_child_frame_id, child_wv) in child_frame_to_webview.iter() {
+                        self.pending_update_the_rendering.remove(&child_wv.0);
+                    }
                 }
-
-                // The frame was produced; the update for the top-level
-                // traversable is complete. The texture is forwarded to the
-                // embedder below.
-                self.pending_update_the_rendering.remove(&webview_id.0);
                 info!(
                     "[render-pipe] UA composed scene navigable={} animating={} pending_remaining={}",
                     webview_id.0,
@@ -5840,10 +5880,12 @@ impl UserAgentWorker {
                         // top-level frame itself, already noted above.
                     }
                 }
-                // If the embedder already has a rendering opportunity
-                // (a paint arrived while this render was in flight), start
-                // the next render now.
-                if self.rendering_opportunities.contains(&webview_id.0) {
+                // If the composition completed a content update and the
+                // embedder already has a rendering opportunity (a paint
+                // arrived while that render was in flight), start the next
+                // render now. An out-of-band composition must not start one.
+                if completed_pending_update && self.rendering_opportunities.contains(&webview_id.0)
+                {
                     self.queue_update_the_rendering_for_navigables(webview_id.0);
                 } else if !*animating
                     && self.queued_ui_state_updates.keys().any(|candidate| {
@@ -5912,26 +5954,20 @@ impl UserAgentWorker {
                     }
                 }
             }
-            GraphicsEvent::VideoEnded {
-                webview_id,
-                video_paint_id,
-            } => {
-                let event_loop_id = match self.state.traversable_handles.get(&webview_id.0) {
-                    Some(event_loop_id) => *event_loop_id,
-                    None => return,
-                };
-                let Some(agent) = window_agent(&self.state, event_loop_id) else {
-                    return;
-                };
-                if let Err(error) =
-                    agent
-                        .event_loop
-                        .command_sender
-                        .send(ContentCommand::NotifyVideoEnded {
-                            video_paint_id: *video_paint_id,
-                        })
+            GraphicsEvent::OutOfBandLayerChanged { webview_id } => {
+                // A video frame was stored for the webview's composition. The
+                // document's own layer is unchanged, so no update the rendering
+                // is queued: graphics composes the stored frame when the UA
+                // asks it to, which keeps the video's presentation on the same
+                // path (and the same pacing owner) as every other composition.
+                if let Some(graphics_sender) = &self.graphics_extension_sender
+                    && let Err(error) = graphics_sender.send(
+                        ipc_messages::graphics::GraphicsCommand::ComposeOutOfBand {
+                            webview_id: *webview_id,
+                        },
+                    )
                 {
-                    error!("failed to send video-ended to event loop {event_loop_id}: {error}");
+                    error!("failed to request an out-of-band composition: {error}");
                 }
             }
             GraphicsEvent::ImageDecoded {

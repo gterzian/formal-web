@@ -40,9 +40,9 @@ TypeOK ==
         /\ navigables[n].nav_status \in NavigableNavStatus
         /\ navigables[n].ongoing_nav_id \in (NkIDs \cup {NONE})
     /\ \A nk \in ActiveNavigations :
-        /\ navigations[nk].navigable \in ActiveNavigables
+        /\ navigations[nk].navigable \in NavIDs
         /\ navigations[nk].status \in NavigationStatus
-        /\ navigations[nk].affected \subseteq ActiveNavigables
+        /\ navigations[nk].affected \subseteq NavIDs
     /\ freeNavIDs \subseteq NavIDs
     /\ freeNkIDs  \subseteq NkIDs
     /\ \A i \in 1..Len(navigationStartQueue) :
@@ -81,6 +81,19 @@ CreateChildNavigable(parentID) ==
        /\ freeNavIDs' = freeNavIDs \ {nID}
     /\ UNCHANGED <<navigations, freeNkIDs, navigationStartQueue>>
 
+\* A child navigable is destroyed (destroy a child navigable): it leaves the
+\* user agent's navigable set, so it is no longer part of any later
+\* navigation's affected set. Its own document was destroyed with it, so no
+\* beforeunload check can target it.
+RemoveNavigable(nID) ==
+    /\ nID \in ActiveNavigables
+    /\ Children(nID) = {}
+    /\ \A nk \in ActiveNavigations :
+           <<"Queued", nk>> \notin navigables[nID].before_unload_status
+    /\ navigables' = [n \in ActiveNavigables \ {nID} |-> navigables[n]]
+    /\ freeNavIDs' = freeNavIDs \cup {nID}
+    /\ UNCHANGED <<navigations, freeNkIDs, navigationStartQueue>>
+
 CreateNavigation(navableID) ==
     /\ freeNkIDs # {}
     /\ LET nk == CHOOSE x \in freeNkIDs : TRUE
@@ -99,6 +112,7 @@ StartNavigating(nk) ==
            affected  == {navableID} \cup Descendants(navableID)
        IN
        /\ nav.status = "started"
+       /\ navableID \in ActiveNavigables
        /\ Len(navigationStartQueue) > 0
        /\ Head(navigationStartQueue) = nk
        /\ navigations' = [navigations EXCEPT ![nk].affected = affected]
@@ -125,12 +139,12 @@ RunBeforeUnload(navableID, nk, outcome) ==
     /\ UNCHANGED <<navigations, freeNavIDs, freeNkIDs, navigationStartQueue>>
 
 AllResolved(navableSet, nk) ==
-    \A n \in navableSet :
+    \A n \in navableSet \cap ActiveNavigables :
         \/ <<"Approved", nk>> \in navigables[n].before_unload_status
         \/ <<"Aborted",  nk>> \in navigables[n].before_unload_status
 
 AnyAborted(navableSet, nk) ==
-    \E n \in navableSet :
+    \E n \in navableSet \cap ActiveNavigables :
         <<"Aborted", nk>> \in navigables[n].before_unload_status
 
 ContinueNavigation(nk) ==
@@ -139,6 +153,7 @@ ContinueNavigation(nk) ==
            affected  == nav.affected
        IN
        /\ nav.status = "started"
+       /\ navableID \in ActiveNavigables
        /\ affected # {}
        /\ AllResolved(affected, nk)
        /\ LET newStatus ==
@@ -167,6 +182,7 @@ Next ==
     \/ CreateNavigable
     \/ \E parentID  \in ActiveNavigables              : CreateChildNavigable(parentID)
     \/ \E navableID \in ActiveNavigables              : CreateNavigation(navableID)
+    \/ \E nID       \in ActiveNavigables              : RemoveNavigable(nID)
     \/ \E nk        \in ActiveNavigations             : StartNavigating(nk)
     \/ \E navableID \in ActiveNavigables,
           nk        \in NkIDs,
@@ -180,7 +196,7 @@ FinalizedImpliesAllApproved ==
     \A nk \in ActiveNavigations :
         navigations[nk].status = "finalized" =>
             LET affected      == navigations[nk].affected
-                participating == {n \in affected :
+                participating == {n \in affected \cap ActiveNavigables :
                                     \E s \in BeforeUnloadState :
                                         <<s, nk>> \in navigables[n].before_unload_status}
             IN
