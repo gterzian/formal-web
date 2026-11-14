@@ -38,6 +38,34 @@ use vello::{
 use wgpu::{Texture, TextureViewDescriptor};
 
 use crate::ComposedScene;
+use verification::TLATracer;
+
+/// Trace the composition kind a frame implements, immediately before the
+/// frame is sent to the user agent: the model's composition action must not be
+/// stamped after `PixelFrameReady`, or the user agent's acting on the frame
+/// (releasing the update it waited for, queueing the next one) can reach the
+/// trace first.
+pub(crate) fn trace_composition(
+    tracer: &mut TLATracer,
+    webview_id: WebviewId,
+    kind: CompositionKind,
+) {
+    if !tracer.is_enabled() {
+        return;
+    }
+    let action = match kind {
+        CompositionKind::ContentUpdate => "GraphicsComputed",
+        CompositionKind::Deadline => "Deadline",
+        CompositionKind::OutOfBand => "OutOfBandComputed",
+    };
+    tracer.log_with_location(
+        Some("RenderingOpportunity"),
+        action,
+        vec![webview_id.0.to_string()],
+        file!(),
+        line!(),
+    );
+}
 
 /// Frame metadata captured at submit time and delivered with the frame when
 /// the GPU completes it.
@@ -435,18 +463,23 @@ pub trait SurfaceRenderer {
     /// delivered on `ReadbackChannels::render_done_tx` as `Self::RenderData`.
     /// When nothing was rendered, `sender` is used to emit a surface-less
     /// `PixelFrameReady` so the UA still learns the composition completed.
+    /// `tracer` records the composition action the frame implements before the
+    /// frame is sent (see [`trace_composition`]).
     fn submit_layers(
         &mut self,
         composed: ComposedScene,
         sender: &ipc::IpcSender<GraphicsEvent>,
+        tracer: &mut TLATracer,
     ) -> Result<SubmitOutcome, RenderError>;
 
-    /// The GPU completed a frame: deliver the frame to the user agent as
+    /// The GPU completed a frame: trace the composition action the frame
+    /// implements, then deliver the frame to the user agent as
     /// `PixelFrameReady`.
     fn handle_render_done(
         &mut self,
         data: Self::RenderData,
         sender: &ipc::IpcSender<GraphicsEvent>,
+        tracer: &mut TLATracer,
     );
 
     /// The webview a completed frame belongs to (used to look up the

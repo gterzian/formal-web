@@ -5,6 +5,7 @@ use crate::media::{MediaPipelineId, VideoPaintId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
+use verification::TraceSender;
 
 #[cfg(target_os = "macos")]
 use ipc_channel::platform::OsMachPort;
@@ -131,6 +132,11 @@ pub enum GraphicsCommand {
     },
     /// Destroy a media pipeline.
     MediaDestroy { pipeline_id: MediaPipelineId },
+    /// Forward a TLA+ trace sender (dev only, ipc-channel mode). The user
+    /// agent sends it right after launch, before any other command, so the
+    /// process traces every composition from the first one; `None` when
+    /// tracing is off.
+    SetTraceSender(Option<TraceSender>),
     /// Register a child navigable host mapping.
     RegisterChildNavigableHost {
         child_webview_id: WebviewId,

@@ -18,7 +18,7 @@ use ipc_messages::content::{
     NewTraversableInfo, UserNavigationInvolvement, UserScript, WebviewId, WorkerId, WorkerOwner,
     iframe_target_name,
 };
-use ipc_messages::graphics::{CompositionKind, GraphicsCommand};
+use ipc_messages::graphics::GraphicsCommand;
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
 use log::{debug, error, info, trace};
 
@@ -1657,6 +1657,17 @@ impl UserAgentWorker {
                 }
             }
         };
+
+        // Hand the graphics process the TLA+ trace sender as its first
+        // command, so the compositions it records from then on carry a stamp
+        // from before the frame reaches the user agent.
+        if let Some(sender) = &graphics_extension_sender
+            && let Err(error) = sender.send(
+                ipc_messages::graphics::GraphicsCommand::SetTraceSender(trace_sender.clone()),
+            )
+        {
+            log::error!("failed to send the trace sender to the graphics process: {error}");
+        }
 
         // HR Time "estimated monotonic time of the Unix epoch": simultaneous
         // wall-clock and monotonic readings at process start, so monotonic
@@ -5765,22 +5776,11 @@ impl UserAgentWorker {
                 child_viewports,
                 child_frame_to_webview,
             } => {
-                // The composed frame reached the user agent. The composition
-                // action it implements applies here: this is where the
-                // frame's output is released and, when a rendering
-                // opportunity is held, the next update is queued. Tracing on
-                // receipt keeps the event ordered with those queue decisions.
-                let composition_action = match composition_kind {
-                    CompositionKind::ContentUpdate => "GraphicsComputed",
-                    CompositionKind::Deadline => "Deadline",
-                    CompositionKind::OutOfBand => "OutOfBandComputed",
-                };
-                verification::tla_log!(
-                    self.tla_tracer,
-                    -> "RenderingOpportunity",
-                    composition_action,
-                    webview_id.0
-                );
+                // The composed frame reached the user agent: the graphics
+                // process traced the composition action and stamped it before
+                // sending the frame, so this handler's effects (releasing the
+                // update the user agent waited for, queueing the next one)
+                // stay ordered after the composition that caused them.
                 debug!(
                     "[graphics] received surface frame for {:?} ({} layers)",
                     webview_id,

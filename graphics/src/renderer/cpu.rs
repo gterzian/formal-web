@@ -8,11 +8,13 @@ use super::image::StoredImageResult;
 use super::{
     FrameMetadata, GpuContext, MAX_SURFACE_DIMENSION, PollRequest, ReadbackChannels, RenderError,
     SubmitOutcome, SurfaceBuffers, SurfaceRenderer, SurfaceRingState, frame_metadata,
+    trace_composition,
 };
 use ipc_messages::content::{ImageIdentifier, WebviewId};
 use ipc_messages::graphics::{CompositingLayerId, GraphicsEvent, LayerTopology, SurfacePayload};
 use log::{debug, error, info};
 use std::collections::{HashMap, HashSet};
+use verification::TLATracer;
 use wgpu::{
     BufferDescriptor, BufferUsages, CommandEncoderDescriptor, Extent3d, Origin3d,
     TexelCopyBufferInfo, TexelCopyBufferLayout, TexelCopyTextureInfo, TextureAspect,
@@ -277,6 +279,7 @@ impl SurfaceRenderer for CpuRenderer {
         &mut self,
         composed: ComposedScene,
         sender: &ipc::IpcSender<GraphicsEvent>,
+        tracer: &mut TLATracer,
     ) -> Result<SubmitOutcome, RenderError> {
         let ComposedScene {
             webview_id,
@@ -480,6 +483,7 @@ impl SurfaceRenderer for CpuRenderer {
                 child_viewports: metadata.child_viewports,
                 child_frame_to_webview: metadata.child_frame_to_webview,
             };
+            trace_composition(tracer, webview_id, metadata.composition_kind);
             if let Err(send_error) = sender.send(frame_event) {
                 error!(
                     "[gpu-renderer] failed to send empty PixelFrameReady for {:?}: {send_error}",
@@ -493,7 +497,12 @@ impl SurfaceRenderer for CpuRenderer {
         })
     }
 
-    fn handle_render_done(&mut self, data: CpuRenderData, sender: &ipc::IpcSender<GraphicsEvent>) {
+    fn handle_render_done(
+        &mut self,
+        data: CpuRenderData,
+        sender: &ipc::IpcSender<GraphicsEvent>,
+        tracer: &mut TLATracer,
+    ) {
         let CpuRenderData {
             webview_id,
             generation,
@@ -598,6 +607,11 @@ impl SurfaceRenderer for CpuRenderer {
             let Some(pending) = self.pending_cycle.take() else {
                 return;
             };
+            trace_composition(
+                tracer,
+                pending.webview_id,
+                pending.metadata.composition_kind,
+            );
             if sender
                 .send_with_shmem_map(
                     GraphicsEvent::PixelFrameReady {

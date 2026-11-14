@@ -33,11 +33,11 @@ compiled-per-configuration parts.
 
 The cross-process render cycle is documented in `user_agent/README.md`
 ("Rendering pipeline"). The `RenderingOpportunity` TLA+ model
-(`verification/tla_specs/RenderingOpportunity.tla`) checks it; the user agent
-traces the composition action named by the `PixelFrameReady` composition kind
-(`GraphicsComputed`, `Deadline`, or `OutOfBandComputed`) — i.e. after the poll
-thread's `device.poll(Wait)` confirmed the render completed on the GPU and the
-frame was delivered. A change to the cycle must keep the model's checks true
+(`verification/tla_specs/RenderingOpportunity.tla`) checks it; this process
+traces the composition action its kind names (`GraphicsComputed`, `Deadline`, or
+`OutOfBandComputed`) immediately before sending `PixelFrameReady`, so the stamp
+precedes everything the user agent does with the frame. A change to the cycle
+must keep the model's checks true
 (see `verification/README.md`). The graphics-specific delivery invariants:
 
 - The per-webview buffers **alternate**: each render cycle renders into the
@@ -317,10 +317,11 @@ Two gates keep that path from doing redundant work:
 
 Every composition reports its kind in `PixelFrameReady`: `ContentUpdate` when
 it presents a top-level frame, `Deadline` when the render cycle's deadline
-presents the committed root, `OutOfBand` for an out-of-band video frame. The UA
-traces the render-cycle action that kind names and releases the in-flight
-content update for the two kinds that serve one (see `user_agent/README.md`,
-"Video frames: a composition with no content update").
+presents the committed root, `OutOfBand` for an out-of-band video frame. The
+graphics process traces the render-cycle action that kind names before the send;
+the UA releases the in-flight content update for the two kinds that serve one
+(see `user_agent/README.md`, "Video frames: a composition with no content
+update").
 
 ## Open risks and questions
 

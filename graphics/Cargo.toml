@@ -37,6 +37,7 @@ anyrender_vello = "0.11.0"
 ipc = { path = "../ipc" }
 ipc_messages = { path = "../ipc_messages" }
 media = { path = "../media" }
+verification = { path = "../verification" }
 ipc-channel = { git = "https://github.com/gterzian/ipc-channel", rev = "169da83" }
 kurbo = "0.13"
 # Optional: enabled off macOS (target table above) and by `cpu_readback`; the

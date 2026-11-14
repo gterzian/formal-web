@@ -7,6 +7,7 @@ use super::image::StoredImageResult;
 use super::{
     FrameMetadata, GpuContext, MAX_SURFACE_DIMENSION, PollRequest, ReadbackChannels, RenderError,
     SubmitOutcome, SurfaceBuffers, SurfaceRenderer, SurfaceRingState, frame_metadata,
+    trace_composition,
 };
 use crate::iosurface::{IosurfaceTexture, create_shared_texture};
 use ipc_messages::content::{ImageIdentifier, WebviewId};
@@ -18,6 +19,7 @@ use objc2::runtime::ProtocolObject;
 use objc2_core_video::CVPixelBuffer;
 use objc2_metal::MTLDevice;
 use std::collections::{HashMap, HashSet};
+use verification::TLATracer;
 
 use crate::ComposedScene;
 
@@ -103,6 +105,7 @@ impl SurfaceRenderer for IosurfaceRenderer {
         &mut self,
         composed: ComposedScene,
         sender: &ipc::IpcSender<GraphicsEvent>,
+        tracer: &mut TLATracer,
     ) -> Result<SubmitOutcome, RenderError> {
         let ComposedScene {
             webview_id,
@@ -216,6 +219,7 @@ impl SurfaceRenderer for IosurfaceRenderer {
                 child_viewports: metadata.child_viewports,
                 child_frame_to_webview: metadata.child_frame_to_webview,
             };
+            trace_composition(tracer, webview_id, metadata.composition_kind);
             if let Err(send_error) = sender.send(frame_event) {
                 error!(
                     "[gpu-renderer] failed to send empty PixelFrameReady for {:?}: {send_error}",
@@ -261,6 +265,7 @@ impl SurfaceRenderer for IosurfaceRenderer {
         &mut self,
         data: SharedRenderData,
         sender: &ipc::IpcSender<GraphicsEvent>,
+        tracer: &mut TLATracer,
     ) {
         let SharedRenderData {
             webview_id,
@@ -280,6 +285,7 @@ impl SurfaceRenderer for IosurfaceRenderer {
             child_viewports: metadata.child_viewports,
             child_frame_to_webview: metadata.child_frame_to_webview,
         };
+        trace_composition(tracer, webview_id, metadata.composition_kind);
         if let Err(send_error) = sender.send(frame_event) {
             error!(
                 "[graphics] failed to send PixelFrameReady for {:?} gen={}: {send_error}",

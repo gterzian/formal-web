@@ -2245,6 +2245,7 @@ dependencies = [
  "pollster",
  "serde",
  "vello",
+ "verification",
  "wgpu",
  "wgpu_context",
 ]

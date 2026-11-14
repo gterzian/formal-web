@@ -11,8 +11,8 @@ The verification crate owns trace recording, TLA+ validation, and the shutdown w
 - `webdriver-screenshot-check` decodes WebDriver screenshots with the `image`
   crate, which no other target in this crate uses. It is therefore behind the
   `screenshot-check` feature (`cargo run -p verification --features
-  screenshot-check --bin webdriver-screenshot-check`), so the graphics process,
-  which depends on this crate for its TLA+ tracer, does not compile an image
+  screenshot-check --bin webdriver-screenshot-check`), so the graphics process
+  — which reaches this crate through `ipc_messages` — does not compile an image
   decoder on its macOS fast path.
 - `./verification/verify-navigation.sh` is the hyperlink-navigation flow: it drives one link click (`StartupExample.html` → `navigated.html`) and treats successful `Navigation` TLA+ validation as the acceptance criterion. On failure, the human-readable report includes the failing NDJSON entry, preceding context entries, and the full TLC counterexample trace.
 
@@ -21,7 +21,7 @@ The verification crate owns trace recording, TLA+ validation, and the shutdown w
 | Spec | Events traced (producer) | Validates |
 |---|---|---|
 | `Navigation` | UA `CreateNavigable`/`CreateChildNavigable`/`RemoveNavigable`/`CreateNavigation`/`StartNavigating`/`ContinueNavigation`, content `RunBeforeUnload` | navigable/navigation state machine |
-| `RenderingOpportunity` | UA `CreateFrame` (the navigable-creation part of the navigation path, traced from `CreateNavigable`/`CreateChildNavigable`) /`NoteUiStateUpdate`/`RenderingOpportunity`, content `UpdateTheRendering`, UA `GraphicsComputed`/`Deadline`/`OutOfBandComputed` (traced on receipt of the composed frame; the event name is the composition kind) | the render cycle documented in `user_agent/README.md` ("Rendering pipeline"): the rendering-opportunity gate, update the rendering, the three composition kinds, and the depth of the updates the user agent holds |
+| `RenderingOpportunity` | UA `CreateFrame` (the navigable-creation part of the navigation path, traced from `CreateNavigable`/`CreateChildNavigable`) /`NoteUiStateUpdate`/`RenderingOpportunity`, content `UpdateTheRendering`, graphics `GraphicsComputed`/`Deadline`/`OutOfBandComputed` (the event name is the composition kind, traced immediately before the frame is sent) | the render cycle documented in `user_agent/README.md` ("Rendering pipeline"): the rendering-opportunity gate, update the rendering, the three composition kinds, and the depth of the updates the user agent holds |
 | `MessagePort` | content `NewChannel`/`PostMessage`/`ReceiveMessage`/`Transfer`/`TransferReceive`, UA `RouteMessage`, content `RunTask` (the last two are the implementation-level routing/task events, skipped by the coarse trace consumer) | the cross-process port workflow mapped to the HTML spec's channel messaging steps: channel creation, the FIFO port message queue ordering (each `ReceiveMessage` pop is checked against the abstract queue head), and the transfer/transfer-receive transitions |
 
 ### MessagePort scope
@@ -104,7 +104,7 @@ action, and is deferred.
 ### Adding a spec
 
 1. Write `{Name}.tla` (the model) and `{Name}Trace.tla` (the trace consumer) plus `{Name}.cfg` / `{Name}Trace.cfg` in `verification/tla_specs/`. Discovery is automatic from the flat `.tla` files.
-2. Emit events from code with `verification::tla_log!(tracer, -> "{Name}", "Event", args...)`. Producers holding a `TraceSender`/`TLATracer` are the UA, content processes, and the embedder apps.
+2. Emit events from code with `verification::tla_log!(tracer, -> "{Name}", "Event", args...)`. Producers holding a `TraceSender`/`TLATracer` are the UA, content processes, the graphics process, and the embedder apps. A producer that owns the state a composition decides traces it before sending the message that reports it: a stamp taken after the send can land behind the receiver's own events on the shared clock.
 3. For specs whose event args need TLA+ numeric types (e.g. generation counters), extend `collect_trace_ids_for_spec` / `render_trace_data_module_for_spec` in `verification/src/validate.rs` with a custom event renderer (see `render_gpu_rendering_trace_event`, which renders generation/region args as integer literals).
 4. `./verification/verify-specs.sh` picks the new spec up automatically; a `CHECK {Name} ... OK` line means the recorded trace is consistent with the model.
 

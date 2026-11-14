@@ -245,10 +245,10 @@ cycle's frame composes the stored video frame.
 `PixelFrameReady` carries the composition kind: `ContentUpdate` when a
 composition presents a top-level frame, `Deadline` when the render cycle's
 deadline presents the committed root, `OutOfBand` for an out-of-band video
-frame. The UA traces the action of that name for the frame and clears
-`pending_update_the_rendering` for `ContentUpdate` and `Deadline`; an
-`OutOfBand` composition leaves it set, so a composition releases only the
-update it served.
+frame. The graphics process traces the action of that name before it sends the
+frame; the UA clears `pending_update_the_rendering` for `ContentUpdate` and
+`Deadline`, and an `OutOfBand` composition leaves it set, so a composition
+releases only the update it served.
 
 ### Completing the cycle
 
