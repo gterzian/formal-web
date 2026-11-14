@@ -358,6 +358,9 @@ pub(crate) struct ContentDocument {
     parent_traversable_id: Option<NavigableId>,
     top_level_traversable_id: NavigableId,
     frame_id: FrameId,
+    /// The user agent's render cycle this document last rendered for; its
+    /// frames carry the number so graphics can drop a superseded cycle's.
+    render_cycle: u64,
     document: Rc<RefCell<BaseDocument>>,
     settings: EnvironmentSettingsObject,
     /// The document's `DocumentProviders`, which the content process uses to
@@ -1073,6 +1076,7 @@ impl ContentProcess {
                     parent_traversable_id,
                     top_level_traversable_id,
                     frame_id,
+                    render_cycle: 0,
                     document,
                     settings,
                     providers: None,
@@ -1322,6 +1326,7 @@ impl ContentProcess {
                 parent_traversable_id,
                 top_level_traversable_id,
                 frame_id,
+                render_cycle: 0,
                 document,
                 settings,
                 providers: Some(providers),
@@ -1672,6 +1677,7 @@ impl ContentProcess {
                 parent_traversable_id,
                 top_level_traversable_id,
                 frame_id,
+                render_cycle: 0,
                 document: Rc::clone(&document),
                 settings,
                 providers: Some(providers),
@@ -2649,6 +2655,7 @@ impl ContentProcess {
         navigable_id: NavigableId,
         requested_document_id: DocumentId,
         frame_timestamp_epoch_ms: f64,
+        cycle: u64,
     ) -> Result<(), String> {
         // Step 3.1: "Let frameTimestamp be eventLoop's last render opportunity time."
         // The user agent stamps the opportunity time on the browser-wide monotonic
@@ -2666,6 +2673,14 @@ impl ContentProcess {
         // records that "the document associated with the task might become inactive
         // before the task is processed".
         let event_loop_documents = self.documents_for_update_the_rendering();
+        // The user agent's cycle travels with the update so the frames this
+        // pass paints carry it: graphics drops a frame whose cycle a newer one
+        // superseded.
+        for document_id in &event_loop_documents {
+            if let Some(document) = self.documents.get_mut(document_id) {
+                document.render_cycle = cycle;
+            }
+        }
         if let Some(&document_id) = self.active_documents_by_traversable.get(&navigable_id)
             && document_id != requested_document_id
         {
@@ -2880,6 +2895,7 @@ impl ContentProcess {
                         font_shmem: HashMap::new(),
                     };
                     let mut next_shmem_key = 0usize;
+                    let render_cycle: u64 = document.render_cycle;
                     let (mut paint_frame, shmem_data) = PaintFrame::new(
                         WebviewId(navigable_id),
                         document.frame_id,
@@ -2889,6 +2905,7 @@ impl ContentProcess {
                         scene,
                         &mut next_shmem_key,
                         animating,
+                        render_cycle,
                     )?;
                     // The scene is the one this document recorded last time, so the
                     // graphics process keeps the frame's layer clean.
@@ -2959,6 +2976,7 @@ impl ContentProcess {
                         composition.embed_sites.len()
                     );
                     let recorded_scene = prepared.scene.clone();
+                    let render_cycle: u64 = document.render_cycle;
                     let (paint_frame, shmem_data) = PaintFrame::new(
                         WebviewId(navigable_id),
                         document.frame_id,
@@ -2968,6 +2986,7 @@ impl ContentProcess {
                         prepared,
                         &mut next_shmem_key,
                         animating,
+                        render_cycle,
                     )?;
                     (paint_frame, shmem_data, recorded_scene, composition)
                 };
@@ -4601,7 +4620,13 @@ impl ContentProcess {
                 traversable_id,
                 document_id,
                 frame_timestamp_epoch_ms,
-            } => self.update_the_rendering(traversable_id, document_id, frame_timestamp_epoch_ms),
+                cycle,
+            } => self.update_the_rendering(
+                traversable_id,
+                document_id,
+                frame_timestamp_epoch_ms,
+                cycle,
+            ),
             Task::EvaluateScript {
                 traversable_id,
                 request_id,
@@ -5039,11 +5064,13 @@ impl ContentProcess {
                 traversable_id,
                 document_id,
                 frame_timestamp_epoch_ms,
+                cycle,
             } => {
                 self.task_queue.queue_a_task(Task::UpdateTheRendering {
                     traversable_id,
                     document_id,
                     frame_timestamp_epoch_ms,
+                    cycle,
                 });
                 Ok(true)
             }

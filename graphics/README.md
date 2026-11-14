@@ -303,6 +303,13 @@ graphics reports `GraphicsEvent::OutOfBandLayerChanged`; the UA answers with
 with the stored frame (`ComposeOutOfBand` in `lib.rs`). The video's own frame
 arrivals pace those presentations.
 
+A `PaintFrame` carries the user agent's render cycle. The user agent numbers its
+cycles and starts a new one when the previous frame arrives, or when it misses
+that frame; a frame whose cycle is older than the webview's current one belongs
+to a superseded cycle, so the process drops it (traced as `FrameDropped`) instead
+of storing and composing it, and the abandoned cycle's pending composition is
+dropped when the new cycle's `RenderStarted` arrives.
+
 Two gates keep that path from doing redundant work:
 
 - **A content render cycle in flight owns the next composition.** The UA arms

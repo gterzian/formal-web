@@ -151,6 +151,15 @@ embedder can present a frame. The embedder calls the public
 embedder is the only source of rendering opportunities: the UA cannot create
 one itself.
 
+Render cycles are numbered: the number travels with `RenderStarted` and with
+`update the rendering`, and content stamps it on the frames it paints, so the
+graphics process can drop a frame whose cycle a newer one superseded. A cycle
+whose frame is still outstanding when a paint arrives after the composition
+deadline was given is a missed frame: `note_rendering_opportunity` logs it, stops
+waiting for that cycle's update, drops the pending update and the batched note
+for the navigable and its descendants, and starts the next cycle from that
+paint.
+
 A **UI state update** says the navigable's visible state may have changed:
 input dispatch, script evaluation, navigation finalization, viewport changes,
 automation, worker `requestAnimationFrame`, or a content- or graphics-reported

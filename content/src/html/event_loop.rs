@@ -86,6 +86,9 @@ pub(crate) enum Task {
         /// opportunity (the HTML event loop's "last render opportunity
         /// time").
         frame_timestamp_epoch_ms: f64,
+        /// The user agent's render cycle this update belongs to; the frames
+        /// painted for it carry the number.
+        cycle: u64,
     },
 
     /// The user-agent half of a dedicated worker's animation frame request:

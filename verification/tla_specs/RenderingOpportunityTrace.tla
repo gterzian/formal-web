@@ -7,6 +7,7 @@ VARIABLES
     queued,
     rendering_updated,
     composed,
+    dropped,
     pending_update,
     cycle,
     ui_state_update_count,
@@ -14,7 +15,7 @@ VARIABLES
     rendering_opportunity,
     trace_index
 
-vars == <<live, parent, queued, rendering_updated, composed, pending_update, cycle,
+vars == <<live, parent, queued, rendering_updated, composed, dropped, pending_update, cycle,
           ui_state_update_count, animating, rendering_opportunity, trace_index>>
 
 Base == INSTANCE RenderingOpportunity WITH
@@ -27,6 +28,7 @@ Base == INSTANCE RenderingOpportunity WITH
     queued <- queued,
     rendering_updated <- rendering_updated,
     composed <- composed,
+    dropped <- dropped,
     pending_update <- pending_update,
     cycle <- cycle,
     ui_state_update_count <- ui_state_update_count,
@@ -119,6 +121,26 @@ DeadlineTrace ==
        /\ Base!Deadline(f)
        /\ Advance
 
+FrameDroppedTrace ==
+    /\ trace_index \in 1..TraceLength
+    /\ CurrentEvent = "FrameDropped"
+    /\ Len(CurrentArgs) = 1
+    /\ LET f == EventArg(1)
+       IN
+       /\ f \in live
+       /\ Base!FrameDropped(f)
+       /\ Advance
+
+MissedFrameTrace ==
+    /\ trace_index \in 1..TraceLength
+    /\ CurrentEvent = "MissedFrame"
+    /\ Len(CurrentArgs) = 1
+    /\ LET f == EventArg(1)
+       IN
+       /\ f \in live
+       /\ Base!MissedFrame(f)
+       /\ Advance
+
 OutOfBandComputedTrace ==
     /\ trace_index \in 1..TraceLength
     /\ CurrentEvent = "OutOfBandComputed"
@@ -141,6 +163,8 @@ Next ==
     \/ GraphicsComputedTrace
     \/ DeadlineTrace
     \/ OutOfBandComputedTrace
+    \/ FrameDroppedTrace
+    \/ MissedFrameTrace
     \/ Done
 
 TypeOK == Base!TypeOK

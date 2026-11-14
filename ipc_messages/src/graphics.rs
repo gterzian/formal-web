@@ -62,6 +62,9 @@ pub enum GraphicsCommand {
         /// Milliseconds to wait for the top-level frame before composing with
         /// the last committed root.
         deadline_ms: u64,
+        /// The render cycle the user agent is starting. A `PaintFrame` carrying
+        /// an older cycle belongs to a superseded cycle: graphics drops it.
+        cycle: u64,
     },
     /// Compose the webview's committed hierarchy for an out-of-band layer
     /// (a video frame) that changed without a content update. The UA sends it

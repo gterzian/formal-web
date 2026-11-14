@@ -23,14 +23,15 @@ VARIABLES
   queued,                \* update the rendering commands content was sent and has not run yet
   rendering_updated,     \* content ran update the rendering (UpdateTheRendering)
   composed,              \* top-level content compositions that presented a render (GraphicsComputed)
+  dropped,               \* renders graphics discarded with a superseded cycle's frame (FrameDropped)
   pending_update,        \* the user agent waits for an update: its pending_update_the_rendering
   cycle,                 \* graphics holds the update's deadline: its cycle_deadline
   ui_state_update_count, \* a batched UI state update (UA queued_ui_state_updates, 0 or 1)
   animating,             \* the last composed frame had animated content
   rendering_opportunity  \* the embedder can present a frame (`frame_needed`, sent at each paint)
 
-vars == <<live, parent, queued, rendering_updated, composed, pending_update, cycle,
-          ui_state_update_count, animating, rendering_opportunity>>
+vars == <<live, parent, queued, rendering_updated, composed, dropped, pending_update,
+          cycle, ui_state_update_count, animating, rendering_opportunity>>
 
 \* ---- Helper operators ----
 
@@ -60,9 +61,12 @@ TypeOK ==
   /\ queued \in [Frame -> 0..CommandDepth]
   /\ rendering_updated \in [Frame -> 0..CommandDepth]
   /\ composed \in [Frame -> 0..CommandDepth]
+  /\ dropped \in [Frame -> 0..CommandDepth]
+  /\ \A f \in live: composed[f] + dropped[f] <= rendering_updated[f]
   /\ \A f \in Frame \ live: queued[f] = 0
   /\ \A f \in Frame \ live: rendering_updated[f] = 0
   /\ \A f \in Frame \ live: composed[f] = 0
+  /\ \A f \in Frame \ live: dropped[f] = 0
   /\ pending_update \in [Frame -> BOOLEAN]
   /\ cycle \in [Frame -> BOOLEAN]
   /\ ui_state_update_count \in [Frame -> 0..1]
@@ -77,6 +81,7 @@ Init ==
   /\ queued = [f \in Frame |-> 0]
   /\ rendering_updated = [f \in Frame |-> 0]
   /\ composed = [f \in Frame |-> 0]
+  /\ dropped = [f \in Frame |-> 0]
   /\ pending_update = [f \in Frame |-> FALSE]
   /\ cycle = [f \in Frame |-> FALSE]
   /\ ui_state_update_count = [f \in Frame |-> 0]
@@ -93,7 +98,7 @@ CreateFrame(f, p) ==
   /\ p \in live \cup {NoParent}
   /\ live' = live \cup {f}
   /\ parent' = [parent EXCEPT ![f] = p]
-  /\ UNCHANGED <<queued, rendering_updated, composed, pending_update, cycle,
+  /\ UNCHANGED <<queued, rendering_updated, composed, dropped, pending_update, cycle,
                  ui_state_update_count, animating, rendering_opportunity>>
 
 \* The embedder started a paint: the top-level navigable has a rendering
@@ -134,7 +139,7 @@ RenderingOpportunity(top) ==
           IF any THEN FALSE ELSE TRUE]
      /\ ui_state_update_count' = [g \in Frame |->
           IF queues_update(g) THEN 0 ELSE ui_state_update_count[g]]
-     /\ UNCHANGED <<animating, live, parent>>
+     /\ UNCHANGED <<dropped, animating, live, parent>>
 
 \* The UA noted a UI state update for f (input, navigation, viewport change,
 \* content request, or the graphics process reporting a changed embedded
@@ -154,7 +159,7 @@ NoteUiStateUpdate(f) ==
      IN
      IF pending_update[f] \/ ~rendering_opportunity[top]
      THEN /\ ui_state_update_count' = [ui_state_update_count EXCEPT ![f] = 1]
-          /\ UNCHANGED <<queued, rendering_updated, composed, pending_update, cycle,
+          /\ UNCHANGED <<queued, rendering_updated, composed, dropped, pending_update, cycle,
                          animating, rendering_opportunity, live, parent>>
      ELSE /\ fits
           /\ queued' = [g \in Frame |->
@@ -166,7 +171,7 @@ NoteUiStateUpdate(f) ==
           /\ rendering_opportunity' = [rendering_opportunity EXCEPT ![top] = FALSE]
           /\ ui_state_update_count' = [g \in Frame |->
                IF queues_update(g) THEN 0 ELSE ui_state_update_count[g]]
-          /\ UNCHANGED <<rendering_updated, composed, animating, live, parent>>
+          /\ UNCHANGED <<rendering_updated, composed, dropped, animating, live, parent>>
 
 \* Content runs one queued update the rendering: one queued command becomes one
 \* render, and the frame it produces is on its way to the compositor, so
@@ -178,7 +183,7 @@ UpdateTheRendering(f) ==
        IF g = f THEN rendering_updated[g] + 1 ELSE rendering_updated[g]]
   /\ cycle' = [g \in Frame |->
        IF g = f THEN FALSE ELSE cycle[g]]
-  /\ UNCHANGED <<queued, composed, pending_update, ui_state_update_count,
+  /\ UNCHANGED <<queued, composed, dropped, pending_update, ui_state_update_count,
                  animating, rendering_opportunity, live, parent>>
 
 \* Graphics sent the top-level's frame (PixelFrameReady, composition kind
@@ -193,7 +198,7 @@ UpdateTheRendering(f) ==
 GraphicsComputed(top) ==
   /\ top \in live
   /\ IsTopLevel(top)
-  /\ rendering_updated[top] > composed[top]
+  /\ rendering_updated[top] > composed[top] + dropped[top]
   /\ LET hierarchy == TopLevelFrames(top)
          released == pending_update[top]
          serviced == IF released /\ rendering_opportunity[top]
@@ -227,7 +232,7 @@ GraphicsComputed(top) ==
           ELSE IF g \in hierarchy /\ animating[g] THEN 1
           ELSE IF g = top /\ any_animating THEN 1
           ELSE ui_state_update_count[g]]
-     /\ UNCHANGED <<rendering_updated, animating, live, parent>>
+     /\ UNCHANGED <<rendering_updated, dropped, animating, live, parent>>
 
 \* The render cycle's deadline expired before the top-level frame arrived (the
 \* content event loop is blocked, so the frame is late): graphics composes the
@@ -269,7 +274,37 @@ Deadline(top) ==
           ELSE IF g \in hierarchy /\ animating[g] THEN 1
           ELSE IF g = top /\ any_animating THEN 1
           ELSE ui_state_update_count[g]]
-     /\ UNCHANGED <<rendering_updated, composed, animating, live, parent>>
+     /\ UNCHANGED <<rendering_updated, composed, dropped, animating, live, parent>>
+
+\* Graphics dropped a frame whose render cycle the user agent had already
+\* superseded (its `PaintFrame` carried an older cycle): the render it carried
+\* never composes.
+FrameDropped(top) ==
+  /\ top \in live
+  /\ IsTopLevel(top)
+  /\ rendering_updated[top] > composed[top] + dropped[top]
+  /\ dropped' = [g \in Frame |->
+       IF g = top THEN dropped[g] + 1 ELSE dropped[g]]
+  /\ UNCHANGED <<live, parent, queued, rendering_updated, composed, pending_update,
+                 cycle, ui_state_update_count, animating, rendering_opportunity>>
+
+\* The embedder asked the user agent for the next frame after the cycle's
+\* deadline passed without the frame: that frame is missed. The user agent stops
+\* waiting for it and drops the cycle, so the next request starts a new one and
+\* the abandoned cycle's frames arrive as dropped frames.
+MissedFrame(top) ==
+  /\ top \in live
+  /\ IsTopLevel(top)
+  /\ rendering_opportunity[top]
+  /\ pending_update[top]
+  /\ LET hierarchy == TopLevelFrames(top)
+     IN
+     /\ pending_update' = [g \in Frame |->
+          IF g \in hierarchy THEN FALSE ELSE pending_update[g]]
+     /\ cycle' = [g \in Frame |->
+          IF g \in hierarchy THEN FALSE ELSE cycle[g]]
+     /\ UNCHANGED <<live, parent, queued, rendering_updated, composed, dropped,
+                    ui_state_update_count, animating, rendering_opportunity>>
 
 \* Graphics presented an out-of-band layer — a video frame — against the
 \* committed root. Content is not involved: the document's own scene is
@@ -300,6 +335,8 @@ Next ==
   \/ \E f \in live: UpdateTheRendering(f)
   \/ \E f \in live: IsTopLevel(f) /\ GraphicsComputed(f)
   \/ \E f \in live: IsTopLevel(f) /\ Deadline(f)
+  \/ \E f \in live: IsTopLevel(f) /\ FrameDropped(f)
+  \/ \E f \in live: IsTopLevel(f) /\ MissedFrame(f)
   \/ \E f \in live: IsTopLevel(f) /\ OutOfBandComputed(f)
   \/ Done
 
@@ -324,9 +361,9 @@ Spec == Init /\ [][Next]_vars /\ Fairness
 QueuedLeadsRendering ==
   \A f \in live: rendering_updated[f] <= queued[f]
 
-\* A composition presents a rendered frame.
+\* A composition presents, and a drop discards, distinct rendered frames.
 RenderingLeadsComposed ==
-  \A f \in live: composed[f] <= rendering_updated[f]
+  \A f \in live: composed[f] + dropped[f] <= rendering_updated[f]
 
 \* The user agent holds at most BufferCount updates per navigable: the one it
 \* waits for and the one batched for the next rendering opportunity. Content

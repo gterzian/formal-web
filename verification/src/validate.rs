@@ -868,7 +868,9 @@ fn collect_rendering_opportunity_trace_ids(
             | "UpdateTheRendering"
             | "GraphicsComputed"
             | "Deadline"
-            | "OutOfBandComputed" => {
+            | "OutOfBandComputed"
+            | "FrameDropped"
+            | "MissedFrame" => {
                 if let Some(frame_id) = event.event_args.first() {
                     frame_ids.insert(frame_id.clone());
                 }

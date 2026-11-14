@@ -316,6 +316,15 @@ impl Compositor {
         self.pending_composition = None;
     }
 
+    /// The user agent started a new render cycle before the previous one
+    /// produced its frame (a missed frame): the pending composition and the
+    /// stored pending frames belong to the abandoned cycle and are dropped.
+    pub fn abandon_cycle(&mut self) {
+        self.pending_composition = None;
+        self.pending_frames.clear();
+        self.resolved_tree_dirty = true;
+    }
+
     /// Mark a child frame id as gone: its navigable was removed, so a
     /// deferred composition must not wait for a frame from it. Also drops
     /// any stored frame with that id.

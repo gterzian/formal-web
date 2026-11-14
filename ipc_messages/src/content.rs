@@ -881,6 +881,9 @@ pub struct PaintFrame {
     /// time instead of recording a new one. The receiver keeps the frame's
     /// layer clean rather than re-rasterizing identical content.
     pub scene_unchanged: bool,
+    /// The user agent's render cycle this frame belongs to. Graphics drops a
+    /// frame whose cycle a newer one superseded.
+    pub cycle: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -905,6 +908,7 @@ impl PaintFrame {
         scene: PreparedScene,
         next_shmem_key: &mut usize,
         animating: bool,
+        cycle: u64,
     ) -> Result<(Self, HashMap<usize, ipc::IpcSharedRegion>), String> {
         let PreparedScene {
             scene,
@@ -931,6 +935,7 @@ impl PaintFrame {
                 scene_shmem_key,
                 animating,
                 scene_unchanged: false,
+                cycle,
             },
             shmem_map,
         ))
@@ -1134,6 +1139,9 @@ pub enum Command {
         /// queued update the rendering (the HTML event loop's "last render
         /// opportunity time").
         frame_timestamp_epoch_ms: f64,
+        /// The user agent's render cycle this update belongs to; content
+        /// stamps it on the frames it paints.
+        cycle: u64,
     },
     /// The user-agent half of a dedicated worker's animation frame request:
     /// run the worker global scope's animation frame callbacks. Sent over the

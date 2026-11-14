@@ -71,6 +71,10 @@ pub struct VisibleFrameViewport {
 /// deferred scene).
 struct WebviewState<R> {
     compositor: Compositor,
+    /// The user agent's current render cycle for this webview, set by
+    /// `RenderStarted`. A `PaintFrame` carrying an older cycle belongs to a
+    /// superseded cycle and is dropped.
+    cycle: u64,
     renderer: R,
     /// The current render cycle's composition deadline, armed by
     /// `RenderStarted` and cleared when the top-level frame arrives or the
@@ -85,6 +89,7 @@ impl<R: SurfaceRenderer> WebviewState<R> {
     fn new(channels: ReadbackChannels<R::RenderData>) -> Self {
         Self {
             compositor: Compositor::default(),
+            cycle: 0,
             renderer: R::new(channels).unwrap_or_else(|error| panic!("renderer init: {error}")),
             cycle_deadline: None,
         }
@@ -575,6 +580,19 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
             let slot = webviews
                 .entry(webview_id)
                 .or_insert_with(|| WebviewState::new(channels.clone()));
+            if frame.cycle < slot.cycle {
+                debug!(
+                    "[render-pipe] dropped frame from superseded cycle webview={} frame_cycle={} current_cycle={}",
+                    webview_id.0, frame.cycle, slot.cycle
+                );
+                verification::tla_log!(
+                    *tla_tracer,
+                    -> "RenderingOpportunity",
+                    "FrameDropped",
+                    webview_id.0
+                );
+                return false;
+            }
             let composition = frame.composition.clone();
             let viewport_width = frame.viewport_width;
             let viewport_height = frame.viewport_height;
@@ -689,10 +707,18 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
         GraphicsCommand::RenderStarted {
             webview_id,
             deadline_ms,
+            cycle,
         } => {
             let slot = webviews
                 .entry(webview_id)
                 .or_insert_with(|| WebviewState::new(channels.clone()));
+            if cycle != slot.cycle {
+                // The user agent superseded the previous cycle (a missed
+                // frame): whatever it still had pending belongs to the
+                // abandoned cycle.
+                slot.compositor.abandon_cycle();
+                slot.cycle = cycle;
+            }
             slot.cycle_deadline =
                 Some(std::time::Instant::now() + std::time::Duration::from_millis(deadline_ms));
             debug!(

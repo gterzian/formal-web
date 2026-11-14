@@ -626,6 +626,15 @@ pub struct DocumentState {
     pub is_initial_about_blank: bool,
 }
 
+/// One top-level navigable's render cycle: the number the user agent stamps on
+/// the updates it queues for it, and when the current cycle started (the
+/// deadline graphics was given, after which a frame is missed).
+#[derive(Clone, Copy)]
+pub struct RenderCycle {
+    pub cycle: u64,
+    pub started: Instant,
+}
+
 /// continuation for
 /// <https://html.spec.whatwg.org/multipage/#checking-if-unloading-is-canceled>
 #[derive(Clone)]
@@ -1587,6 +1596,11 @@ struct UserAgentWorker {
     /// Wall-clock milliseconds since the Unix epoch at the moment
     /// `epoch_anchor` was captured.
     epoch_anchor_wall_ms: f64,
+    /// The render cycle running for each top-level navigable, and when it
+    /// started. The cycle travels with `RenderStarted` and update the
+    /// rendering so graphics drops a frame a newer cycle superseded; the
+    /// start time decides when a frame was missed.
+    render_cycles: HashMap<NavigableId, RenderCycle>,
     /// Tracks which navigables have a queued update the rendering in
     /// flight (TLA spec: pending[f] > composed[f]).
     pending_update_the_rendering: HashSet<NavigableId>,
@@ -1692,6 +1706,7 @@ impl UserAgentWorker {
             tla_tracer: TLATracer::new("Navigation", "formal-web:user-agent", trace_sender.clone()),
             epoch_anchor,
             epoch_anchor_wall_ms,
+            render_cycles: HashMap::new(),
             pending_update_the_rendering: HashSet::new(),
             channel_messaging: crate::channel_messaging::ChannelMessaging::new(
                 trace_sender.clone(),
@@ -4771,6 +4786,35 @@ impl UserAgentWorker {
     /// <https://html.spec.whatwg.org/multipage/webappapis.html#rendering-opportunity>
     fn note_rendering_opportunity(&mut self, webview_id: WebviewId) {
         let navigable_id = webview_id.0;
+        // The frame the previous cycle asked content for is later than the
+        // deadline graphics was given: the frame is missed. The user agent stops
+        // waiting for it, drops the cycle, and starts the next one from this
+        // request; the abandoned cycle's frames carry the older cycle number and
+        // are dropped by the graphics process.
+        let missed = self.render_cycles.get(&navigable_id).is_some_and(|render| {
+            render.started.elapsed() > Duration::from_millis(FRAME_DEADLINE_MS)
+        }) && self.pending_update_the_rendering.contains(&navigable_id);
+        if missed {
+            error!(
+                "[render-pipe] missed frame navigable={navigable_id}: no frame for the cycle before the next paint",
+            );
+            verification::tla_log!(
+                self.tla_tracer,
+                -> "RenderingOpportunity",
+                "MissedFrame",
+                navigable_id
+            );
+            let mut stale = descendant_navigable_ids(&self.state, navigable_id);
+            stale.push(navigable_id);
+            for navigable in stale {
+                self.pending_update_the_rendering.remove(&navigable);
+                self.queued_ui_state_updates.remove(&navigable);
+            }
+            if let Some(render) = self.render_cycles.get_mut(&navigable_id) {
+                render.cycle += 1;
+                render.started = Instant::now();
+            }
+        }
         verification::tla_log!(
             self.tla_tracer,
             -> "RenderingOpportunity",
@@ -5275,21 +5319,42 @@ impl UserAgentWorker {
         // waiting for it, so a worker animation keeps running while the
         // window's main thread is busy. A child navigable's cycle recurses to
         // the top-level below, so the deadline is armed once per cycle.
+        let cycle = self
+            .state
+            .top_level_traversable_id(navigable_id)
+            .map_or(0, |top| {
+                self.render_cycles
+                    .get(&top)
+                    .map_or(0, |render| render.cycle)
+            });
         if let Some(top_level_traversable_id) = self.state.top_level_traversable_id(navigable_id)
             && top_level_traversable_id == navigable_id
             && let Some(graphics_sender) = &self.graphics_extension_sender
             && let Err(error) = graphics_sender.send(GraphicsCommand::RenderStarted {
                 webview_id: WebviewId(navigable_id),
                 deadline_ms: FRAME_DEADLINE_MS,
+                cycle,
             })
         {
             error!("[render-pipe] failed to send render-started to graphics: {error}");
         }
+        self.render_cycles
+            .entry(
+                self.state
+                    .top_level_traversable_id(navigable_id)
+                    .unwrap_or(navigable_id),
+            )
+            .or_insert_with(|| RenderCycle {
+                cycle,
+                started: Instant::now(),
+            })
+            .started = Instant::now();
 
         let command = ContentCommand::UpdateTheRendering {
             traversable_id: navigable_id,
             document_id,
             frame_timestamp_epoch_ms,
+            cycle,
         };
         if let Err(error) = command_sender.send(command) {
             error!(
@@ -5834,6 +5899,14 @@ impl UserAgentWorker {
                 // second update while the first is still in flight.
                 let completed_pending_update = composition_kind.settles_content_update()
                     && self.pending_update_the_rendering.remove(&webview_id.0);
+                if composition_kind.settles_content_update()
+                    && let Some(render) = self.render_cycles.get_mut(&webview_id.0)
+                {
+                    // The cycle this composition belongs to is over: the next
+                    // update the rendering starts a new one.
+                    render.cycle += 1;
+                    render.started = Instant::now();
+                }
                 if completed_pending_update {
                     // All child frames included in the composition have also
                     // been rendered and composed. Clear their pending state so

@@ -21,7 +21,7 @@ The verification crate owns trace recording, TLA+ validation, and the shutdown w
 | Spec | Events traced (producer) | Validates |
 |---|---|---|
 | `Navigation` | UA `CreateNavigable`/`CreateChildNavigable`/`RemoveNavigable`/`CreateNavigation`/`StartNavigating`/`ContinueNavigation`, content `RunBeforeUnload` | navigable/navigation state machine |
-| `RenderingOpportunity` | UA `CreateFrame` (the navigable-creation part of the navigation path, traced from `CreateNavigable`/`CreateChildNavigable`) /`NoteUiStateUpdate`/`RenderingOpportunity`, content `UpdateTheRendering`, graphics `GraphicsComputed`/`Deadline`/`OutOfBandComputed` (the event name is the composition kind, traced immediately before the frame is sent) | the render cycle documented in `user_agent/README.md` ("Rendering pipeline"): the rendering-opportunity gate, update the rendering, the three composition kinds, and the depth of the updates the user agent holds |
+| `RenderingOpportunity` | UA `CreateFrame` (the navigable-creation part of the navigation path, traced from `CreateNavigable`/`CreateChildNavigable`) /`NoteUiStateUpdate`/`RenderingOpportunity`, content `UpdateTheRendering`, graphics `GraphicsComputed`/`Deadline`/`OutOfBandComputed` (the event name is the composition kind, traced immediately before the frame is sent) and `FrameDropped` (a frame from a superseded cycle), UA `MissedFrame` | the render cycle documented in `user_agent/README.md` ("Rendering pipeline"): the rendering-opportunity gate, update the rendering, the three composition kinds, and the depth of the updates the user agent holds |
 | `MessagePort` | content `NewChannel`/`PostMessage`/`ReceiveMessage`/`Transfer`/`TransferReceive`, UA `RouteMessage`, content `RunTask` (the last two are the implementation-level routing/task events, skipped by the coarse trace consumer) | the cross-process port workflow mapped to the HTML spec's channel messaging steps: channel creation, the FIFO port message queue ordering (each `ReceiveMessage` pop is checked against the abstract queue head), and the transfer/transfer-receive transitions |
 
 ### MessagePort scope
@@ -71,6 +71,15 @@ iframe, so the child rendering path is actually traced and validated; its
 `deadline-trace-page.html` and `outofband-trace-page.html` record the
 deadline and out-of-band composition kinds.
 
+A render cycle is numbered: the user agent stamps the number on the updates it
+queues, content carries it on the frames it paints, and graphics drops a frame
+whose cycle a newer one superseded (`FrameDropped`). A cycle whose frame does
+not arrive before the deadline the user agent gave graphics is a missed frame:
+the user agent stops waiting for it, drops the cycle and starts the next one
+(`MissedFrame`), so the abandoned cycle's late frames are dropped instead of
+composing. Frames are accounted for as presented (`GraphicsComputed`) or
+dropped (`FrameDropped`), which is what keeps the pipeline bounded.
+
 The model keeps its state space finite with a cap (`CommandDepth`) on the
 updates content was sent and has not run, and a `Done` action that stutters
 once every cap is hit: the real pipeline has no such cap, so a trace that
@@ -90,6 +99,12 @@ not carry: `Deadline` needs a changed out-of-band layer (a video frame or a
 worker's canvas commit) and `OutOfBandComputed` needs one to present, so the
 two actions are enabled by the model's own gates (`cycle` armed, no content
 cycle in flight) and not by layer state.
+
+The recorded session's pages do not miss a frame: their content is either fast
+enough for the cycle or has a dirty out-of-band layer for the deadline
+composition to present, so `MissedFrame` and `FrameDropped` are only checked by
+the base model. Producing them needs a page whose render cycle outlives the
+deadline with no out-of-band layer and a paint in between.
 
 The model abstracts all UI state update notes into `NoteUiStateUpdate` and
 relies on `RenderingOpportunity` fairness to eventually service a batched
