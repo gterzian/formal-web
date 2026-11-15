@@ -64,6 +64,25 @@ CreateChildNavigableTrace ==
        /\ navID \in DOMAIN navigables'
        /\ Advance
 
+\* A navigable is destroyed. The user agent removes the traversable it was
+\* told about, so the first event for a subtree runs the destruction, and the
+\* events for the descendants it destroyed with it arrive afterwards, when their
+\* own traversable state is removed: those only advance the trace.
+RemoveNavigableTrace ==
+    /\ trace_index \in 1..TraceLength
+    /\ CurrentEvent = "RemoveNavigable"
+    /\ Len(CurrentArgs) = 1
+    /\ LET navID == EventArg(1)
+       IN
+       \/ /\ navID \in DOMAIN navigables
+          /\ Base!RemoveNavigable(navID)
+          /\ navID \notin DOMAIN navigables'
+          /\ Advance
+       \/ /\ navID \notin DOMAIN navigables
+          /\ UNCHANGED <<navigables, navigations, freeNavIDs, freeNkIDs,
+                         navigationStartQueue>>
+          /\ Advance
+
 CreateNavigationTrace ==
     /\ trace_index \in 1..TraceLength
     /\ CurrentEvent = "CreateNavigation"
@@ -114,6 +133,7 @@ Done ==
 Next ==
     \/ CreateNavigableTrace
     \/ CreateChildNavigableTrace
+    \/ RemoveNavigableTrace
     \/ CreateNavigationTrace
     \/ StartNavigatingTrace
     \/ RunBeforeUnloadTrace

@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Out-of-band composition trace page</title>
+  </head>
+  <body>
+    <h1>Out-of-band composition trace page</h1>
+    <video
+      id="movie"
+      loop
+      muted
+      playsinline
+      width="320"
+      height="240"
+      src="../vendor/wpt/media/movie_5.mp4"
+    ></video>
+    <script>
+      // The media element's load algorithm starts from play()/load() (an
+      // attribute-only src starts no pipeline), and the graphics process
+      // decodes the frames: each one composes the video's layer against the
+      // committed root without a content render cycle, which is the
+      // OutOfBandComputed action.
+      document.getElementById("movie").play();
+    </script>
+  </body>
+</html>

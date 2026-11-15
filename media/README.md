@@ -87,7 +87,8 @@ thread with a run loop, not specifically the process main thread, so
 of refusing to run off the main thread.
 
 `sample()` (≈120 Hz via the graphics process's 8ms select-loop tick when at
-least one pipeline is active) drains the run loop (`runUntilDate(8ms)`) so
+least one pipeline is active) drains the run loop non-blockingly
+(`runUntilDate(now)`: it services whatever is pending and returns) so
 AVFoundation services URL loading, KVO, and video output timing; checks item
 status once (wait for `AVPlayerItemStatus::ReadyToPlay` before reporting
 duration); then polls `AVPlayerItemVideoOutput` for frames
@@ -105,6 +106,7 @@ Key design decisions:
   process main thread, or the in-process graphics thread). |
 | Timer-driven `sample()`, not message-driven | Without a timer, `sample()` only runs when a command or event arrives,
   starving AVFoundation of CPU time. |
+| The drain never blocks | `sample()` runs on the thread that also composes and presents frames (the graphics select loop), so a drain that waits holds up composition — and every input-driven frame that needs one — for as long as it waits. The sample tick already bounds how often the run loop is drained, so it is drained with a limit date of now: pending sources run, and nothing waits. |
 | Frames flow through the same channel as EOS/error/duration | Eliminates the `frame_tx`/`frame_rx` pair from the dispatch loop. |
 | Deliver the `CVPixelBuffer` itself as NV12, not CPU-converted bytes | The graphics process imports its two planes as Metal textures
   (zero-copy when GPU-backed) and converts YUV→RGBA there, with the matrix

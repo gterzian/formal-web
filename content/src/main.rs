@@ -67,8 +67,8 @@ use crate::fetch::{FetchContext, InternalFetchRequest, fetch};
 use ipc_messages::content::Command::{
     ClickElement, CompleteDocumentFetch, ContentBootstrap, CreateEmptyDocument,
     CreateLoadedDocument, DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch,
-    ImageDecoded, NotifyVideoEnded, RunAnimationFrameCallbacks, RunImageElementTask,
-    RunImageEnvironmentUpdate, SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering,
+    ImageDecoded, RunAnimationFrameCallbacks, RunImageElementTask, RunImageEnvironmentUpdate,
+    SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering,
 };
 use ipc_messages::content::{
     BeforeUnloadCheckId, CanvasEmbedSite, CanvasId, ClipboardWriteRequested,
@@ -82,7 +82,7 @@ use ipc_messages::content::{
     ViewportSnapshot, WebviewId, WindowTimerKey, WorkerId, WorkerOwner,
 };
 use ipc_messages::graphics::{DecodedImage, GraphicsCommand, ImageFormat};
-use ipc_messages::media::{VideoEmbedData, VideoPaintId};
+use ipc_messages::media::{MediaPipelineId, VideoEmbedData, VideoPaintId};
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
 use log::{debug, error, info, warn};
 use std::{
@@ -358,6 +358,9 @@ pub(crate) struct ContentDocument {
     parent_traversable_id: Option<NavigableId>,
     top_level_traversable_id: NavigableId,
     frame_id: FrameId,
+    /// The user agent's render cycle this document last rendered for; its
+    /// frames carry the number so graphics can drop a superseded cycle's.
+    render_cycle: u64,
     document: Rc<RefCell<BaseDocument>>,
     settings: EnvironmentSettingsObject,
     /// The document's `DocumentProviders`, which the content process uses to
@@ -513,14 +516,15 @@ pub(crate) struct ContentProcess {
     wasm: crate::wasm::ContentWasmState,
 
     video_paint_registry: Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>,
+    /// The media pipelines each document's `<video>` elements created.
+    /// Destroying a document destroys its pipelines, so a navigation stops the
+    /// outgoing page's video frames instead of leaving them to keep composing
+    /// against the incoming document.
+    media_pipeline_registry: Rc<RefCell<HashMap<DocumentId, Vec<MediaPipelineId>>>>,
     /// Shared registry mapping (document_id, node_id) → CanvasId, set on each
     /// realm's GlobalScope so `transferControlToOffscreen` can register canvas
     /// ids and `build_frame_composition_metadata` can read them back.
     canvas_registry: Rc<RefCell<HashMap<(DocumentId, usize), CanvasId>>>,
-    /// (DocumentId, node_id) pairs of video elements that have reached
-    /// end-of-stream. Checked alongside the registry to determine whether
-    /// the document has active (non-ended) video.
-    ended_video_nodes: HashSet<(DocumentId, usize)>,
     /// Direct sender to the net extension. Set during DirectChannelsSetup.
     network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
     /// Direct sender to the graphics process (composition + media). Set during ContentBootstrap.
@@ -598,8 +602,8 @@ impl ContentProcess {
             clipboard_cache: clipboard_cache.clone(),
             new_document_registry: Rc::new(RefCell::new(HashMap::new())),
             video_paint_registry: Rc::new(RefCell::new(HashMap::new())),
+            media_pipeline_registry: Rc::new(RefCell::new(HashMap::new())),
             canvas_registry: Rc::new(RefCell::new(HashMap::new())),
-            ended_video_nodes: HashSet::new(),
             #[cfg(all(boa_backend, feature = "wasm"))]
             wasm: crate::wasm::ContentWasmState::new(_wasm_signal_sender),
             network_extension_sender,
@@ -1072,6 +1076,7 @@ impl ContentProcess {
                     parent_traversable_id,
                     top_level_traversable_id,
                     frame_id,
+                    render_cycle: 0,
                     document,
                     settings,
                     providers: None,
@@ -1281,6 +1286,7 @@ impl ContentProcess {
         // resource_selection_algorithm can register paint IDs.
         if let Err(error) = with_global_scope(settings.ec(), |global_scope, _ec| {
             global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
+            global_scope.set_media_pipeline_registry(Rc::clone(&self.media_pipeline_registry));
             global_scope.set_canvas_registry(Rc::clone(&self.canvas_registry));
             if let Some(ref sender) = self.graphics_sender {
                 global_scope.set_graphics_sender(sender.clone());
@@ -1320,6 +1326,7 @@ impl ContentProcess {
                 parent_traversable_id,
                 top_level_traversable_id,
                 frame_id,
+                render_cycle: 0,
                 document,
                 settings,
                 providers: Some(providers),
@@ -1550,6 +1557,7 @@ impl ContentProcess {
         if let Err(error) = with_global_scope(settings.ec(), |global_scope, _ec| {
             global_scope.set_image_registry(image_registry.clone());
             global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
+            global_scope.set_media_pipeline_registry(Rc::clone(&self.media_pipeline_registry));
             global_scope.set_canvas_registry(Rc::clone(&self.canvas_registry));
             if let Some(ref sender) = self.graphics_sender {
                 global_scope.set_graphics_sender(sender.clone());
@@ -1669,6 +1677,7 @@ impl ContentProcess {
                 parent_traversable_id,
                 top_level_traversable_id,
                 frame_id,
+                render_cycle: 0,
                 document: Rc::clone(&document),
                 settings,
                 providers: Some(providers),
@@ -1998,6 +2007,48 @@ impl ContentProcess {
                     })
                 {
                     error!("failed to unregister images with graphics: {error}");
+                }
+            }
+            // The document's offscreen canvases are gone with it: no paint
+            // will commit them again, so the graphics process drops their
+            // layers and shared surfaces instead of holding them for the
+            // process's lifetime.
+            let canvas_ids: Vec<CanvasId> = self
+                .canvas_registry
+                .borrow_mut()
+                .extract_if(|(owner_document_id, _), _| *owner_document_id == document_id)
+                .map(|(_, canvas_id)| canvas_id)
+                .collect();
+            if !canvas_ids.is_empty()
+                && let Some(graphics_sender) = &self.graphics_sender
+            {
+                for canvas_id in canvas_ids {
+                    if let Err(error) =
+                        graphics_sender.send(GraphicsCommand::UnregisterCanvas { canvas_id })
+                    {
+                        error!("failed to unregister canvas with graphics: {error}");
+                    }
+                }
+            }
+            // The document's media elements are gone with it, so their
+            // paint ids and pipelines must go too: a surviving pipeline would
+            // keep reporting (and composing) video frames for a document that
+            // no longer exists.
+            self.video_paint_registry
+                .borrow_mut()
+                .retain(|(owner_document_id, _), _| *owner_document_id != document_id);
+            let media_pipelines = self
+                .media_pipeline_registry
+                .borrow_mut()
+                .remove(&document_id)
+                .unwrap_or_default();
+            if let Some(graphics_sender) = &self.graphics_sender {
+                for pipeline_id in media_pipelines {
+                    if let Err(error) =
+                        graphics_sender.send(GraphicsCommand::MediaDestroy { pipeline_id })
+                    {
+                        error!("failed to destroy a media pipeline with its document: {error}");
+                    }
                 }
             }
             drop(content_document);
@@ -2604,6 +2655,7 @@ impl ContentProcess {
         navigable_id: NavigableId,
         requested_document_id: DocumentId,
         frame_timestamp_epoch_ms: f64,
+        cycle: u64,
     ) -> Result<(), String> {
         // Step 3.1: "Let frameTimestamp be eventLoop's last render opportunity time."
         // The user agent stamps the opportunity time on the browser-wide monotonic
@@ -2621,6 +2673,14 @@ impl ContentProcess {
         // records that "the document associated with the task might become inactive
         // before the task is processed".
         let event_loop_documents = self.documents_for_update_the_rendering();
+        // The user agent's cycle travels with the update so the frames this
+        // pass paints carry it: graphics drops a frame whose cycle a newer one
+        // superseded.
+        for document_id in &event_loop_documents {
+            if let Some(document) = self.documents.get_mut(document_id) {
+                document.render_cycle = cycle;
+            }
+        }
         if let Some(&document_id) = self.active_documents_by_traversable.get(&navigable_id)
             && document_id != requested_document_id
         {
@@ -2754,12 +2814,18 @@ impl ContentProcess {
             let Some(document) = self.documents.get_mut(&document_id) else {
                 continue;
             };
-            // The callbacks have run. Animating means the document has
-            // animated content — video elements still producing frames, blitz
-            // is animating (CSS animations/transitions, scroll animations), or
-            // a script holds a pending animation frame callback. Graphics
-            // forwards this to the UA, which keeps noting UI state updates to
-            // drive animation.
+            // The callbacks have run. Animating means the document's own
+            // content animates — blitz is animating (CSS
+            // animations/transitions, scroll animations) or a script holds a
+            // pending animation frame callback. Graphics forwards this to the
+            // UA, which keeps noting UI state updates to drive animation.
+            //
+            // A playing video does not make the document animating: its frames
+            // are decoded by the graphics process, which composes the video's
+            // own layer as they arrive (graphics/README.md, "Video frames drive
+            // their own composition"). Reporting a video here would put the
+            // document through a full update-the-rendering cycle per video
+            // frame, for a frame whose document layer is unchanged.
             let document_is_animating = {
                 let document_guard = document.document.borrow();
                 document_guard.is_animating()
@@ -2819,15 +2885,7 @@ impl ContentProcess {
                             format!("content render: no cached composition for clean cycle document={document_id}")
                         })?
                     };
-                    let has_video =
-                        video_paint_registry
-                            .borrow()
-                            .keys()
-                            .any(|(doc_id, node_id)| {
-                                let ended = self.ended_video_nodes.contains(&(*doc_id, *node_id));
-                                *doc_id == document_id && !ended
-                            });
-                    let animating = has_video || document_animates;
+                    let animating = document_animates;
                     // Re-send the recorded scene without font data: the fonts are
                     // already registered on the graphics side, and re-sending them
                     // would reuse stale shared-memory keys.
@@ -2837,6 +2895,7 @@ impl ContentProcess {
                         font_shmem: HashMap::new(),
                     };
                     let mut next_shmem_key = 0usize;
+                    let render_cycle: u64 = document.render_cycle;
                     let (mut paint_frame, shmem_data) = PaintFrame::new(
                         WebviewId(navigable_id),
                         document.frame_id,
@@ -2846,6 +2905,7 @@ impl ContentProcess {
                         scene,
                         &mut next_shmem_key,
                         animating,
+                        render_cycle,
                     )?;
                     // The scene is the one this document recorded last time, so the
                     // graphics process keeps the frame's layer clean.
@@ -2900,15 +2960,11 @@ impl ContentProcess {
                         "emit paint navigable={} document={} size=({}, {})",
                         navigable_id, document_id, width, height,
                     ));
-                    let has_video =
-                        video_paint_registry
-                            .borrow()
-                            .keys()
-                            .any(|(doc_id, node_id)| {
-                                let ended = self.ended_video_nodes.contains(&(*doc_id, *node_id));
-                                *doc_id == document_id && !ended
-                            });
-                    let animating = has_video || document_animates;
+                    let has_video = video_paint_registry
+                        .borrow()
+                        .keys()
+                        .any(|(doc_id, _)| *doc_id == document_id);
+                    let animating = document_animates;
                     info!(
                         "[render-pipe] Content paint_frame ready navigable={} frame={} size=({},{}) has_video={} animating={} embed_sites={}",
                         navigable_id,
@@ -2920,6 +2976,7 @@ impl ContentProcess {
                         composition.embed_sites.len()
                     );
                     let recorded_scene = prepared.scene.clone();
+                    let render_cycle: u64 = document.render_cycle;
                     let (paint_frame, shmem_data) = PaintFrame::new(
                         WebviewId(navigable_id),
                         document.frame_id,
@@ -2929,6 +2986,7 @@ impl ContentProcess {
                         prepared,
                         &mut next_shmem_key,
                         animating,
+                        render_cycle,
                     )?;
                     (paint_frame, shmem_data, recorded_scene, composition)
                 };
@@ -3679,16 +3737,33 @@ impl ContentProcess {
             return;
         }
 
-        {
+        let released_canvas_ids = {
             let mut image_registry = self.image_registry.borrow_mut();
             let mut canvas_registry = self.canvas_registry.borrow_mut();
             let mut video_paint_registry = self.video_paint_registry.borrow_mut();
+            let mut released_canvas_ids = Vec::new();
             for (_, node_ids) in &droppable {
                 for node_id in node_ids.iter().copied() {
                     image_registry.forget_element(document_id, node_id);
-                    canvas_registry.remove(&(document_id, node_id));
+                    if let Some(canvas_id) = canvas_registry.remove(&(document_id, node_id)) {
+                        released_canvas_ids.push(canvas_id);
+                    }
                     video_paint_registry.remove(&(document_id, node_id));
-                    self.ended_video_nodes.remove(&(document_id, node_id));
+                }
+            }
+            released_canvas_ids
+        };
+        // A canvas whose element was collected is gone: its committed layer
+        // and shared surfaces are released in the graphics process, the same
+        // way a destroyed document's canvases are.
+        if !released_canvas_ids.is_empty()
+            && let Some(graphics_sender) = &self.graphics_sender
+        {
+            for canvas_id in released_canvas_ids {
+                if let Err(error) =
+                    graphics_sender.send(GraphicsCommand::UnregisterCanvas { canvas_id })
+                {
+                    error!("failed to unregister canvas with graphics: {error}");
                 }
             }
         }
@@ -4545,7 +4620,13 @@ impl ContentProcess {
                 traversable_id,
                 document_id,
                 frame_timestamp_epoch_ms,
-            } => self.update_the_rendering(traversable_id, document_id, frame_timestamp_epoch_ms),
+                cycle,
+            } => self.update_the_rendering(
+                traversable_id,
+                document_id,
+                frame_timestamp_epoch_ms,
+                cycle,
+            ),
             Task::EvaluateScript {
                 traversable_id,
                 request_id,
@@ -4983,11 +5064,13 @@ impl ContentProcess {
                 traversable_id,
                 document_id,
                 frame_timestamp_epoch_ms,
+                cycle,
             } => {
                 self.task_queue.queue_a_task(Task::UpdateTheRendering {
                     traversable_id,
                     document_id,
                     frame_timestamp_epoch_ms,
+                    cycle,
                 });
                 Ok(true)
             }
@@ -5038,25 +5121,6 @@ impl ContentProcess {
             ContentBootstrap { .. } => {
                 // Handled before the event loop in run_content_process.
                 debug_assert!(false, "ContentBootstrap should not reach handle_command");
-                Ok(true)
-            }
-            NotifyVideoEnded { video_paint_id } => {
-                // Keep the paint ID in the registry so the last video frame is
-                // still rendered as part of the composition. Mark the node as
-                // ended so the animating flag is set to false, and note the
-                // document for a paint so the ended state reaches the next
-                // frame.
-                let ended_key: Vec<(DocumentId, usize)> = self
-                    .video_paint_registry
-                    .borrow()
-                    .iter()
-                    .filter(|(_, existing_id)| **existing_id == video_paint_id)
-                    .map(|((doc_id, node_id), _)| (*doc_id, *node_id))
-                    .collect();
-                for key in ended_key {
-                    self.ended_video_nodes.insert(key);
-                    self.mark_document_dirty(key.0);
-                }
                 Ok(true)
             }
             Shutdown => {

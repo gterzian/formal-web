@@ -4,28 +4,33 @@ EXTENDS Naturals, Sequences, TLC, RenderingOpportunityTraceData
 VARIABLES
     live,
     parent,
-    pending,
+    queued,
     rendering_updated,
     composed,
+    dropped,
+    pending_update,
+    cycle,
     ui_state_update_count,
-    animating,
     rendering_opportunity,
     trace_index
 
-vars == <<live, parent, pending, rendering_updated, composed,
-          ui_state_update_count, animating, rendering_opportunity, trace_index>>
+vars == <<live, parent, queued, rendering_updated, composed, dropped, pending_update, cycle,
+          ui_state_update_count, rendering_opportunity, trace_index>>
 
 Base == INSTANCE RenderingOpportunity WITH
     Frame <- TraceFrame,
     NoParent <- TraceNoParent,
     BufferCount <- TraceBufferCount,
+    CommandDepth <- TraceCommandDepth,
     live <- live,
     parent <- parent,
-    pending <- pending,
+    queued <- queued,
     rendering_updated <- rendering_updated,
     composed <- composed,
+    dropped <- dropped,
+    pending_update <- pending_update,
+    cycle <- cycle,
     ui_state_update_count <- ui_state_update_count,
-    animating <- animating,
     rendering_opportunity <- rendering_opportunity
 
 TraceLength == Len(Trace)
@@ -89,10 +94,23 @@ UpdateTheRenderingTrace ==
        /\ Base!UpdateTheRendering(f)
        /\ Advance
 
-\* A graphics composition. Normally the top-level content rendered first
-\* (GraphicsComputed); when the render cycle's deadline expired first, the
-\* composition is the Deadline action instead. The two are distinguished by
-\* their guards, not by the event name (both are traced as GraphicsComputed).
+\* A graphics composition. The composition kind travels in the trace's
+\* event name: a cycle whose top-level content frame rendered is
+\* GraphicsComputed, the render cycle's deadline expiring first is
+\* Deadline, and a video frame presented against the committed root with no
+\* content cycle in flight is OutOfBandComputed.
+\* Graphics stored the top-level frame for the cycle: the deadline graphics held
+\* for it is satisfied. The composition that presents the frame follows.
+FrameStoredTrace ==
+    /\ trace_index \in 1..TraceLength
+    /\ CurrentEvent = "FrameStored"
+    /\ Len(CurrentArgs) = 1
+    /\ LET f == EventArg(1)
+       IN
+       /\ f \in live
+       /\ Base!FrameStored(f)
+       /\ Advance
+
 GraphicsComputedTrace ==
     /\ trace_index \in 1..TraceLength
     /\ CurrentEvent = "GraphicsComputed"
@@ -105,12 +123,42 @@ GraphicsComputedTrace ==
 
 DeadlineTrace ==
     /\ trace_index \in 1..TraceLength
-    /\ CurrentEvent = "GraphicsComputed"
+    /\ CurrentEvent = "Deadline"
     /\ Len(CurrentArgs) = 1
     /\ LET f == EventArg(1)
        IN
        /\ f \in live
        /\ Base!Deadline(f)
+       /\ Advance
+
+FrameDroppedTrace ==
+    /\ trace_index \in 1..TraceLength
+    /\ CurrentEvent = "FrameDropped"
+    /\ Len(CurrentArgs) = 1
+    /\ LET f == EventArg(1)
+       IN
+       /\ f \in live
+       /\ Base!FrameDropped(f)
+       /\ Advance
+
+MissedFrameTrace ==
+    /\ trace_index \in 1..TraceLength
+    /\ CurrentEvent = "MissedFrame"
+    /\ Len(CurrentArgs) = 1
+    /\ LET f == EventArg(1)
+       IN
+       /\ f \in live
+       /\ Base!MissedFrame(f)
+       /\ Advance
+
+OutOfBandComputedTrace ==
+    /\ trace_index \in 1..TraceLength
+    /\ CurrentEvent = "OutOfBandComputed"
+    /\ Len(CurrentArgs) = 1
+    /\ LET f == EventArg(1)
+       IN
+       /\ f \in live
+       /\ Base!OutOfBandComputed(f)
        /\ Advance
 
 Done ==
@@ -122,8 +170,12 @@ Next ==
     \/ NoteUiStateUpdateTrace
     \/ RenderingOpportunityTrace
     \/ UpdateTheRenderingTrace
+    \/ FrameStoredTrace
     \/ GraphicsComputedTrace
     \/ DeadlineTrace
+    \/ OutOfBandComputedTrace
+    \/ FrameDroppedTrace
+    \/ MissedFrameTrace
     \/ Done
 
 TypeOK == Base!TypeOK

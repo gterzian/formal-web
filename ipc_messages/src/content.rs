@@ -1,5 +1,5 @@
 use crate::graphics::DecodedImage;
-use crate::media::{VideoEmbedData, VideoPaintId};
+use crate::media::VideoEmbedData;
 use crate::safe_passing_of_structured_data::{PortMessagePayload, PostMessageRequest};
 use anyrender::{
     Scene,
@@ -657,18 +657,18 @@ impl FontTransportReceiver {
     }
 
     pub fn resolve_font(&self, font_ids: &[FontIdentifier], scene_font_id: u32) -> FontData {
-        let font_id = font_ids
-            .get(scene_font_id as usize)
-            .copied()
-            .unwrap_or_else(|| {
-                debug_assert!(false, "recorded scene referenced missing scene font id");
-                FontIdentifier::default()
-            });
-
-        self.fonts.get(&font_id).cloned().unwrap_or_else(|| {
-            debug_assert!(false, "recorded scene referenced an unregistered font");
-            FontData::new(Vec::<u8>::new().into(), font_id.index)
-        })
+        // A recorded scene only names font ids the sender resolved, and every
+        // font a document sends is registered when its frame is decoded
+        // (`FontTransportReceiver::register_fonts`): a scene naming an unknown
+        // font is a transport invariant violation, so it fails here by name
+        // instead of in vello's `FontRef::from_index` as `OutOfBounds`.
+        let Some(&font_id) = font_ids.get(scene_font_id as usize) else {
+            panic!("recorded scene referenced missing scene font id {scene_font_id}");
+        };
+        let Some(font) = self.fonts.get(&font_id) else {
+            panic!("recorded scene referenced an unregistered font {font_id:?}");
+        };
+        font.clone()
     }
 }
 
@@ -881,6 +881,9 @@ pub struct PaintFrame {
     /// time instead of recording a new one. The receiver keeps the frame's
     /// layer clean rather than re-rasterizing identical content.
     pub scene_unchanged: bool,
+    /// The user agent's render cycle this frame belongs to. Graphics drops a
+    /// frame whose cycle a newer one superseded.
+    pub cycle: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -905,6 +908,7 @@ impl PaintFrame {
         scene: PreparedScene,
         next_shmem_key: &mut usize,
         animating: bool,
+        cycle: u64,
     ) -> Result<(Self, HashMap<usize, ipc::IpcSharedRegion>), String> {
         let PreparedScene {
             scene,
@@ -931,6 +935,7 @@ impl PaintFrame {
                 scene_shmem_key,
                 animating,
                 scene_unchanged: false,
+                cycle,
             },
             shmem_map,
         ))
@@ -1134,6 +1139,9 @@ pub enum Command {
         /// queued update the rendering (the HTML event loop's "last render
         /// opportunity time").
         frame_timestamp_epoch_ms: f64,
+        /// The user agent's render cycle this update belongs to; content
+        /// stamps it on the frames it paints.
+        cycle: u64,
     },
     /// The user-agent half of a dedicated worker's animation frame request:
     /// run the worker global scope's animation frame callbacks. Sent over the
@@ -1181,11 +1189,6 @@ pub enum Command {
         /// the user agent. A fetch for one of them goes to the user agent as
         /// `Event::EmbedderSchemeFetchRequested` and never reaches net.
         embedder_schemes: Vec<String>,
-    },
-    /// A video pipeline reached end of stream. Content should unset any
-    /// animating flags associated with this pipeline.
-    NotifyVideoEnded {
-        video_paint_id: VideoPaintId,
     },
     /// The graphics process finished decoding an `<img>` resource.  Content
     /// records the result and settles the `decode()` promises waiting on that
@@ -1583,6 +1586,7 @@ mod tests {
             prepared,
             &mut next_shmem_key,
             false,
+            0,
         )
         .expect("paint frame should serialize into shared memory");
 
@@ -1592,6 +1596,44 @@ mod tests {
             .expect("paint frame should deserialize scene bytes");
 
         assert_eq!(roundtripped, expected_recorded);
+    }
+
+    #[test]
+    fn discarding_a_decoded_frame_keeps_its_fonts_registered() {
+        // A document sends each font once, on the frame that first draws it, and
+        // every later frame names it by id only. A consumer that discards a
+        // frame — graphics drops the frames of superseded render cycles — must
+        // therefore register the fonts before discarding it.
+        let font = FontData::new(vec![1_u8, 2, 3, 4].into(), 0);
+        let mut sender = FontTransportSender::default();
+        let mut next_shmem_key = 0;
+        let prepared = sender.prepare_scene(
+            31,
+            scene_with_glyph(&font, 9, 4.0, 6.0),
+            &mut next_shmem_key,
+        );
+        let scene_font_ids = prepared.scene.font_ids.clone();
+        let (paint_frame, shmem_regions) = PaintFrame::new(
+            WebviewId(NavigableId::from_u128(7)),
+            FrameId::from_u128(7),
+            320,
+            240,
+            FrameCompositionMetadata::default(),
+            prepared,
+            &mut next_shmem_key,
+            false,
+            0,
+        )
+        .expect("paint frame should serialize");
+
+        let mut receiver = FontTransportReceiver::default();
+        let discarded = paint_frame
+            .into_recorded_scene(&mut receiver, &shmem_regions)
+            .expect("frame should decode");
+        drop(discarded);
+
+        let resolved = receiver.resolve_font(&scene_font_ids, 0);
+        assert_eq!(resolved.data.data(), &[1, 2, 3, 4]);
     }
 
     #[test]
@@ -1615,6 +1657,7 @@ mod tests {
             first_prepared,
             &mut next_shmem_key,
             false,
+            0,
         )
         .expect("first frame should serialize");
         let first_summary = first_frame.transport_summary(&first_shmem_regions);
@@ -1646,6 +1689,7 @@ mod tests {
             second_prepared,
             &mut next_shmem_key,
             false,
+            1,
         )
         .expect("second frame should serialize");
         let second_summary = second_frame.transport_summary(&second_shmem_regions);

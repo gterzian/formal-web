@@ -151,6 +151,22 @@ embedder can present a frame. The embedder calls the public
 embedder is the only source of rendering opportunities: the UA cannot create
 one itself.
 
+Render cycles are numbered: the number travels with `RenderStarted` and with
+`update the rendering`, and content stamps it on the frames it paints, so the
+graphics process can drop a frame whose cycle a newer one superseded. Only a
+composition that presents the cycle's own top-level frame moves to the next
+number; a deadline composition presents the committed root and releases the
+update the user agent was waiting for, but the frame content is still producing
+belongs to the same cycle and still composes when it arrives.
+
+A cycle whose update stays outstanding for a second (`MISSED_FRAME_TIMEOUT_MS`)
+is a missed frame: `note_rendering_opportunity` logs it, stops waiting for that
+cycle's update, drops the pending update and the batched note for the navigable
+and its descendants, and starts the next cycle from that paint. That timeout is
+not the 16 ms composition deadline (`FRAME_DEADLINE_MS`) handed to graphics: a
+frame slower than one display refresh is late, not lost, and the user agent
+waiting for it is what lets a slow content pass present its frame at all.
+
 A **UI state update** says the navigable's visible state may have changed:
 input dispatch, script evaluation, navigation finalization, viewport changes,
 automation, worker `requestAnimationFrame`, or a content- or graphics-reported
@@ -219,20 +235,51 @@ dirty child frame
 or canvas is reported with `GraphicsEvent::CompositionChanged`, which the UA
 turns into a UI state update for the parent traversable.
 
-`RenderStarted` arms a per-webview composition deadline (16 ms). If the content
-event loop is blocked and the top-level `PaintFrame` does not arrive, graphics
-composes the last committed root with any dirty out-of-band layer (a worker
-`OffscreenCanvas` or a video frame) so that content keeps animating. A normal
-top-level frame clears the deadline. `PixelFrameReady` carries the composed
-layers, hit-test info, child viewport data, and the animating frame ids.
+`RenderStarted` arms a per-webview composition deadline: three quarters of the
+interval from the embedder's paint to the display refresh it targets, which the
+AppKit display link measures and reports with each paint (`FRAME_DEADLINE_MS`,
+a 60 Hz frame, stands in for the winit backends, which have no display link).
+The remaining quarter of the interval is what the composed frame has to reach
+the window server before that refresh. If the content event loop is blocked and
+the top-level `PaintFrame` does not arrive, graphics composes the last committed
+root with any dirty out-of-band layer (a worker `OffscreenCanvas` or a video
+frame) so that content keeps animating. A normal top-level frame clears the
+deadline. `PixelFrameReady` carries the composed layers, hit-test info, child
+viewport data, and the animating frame ids.
+
+### Video frames: a composition with no content update
+
+A video frame leaves the document's own scene untouched: the media pipeline
+inside the graphics process produces the video layer's content, so
+`PaintFrame.animating` reports document animation only (blitz CSS or scroll
+animation, a pending `requestAnimationFrame`). Graphics stores each decoded
+frame and reports `GraphicsEvent::OutOfBandLayerChanged`; the UA answers with
+`GraphicsCommand::ComposeOutOfBand`, and graphics composes the committed root
+with the stored frame. The relay keeps composition a UA decision, like every
+other composition in the cycle, and the model covers it as its own action
+(`verification/tla_specs/RenderingOpportunity.tla`, `OutOfBandComputed`): a
+composition that moves no content counter, available while no content cycle is
+in flight.
+That gate makes the video frame wait for a cycle already in flight: that
+cycle's frame composes the stored video frame.
+
+`PixelFrameReady` carries the composition kind: `ContentUpdate` when a
+composition presents a top-level frame, `Deadline` when the render cycle's
+deadline presents the committed root, `OutOfBand` for an out-of-band video
+frame. The graphics process traces the action of that name before it sends the
+frame; the UA clears `pending_update_the_rendering` for `ContentUpdate` and
+`Deadline`, and an `OutOfBand` composition leaves it set because it serves no
+update the UA queued. Only `ContentUpdate` advances the cycle number (see
+above).
 
 ### Completing the cycle
 
 On `PixelFrameReady` the UA:
 
-- clears the in-flight state for the top-level and composed child frames. A
-  same-event-loop child has no pending update of its own (its changes note the
-  event loop root); a cross-origin child's queued update is released here when
+- clears the in-flight state for the top-level and composed child frames when
+  the composition settles the content update (see above). A same-event-loop
+  child has no pending update of its own (its changes note the event loop
+  root); a cross-origin child's queued update is released here when
   its frame is composed, which lets its next note queue again;
 - forwards the layers to the embedder (`new_web_content_layers`), which
   presents them;
@@ -273,9 +320,5 @@ the UI state update that renders the new document.
 ### Model
 
 The cross-process cycle is modeled by
-`verification/tla_specs/RenderingOpportunity.tla`. It tracks
-`rendering_opportunity`, `ui_state_update_count`, `pending`,
-`rendering_updated`, `composed`, and `animating` per frame; its invariants are
-`pending >= rendering_updated >= composed` and `pending <= BufferCount` (two
-buffers: one displayed, one being rendered). See `verification/README.md` for
-the trace-event mapping.
+`verification/tla_specs/RenderingOpportunity.tla`; `verification/README.md`
+owns the trace-event mapping and what each action checks.

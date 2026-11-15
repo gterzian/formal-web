@@ -208,9 +208,15 @@ impl WebviewProvider {
     }
 
     /// Notify the UA that the embedder is about to paint a frame for
-    /// `webview_id`; the UA gates render cycles on this.
-    pub fn frame_needed(&self, webview_id: WebviewId) -> Result<(), String> {
-        self.user_agent.frame_needed(webview_id)
+    /// `webview_id`; the UA gates render cycles on this. `display_deadline` is
+    /// the interval from this paint to the display refresh the embedder
+    /// targets, or `None` when the embedder has no display link.
+    pub fn frame_needed(
+        &self,
+        webview_id: WebviewId,
+        display_deadline: Option<Duration>,
+    ) -> Result<(), String> {
+        self.user_agent.frame_needed(webview_id, display_deadline)
     }
 
     pub fn evaluate_script(

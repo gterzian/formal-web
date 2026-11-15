@@ -11,18 +11,26 @@ compile_error!(
 );
 
 use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use crate::renderer::{ReadbackChannels, SurfaceRenderer};
 use compositor::{Compositor, CompositorVideoFrame, ContentFrame, LayerUpdate};
-use crossbeam_channel::{select, tick};
+use crossbeam_channel::{Receiver, after, never, select, tick};
 use ipc_messages::content::{
     CanvasId, FrameId, ImageIdentifier, WebviewId, deserialize_scene_from_slice,
 };
-use ipc_messages::graphics::{FrameHitInfo, GraphicsCommand, GraphicsEvent};
+use ipc_messages::graphics::{CompositionKind, FrameHitInfo, GraphicsCommand, GraphicsEvent};
 use ipc_messages::media::{MediaPipelineId, VideoPaintId};
 use log::{debug, error, info};
 use media::backend::{MediaBackend, MediaBackendEvent, PipelineHandle};
 use verification::TLATracer;
+
+/// The share of the display deadline the composition waits for the top-level
+/// frame: three quarters of the interval the embedder measured to the refresh
+/// it targets. The remaining quarter is the time the composed frame has to
+/// reach the window server before that refresh.
+const COMPOSITION_DEADLINE_NUMERATOR: u64 = 3;
+const COMPOSITION_DEADLINE_DENOMINATOR: u64 = 4;
 
 /// The composed scene for one webview — the final result after compositing
 /// all iframe and video embed sites into the root scene.
@@ -50,6 +58,11 @@ pub struct ComposedScene {
     /// siblings).
     pub animating: bool,
     pub animating_frame_ids: Vec<FrameId>,
+    /// Which composition path produced this scene (a top-level content
+    /// frame, the render cycle's deadline, or an out-of-band layer). The UA
+    /// traces the render-cycle action it implements and uses it to decide
+    /// whether the composition settles the content update.
+    pub composition_kind: CompositionKind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -66,6 +79,10 @@ pub struct VisibleFrameViewport {
 /// deferred scene).
 struct WebviewState<R> {
     compositor: Compositor,
+    /// The user agent's current render cycle for this webview, set by
+    /// `RenderStarted`. A `PaintFrame` carrying an older cycle belongs to a
+    /// superseded cycle and is dropped.
+    cycle: u64,
     renderer: R,
     /// The current render cycle's composition deadline, armed by
     /// `RenderStarted` and cleared when the top-level frame arrives or the
@@ -73,13 +90,14 @@ struct WebviewState<R> {
     /// composited against the last committed root at the deadline, so a
     /// worker's OffscreenCanvas keeps animating while the content event loop
     /// is blocked.
-    cycle_deadline: Option<std::time::Instant>,
+    cycle_deadline: Option<Instant>,
 }
 
 impl<R: SurfaceRenderer> WebviewState<R> {
     fn new(channels: ReadbackChannels<R::RenderData>) -> Self {
         Self {
             compositor: Compositor::default(),
+            cycle: 0,
             renderer: R::new(channels).unwrap_or_else(|error| panic!("renderer init: {error}")),
             cycle_deadline: None,
         }
@@ -149,7 +167,7 @@ pub fn run_graphics_extension(
 /// the generic `R` (see graphics/README.md); the loop interacts with it only
 /// through the `SurfaceRenderer` trait.
 pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
-    cmd_rx: crossbeam_channel::Receiver<ipc::IpcIncoming<GraphicsCommand>>,
+    cmd_rx: Receiver<ipc::IpcIncoming<GraphicsCommand>>,
     graphics_event_tx: ipc::IpcSender<GraphicsEvent>,
     media_backend: Option<B>,
 ) {
@@ -187,31 +205,7 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
         })
         .expect("failed to spawn gpu poll thread");
 
-    // Drain the first message to check for SetTraceSender.
-    let mut tla_tracer = TLATracer::new("Navigation", "formal-web:graphics", None);
     let mut finished_videos: HashSet<VideoPaintId> = HashSet::new();
-    if let Ok(incoming) = cmd_rx.try_recv() {
-        if let GraphicsCommand::SetTraceSender(sender) = incoming.payload {
-            tla_tracer.set_sender(sender);
-        } else {
-            // Not a trace sender; process it as a normal command.
-            handle_command(
-                incoming.payload,
-                &mut webviews,
-                &incoming.shmem_regions,
-                &mut HashMap::new(),
-                &mut HashMap::new(),
-                None::<&mut B>,
-                &mut HashMap::new(),
-                &mut HashMap::new(),
-                &mut HashMap::new(),
-                &mut finished_videos,
-                &mut tla_tracer,
-                &channels,
-                &event_sender,
-            );
-        }
-    }
 
     // Media pipeline state.
     let mut pipelines: HashMap<MediaPipelineId, B::Pipeline> = HashMap::new();
@@ -219,17 +213,15 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
     // Sample tick: dynamically switches between never() (no active pipelines)
     // and tick(8ms) (at least one pipeline needs sampling). This avoids waking
     // the select! loop every 8ms when everything is idle.
-    let mut sample_tick: crossbeam_channel::Receiver<std::time::Instant> =
-        crossbeam_channel::never();
+    let mut sample_tick: Receiver<Instant> = never();
     let mut had_active_pipelines = false;
-    // Composition-deadline tick: never() when no webview has a
-    // `RenderStarted` deadline armed, a short tick while one does. The check
-    // is periodic rather than exactly-on-time because the deadline only
-    // matters when the top-level frame is late; a few milliseconds of slack
-    // is immaterial to the canvas animation it unblocks.
-    let mut deadline_tick: crossbeam_channel::Receiver<std::time::Instant> =
-        crossbeam_channel::never();
-    let mut had_deadlines = false;
+    // Composition-deadline timer: one `after()` at the earliest armed deadline
+    // across webviews, replaced when that instant changes and dropped
+    // (`never()`) when no deadline is armed. `after` cannot be cancelled, so a
+    // composition that stores the top-level frame before its deadline clears
+    // the webview's deadline, which retires the receiver on the next pass.
+    let mut deadline_timer: Receiver<Instant> = never();
+    let mut deadline_timer_at: Option<Instant> = None;
 
     // Reverse mapping from child webview -> (parent webview, content_frame_id).
     // Populated by RegisterChildNavigableHost and used in PaintFrame to remap
@@ -246,6 +238,11 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
     // owning webview's compositor.
     let mut canvas_to_webview: HashMap<CanvasId, WebviewId> = HashMap::new();
 
+    // The RenderingOpportunity tracer. The user agent hands the sender over as
+    // the process's first command, so every composition this process delivers is
+    // traced.
+    let mut tla_tracer = TLATracer::new("RenderingOpportunity", "formal-web:graphics", None);
+
     // Use crossbeam's never() channel when there's no backend so the select! loop
     // has a single uniform structure regardless of whether a backend exists.
     let (mut backend, media_event_rx) = match media_backend {
@@ -253,7 +250,7 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
             let rx = b.event_receiver();
             (Some(b), rx)
         }
-        None => (None, crossbeam_channel::never()),
+        None => (None, never()),
     };
 
     loop {
@@ -262,19 +259,45 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
         // select! loop doesn't wake up at all for sampling.
         let has_active_pipelines = pipelines.values().any(|p| !p.is_done());
         if has_active_pipelines && !had_active_pipelines {
-            sample_tick = tick(std::time::Duration::from_millis(8));
+            sample_tick = tick(Duration::from_millis(8));
             had_active_pipelines = true;
         } else if !has_active_pipelines && had_active_pipelines {
-            sample_tick = crossbeam_channel::never();
+            sample_tick = never();
             had_active_pipelines = false;
         }
-        let has_deadlines = webviews.values().any(|slot| slot.cycle_deadline.is_some());
-        if has_deadlines && !had_deadlines {
-            deadline_tick = tick(std::time::Duration::from_millis(4));
-            had_deadlines = true;
-        } else if !has_deadlines && had_deadlines {
-            deadline_tick = crossbeam_channel::never();
-            had_deadlines = false;
+        // A deadline that expired while another event woke the loop is checked
+        // here: the one-shot below only covers the earliest deadline still in
+        // the future, and an out-of-band layer that becomes dirty after its
+        // webview's deadline has passed (a worker's `CanvasPaint`, a video
+        // frame) must still compose against the committed root.
+        if webviews.values().any(|slot| {
+            slot.cycle_deadline
+                .is_some_and(|deadline| deadline <= Instant::now())
+        }) {
+            compose_expired_deadlines(
+                &mut webviews,
+                &pipeline_webview_map,
+                &finished_videos,
+                &child_webview_to_parent,
+                &event_sender,
+                &mut tla_tracer,
+            );
+        }
+        // Arm one timer for the earliest deadline still ahead of us. A
+        // deadline the timer already fired for is not re-armed (its fire is
+        // what woke the loop), and a composition that cleared its webview's
+        // deadline retires the timer, so `after` is set once per deadline.
+        let next_deadline = webviews
+            .values()
+            .filter_map(|slot| slot.cycle_deadline)
+            .filter(|deadline| *deadline > Instant::now())
+            .min();
+        if next_deadline != deadline_timer_at {
+            deadline_timer_at = next_deadline;
+            deadline_timer = match next_deadline {
+                Some(deadline) => after(deadline.saturating_duration_since(Instant::now())),
+                None => never(),
+            };
         }
 
         select! {
@@ -291,9 +314,9 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
                     &mut canvas_to_webview,
                     &mut image_owners,
                     &mut finished_videos,
-                    &mut tla_tracer,
                     &channels,
                     &event_sender,
+                    &mut tla_tracer,
                 ) {
                     break;
                 }
@@ -322,9 +345,9 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
             }
             recv(render_done_rx) -> done => {
                 let Ok(done) = done else { break };
-                handle_render_done(&mut webviews, &event_sender, &mut tla_tracer, done);
+                handle_render_done(&mut webviews, &event_sender, done, &mut tla_tracer);
             }
-            recv(deadline_tick) -> _ => {
+            recv(deadline_timer) -> _ => {
                 compose_expired_deadlines(
                     &mut webviews,
                     &pipeline_webview_map,
@@ -349,16 +372,13 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
     }
 }
 
-/// The webviews one media pipeline is tied to. `storage` is the webview whose
-/// compositor receives the decoded frames: the root webview of the navigable
-/// that owns the `<video>` element, so a video inside an iframe is composed
-/// into the parent's frame tree. `owner` is the navigable that created the
-/// pipeline (the iframe's own navigable); its content process is where the
-/// pipeline's lifecycle events are reported.
+/// The webview one media pipeline is tied to: the webview whose compositor
+/// receives the decoded frames — the root webview of the navigable that owns
+/// the `<video>` element, so a video inside an iframe is composed into the
+/// parent's frame tree.
 #[derive(Clone, Copy)]
 struct PipelineWebview {
     storage: WebviewId,
-    owner: WebviewId,
     paint_id: VideoPaintId,
 }
 
@@ -393,25 +413,9 @@ fn handle_media_event<R: SurfaceRenderer>(
                 dirty: true,
             };
             if let Some(slot) = webviews.get_mut(&webview_id) {
-                // Store the video frame. It will be included in the next normal
-                // composition (triggered by a content PaintFrame via the standard
-                // render cycle). The compositor's compose_frame already checks
-                // self.video_frames when rendering EmbedSite::Video embed sites.
-                // Never compose independently from the video handler — doing so
-                // creates an orphan composition with no corresponding
-                // UpdateTheRendering, violating the TLA+ pipeline model. A
-                // deferred (pending) composition is completed once its frames
-                // have arrived, which is part of the same render cycle.
                 slot.compositor.update_video_frame(cf);
             }
-            maybe_compose(
-                webviews,
-                webview_id,
-                &expected_videos(pipeline_webview_map, finished_videos),
-                child_webview_to_parent,
-                composed_scene_sender,
-                tla_tracer,
-            );
+            report_out_of_band_layer_change(webviews, webview_id, composed_scene_sender);
         }
         // AVFoundation video frames arrive as GPU pixel buffers and are
         // composited as textures; GStreamer delivers CPU bytes (Frame
@@ -462,30 +466,14 @@ fn handle_media_event<R: SurfaceRenderer>(
                 dirty: true,
             };
             slot.compositor.update_video_frame(cf);
-            maybe_compose(
-                webviews,
-                webview_id,
-                &expected_videos(pipeline_webview_map, finished_videos),
-                child_webview_to_parent,
-                composed_scene_sender,
-                tla_tracer,
-            );
+            report_out_of_band_layer_change(webviews, webview_id, composed_scene_sender);
         }
         MediaBackendEvent::Eos { pipeline_id } => {
             if let Some(pipeline) = pipeline_webview_map.get(&pipeline_id).copied() {
                 // The pipeline will not produce more frames; a pending
-                // composition must not wait on it.
+                // composition must not wait on it. The last video frame stays
+                // in the compositor and continues to render as a static image.
                 finished_videos.insert(pipeline.paint_id);
-                // Keep the last video frame in the compositor so it continues
-                // to render as a static image. The PaintFrame from content will
-                // carry animating=false, so the UA stops noting UI state
-                // updates for video animation.
-                if let Err(send_error) = composed_scene_sender.send(GraphicsEvent::VideoEnded {
-                    webview_id: pipeline.owner,
-                    video_paint_id: pipeline.paint_id,
-                }) {
-                    error!("[graphics] failed to send VideoEnded: {send_error}");
-                }
                 maybe_compose(
                     webviews,
                     pipeline.storage,
@@ -538,11 +526,12 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
     canvas_to_webview: &mut HashMap<CanvasId, WebviewId>,
     image_owners: &mut HashMap<ImageIdentifier, WebviewId>,
     finished_videos: &mut HashSet<VideoPaintId>,
-    tla_tracer: &mut TLATracer,
     channels: &ReadbackChannels<R::RenderData>,
     composed_scene_sender: &ipc::IpcSender<GraphicsEvent>,
+    tla_tracer: &mut TLATracer,
 ) -> bool {
     match cmd {
+        GraphicsCommand::SetTraceSender(sender) => tla_tracer.set_sender(sender),
         GraphicsCommand::RegisterWebview { webview_id } => {
             debug!("[graphics] registering webview {:?}", webview_id);
             webviews
@@ -627,6 +616,7 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
             let viewport_width = frame.viewport_width;
             let viewport_height = frame.viewport_height;
             let frame_id = actual_frame_id;
+            let frame_cycle = frame.cycle;
             let animating = frame.animating;
             let scene_unchanged = frame.scene_unchanged;
             info!(
@@ -639,6 +629,11 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
                 viewport_height,
                 composition.embed_sites.len()
             );
+            // Decode before the cycle check: a document sends each font once,
+            // on the frame that first draws it, and every later frame
+            // references it by id. `decode_frame` is what registers them, so a
+            // frame dropped as superseded still leaves its fonts behind for
+            // the frames the user agent keeps asking for.
             let recorded_scene = match slot.compositor.decode_frame(frame, shmem_regions) {
                 Ok(scene) => scene,
                 Err(error) => {
@@ -646,6 +641,19 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
                     return false;
                 }
             };
+            if frame_cycle < slot.cycle {
+                debug!(
+                    "[render-pipe] dropped frame from superseded cycle webview={} frame_cycle={} current_cycle={}",
+                    webview_id.0, frame_cycle, slot.cycle
+                );
+                verification::tla_log!(
+                    *tla_tracer,
+                    -> "RenderingOpportunity",
+                    "FrameDropped",
+                    webview_id.0
+                );
+                return false;
+            }
             let frame_dirty = slot.compositor.store_frame(
                 frame_id,
                 ContentFrame {
@@ -671,7 +679,16 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
                 // top-level frame references has arrived, so a child frame
                 // racing behind it is still included (never dropped). The
                 // top-level frame arrived: the cycle's deadline is satisfied.
-                slot.compositor.mark_composition_pending();
+                // Traced before the deadline is cleared, so the model learns
+                // the frame arrived at the user agent's behalf.
+                verification::tla_log!(
+                    *tla_tracer,
+                    -> "RenderingOpportunity",
+                    "FrameStored",
+                    webview_id.0
+                );
+                slot.compositor
+                    .mark_composition_pending(CompositionKind::ContentUpdate);
                 slot.cycle_deadline = None;
             } else {
                 // A cross-origin iframe's content changed: note a UI state
@@ -707,18 +724,60 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
                 tla_tracer,
             );
         }
+        GraphicsCommand::ComposeOutOfBand { webview_id } => {
+            // The UA answered a reported out-of-band layer change. Compose
+            // only when such a layer is actually dirty (a frame may have been
+            // presented by an earlier composition), and never in the middle of
+            // a content render cycle: that cycle's frame composes the stored
+            // video frame, so composing here would present the stale root and
+            // then compose again.
+            let should_compose = webviews.get(&webview_id).is_some_and(|slot| {
+                slot.cycle_deadline.is_none() && slot.compositor.has_dirty_out_of_band_layer()
+            });
+            if !should_compose {
+                return false;
+            }
+            if let Some(slot) = webviews.get_mut(&webview_id) {
+                slot.compositor
+                    .mark_composition_pending(CompositionKind::OutOfBand);
+            }
+            maybe_compose(
+                webviews,
+                webview_id,
+                &expected_videos(pipeline_webview_map, finished_videos),
+                child_webview_to_parent,
+                composed_scene_sender,
+                tla_tracer,
+            );
+        }
         GraphicsCommand::RenderStarted {
             webview_id,
             deadline_ms,
+            cycle,
         } => {
             let slot = webviews
                 .entry(webview_id)
                 .or_insert_with(|| WebviewState::new(channels.clone()));
-            slot.cycle_deadline =
-                Some(std::time::Instant::now() + std::time::Duration::from_millis(deadline_ms));
+            if cycle != slot.cycle {
+                // The user agent superseded the previous cycle (a missed
+                // frame): whatever it still had pending belongs to the
+                // abandoned cycle.
+                slot.compositor.abandon_cycle();
+                slot.cycle = cycle;
+            }
+            // Compose three quarters of the way to the display refresh the
+            // embedder targets: the remaining quarter is the time the composed
+            // frame has to reach the window server before that refresh.
+            let composition_deadline = Duration::from_millis(
+                deadline_ms.saturating_mul(COMPOSITION_DEADLINE_NUMERATOR)
+                    / COMPOSITION_DEADLINE_DENOMINATOR,
+            );
+            slot.cycle_deadline = Some(Instant::now() + composition_deadline);
             debug!(
-                "[render-pipe] Graphics render started webview={} deadline_ms={}",
-                webview_id.0, deadline_ms
+                "[render-pipe] Graphics render started webview={} display_deadline_ms={} composition_deadline_ms={}",
+                webview_id.0,
+                deadline_ms,
+                composition_deadline.as_millis()
             );
         }
         GraphicsCommand::RegisterImage {
@@ -812,6 +871,23 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
             );
             canvas_to_webview.insert(canvas_id, webview_id);
         }
+        GraphicsCommand::UnregisterCanvas { canvas_id } => {
+            let Some(webview_id) = canvas_to_webview.remove(&canvas_id) else {
+                return false;
+            };
+            let Some(slot) = webviews.get_mut(&webview_id) else {
+                return false;
+            };
+            info!(
+                "[render-pipe] Graphics unregister canvas canvas={:?} webview={:?}",
+                canvas_id, webview_id
+            );
+            slot.compositor.remove_canvas_frame(canvas_id);
+            // Release the layer's shared surfaces now: no composition will
+            // render it again, and nothing else would trigger the sweep.
+            slot.renderer
+                .retain_layers(&slot.compositor.live_layer_ids());
+        }
         GraphicsCommand::CanvasPaint {
             canvas_id,
             width,
@@ -904,7 +980,6 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
                 pipeline_id,
                 PipelineWebview {
                     storage: root_webview_owner(child_webview_to_parent, webview_id),
-                    owner: webview_id,
                     paint_id: video_paint_id,
                 },
             );
@@ -962,9 +1037,6 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
             }
         }
 
-        GraphicsCommand::SetTraceSender(sender) => {
-            tla_tracer.set_sender(sender);
-        }
         GraphicsCommand::Shutdown => return true,
     }
     false
@@ -1015,7 +1087,7 @@ fn compose_expired_deadlines<R: SurfaceRenderer>(
     composed_scene_sender: &ipc::IpcSender<GraphicsEvent>,
     tla_tracer: &mut TLATracer,
 ) {
-    let now = std::time::Instant::now();
+    let now = Instant::now();
     let expired: Vec<WebviewId> = webviews
         .iter()
         .filter(|(_, slot)| slot.cycle_deadline.is_some_and(|deadline| deadline <= now))
@@ -1037,7 +1109,8 @@ fn compose_expired_deadlines<R: SurfaceRenderer>(
         }
         if let Some(slot) = webviews.get_mut(&webview_id) {
             slot.cycle_deadline = None;
-            slot.compositor.mark_composition_pending();
+            slot.compositor
+                .mark_composition_pending(CompositionKind::Deadline);
         }
         maybe_compose(
             webviews,
@@ -1046,6 +1119,33 @@ fn compose_expired_deadlines<R: SurfaceRenderer>(
             child_webview_to_parent,
             composed_scene_sender,
             tla_tracer,
+        );
+    }
+}
+
+/// Report a stored video frame to the user agent, which answers with
+/// `ComposeOutOfBand`: the video's layer changed without a content update, so
+/// the composition that presents it is the UA's decision, like every other
+/// composition in the render cycle.
+fn report_out_of_band_layer_change<R: SurfaceRenderer>(
+    webviews: &HashMap<WebviewId, WebviewState<R>>,
+    webview_id: WebviewId,
+    composed_scene_sender: &ipc::IpcSender<GraphicsEvent>,
+) {
+    // Nothing to present before the first top-level frame commits: the
+    // arriving composition includes the stored frame.
+    if webviews
+        .get(&webview_id)
+        .is_none_or(|slot| slot.compositor.top_level_frame_id().is_none())
+    {
+        return;
+    }
+    if let Err(send_error) =
+        composed_scene_sender.send(GraphicsEvent::OutOfBandLayerChanged { webview_id })
+    {
+        error!(
+            "[graphics] failed to report an out-of-band layer change for {:?}: {send_error}",
+            webview_id
         );
     }
 }
@@ -1099,7 +1199,10 @@ fn maybe_compose<R: SurfaceRenderer>(
     // top-level frame. Content knows what's animating (video, CSS animations)
     // and sets this; the composed scene reports it so the UA keeps noting UI
     // state updates. Graphics just passes it through.
-    match slot.renderer.submit_layers(composed, composed_scene_sender) {
+    match slot
+        .renderer
+        .submit_layers(composed, composed_scene_sender, tla_tracer)
+    {
         Ok(outcome) => {
             slot.compositor.mark_layers_delivered(&outcome.delivered);
             // Release surfaces for layers the compositor no longer holds
@@ -1108,19 +1211,6 @@ fn maybe_compose<R: SurfaceRenderer>(
             // offscreen keep their buffers.
             let live = slot.compositor.live_layer_ids();
             slot.renderer.retain_layers(&live);
-            if !outcome.gpu_work {
-                // No layer surface was rendered, so the renderer delivered
-                // the frame itself (a surface-less PixelFrameReady for a
-                // composition whose only delivered layers were presented
-                // directly from their own surfaces) instead of going through
-                // `handle_render_done`. Trace the render as computed here.
-                verification::tla_log!(
-                    *tla_tracer,
-                    -> "RenderingOpportunity",
-                    "GraphicsComputed",
-                    webview_id.0
-                );
-            }
         }
         Err(error) => {
             error!(
@@ -1162,15 +1252,14 @@ fn build_child_data(
     (viewports, frame_to_webview)
 }
 
-/// Deliver a completed frame: look up the webview's renderer, hand the
+/// Deliver a completed frame: look up the webview's renderer and hand the
 /// backend's `RenderData` to its `handle_render_done` (which marks the ring
-/// buffer pending and sends `PixelFrameReady`), then emit the trace events
-/// the delivery reports.
+/// buffer pending and sends `PixelFrameReady`).
 fn handle_render_done<R: SurfaceRenderer>(
     webviews: &mut HashMap<WebviewId, WebviewState<R>>,
     sender: &ipc::IpcSender<GraphicsEvent>,
-    tla_tracer: &mut TLATracer,
     done: R::RenderData,
+    tla_tracer: &mut TLATracer,
 ) {
     let webview_id = R::render_done_webview_id(&done);
     let Some(slot) = webviews.get_mut(&webview_id) else {
@@ -1180,16 +1269,5 @@ fn handle_render_done<R: SurfaceRenderer>(
         );
         return;
     };
-    let delivery = slot.renderer.handle_render_done(done, sender);
-    // The graphical output for the webview is done: the pixels were sent.
-    // Traced with the webview's navigable id so it matches the per-frame
-    // RenderingOpportunity model (the webview id is the root navigable).
-    if delivery.graphics_computed {
-        verification::tla_log!(
-            *tla_tracer,
-            -> "RenderingOpportunity",
-            "GraphicsComputed",
-            webview_id.0
-        );
-    }
+    slot.renderer.handle_render_done(done, sender, tla_tracer);
 }

@@ -262,8 +262,18 @@ moved).
 
 An animating document also resolves every cycle: blitz reports CSS animation
 damage only when the resolve pass runs, and it does not request a redraw per
-animation tick. Painting still depends on the pass reporting a change, so a
-video-driven cycle reuses the document's scene instead of repainting it.
+animation tick. Painting still depends on the pass reporting a change.
+
+A playing video is not an animating document: its frames are decoded in the
+graphics process, which composes the video's layer without a content render
+cycle (`graphics/README.md`, "Video frames drive their own composition"). A page
+whose only moving content is a video therefore runs no render cycle at all
+between input events, so scrolling during playback competes with nothing.
+
+Media pipelines are owned by the document whose media elements created them:
+`destroy_document` sends `MediaDestroy` for every pipeline recorded on the
+document, so navigating away stops the outgoing page's video instead of leaving
+its frames to compose against the incoming document.
 
 Animation frame callbacks are not a repaint reason by themselves. A callback
 that mutates the document marks it as any other mutation does, and the change is

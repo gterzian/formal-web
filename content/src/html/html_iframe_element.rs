@@ -371,6 +371,7 @@ fn create_a_new_child_navigable(
     process.documents.insert(
         new_document_id,
         ContentDocument {
+            render_cycle: 0,
             traversable_id: content_navigable,
             parent_traversable_id: Some(parent_navigable),
             top_level_traversable_id,
