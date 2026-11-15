@@ -304,11 +304,20 @@ with the stored frame (`ComposeOutOfBand` in `lib.rs`). The video's own frame
 arrivals pace those presentations.
 
 A `PaintFrame` carries the user agent's render cycle. The user agent numbers its
-cycles and starts a new one when the previous frame arrives, or when it misses
-that frame; a frame whose cycle is older than the webview's current one belongs
-to a superseded cycle, so the process drops it (traced as `FrameDropped`) instead
-of storing and composing it, and the abandoned cycle's pending composition is
-dropped when the new cycle's `RenderStarted` arrives.
+cycles, starts a new one when a composition presents the top-level frame, and
+misses a cycle whose update stays outstanding past its timeout; a frame whose
+cycle is older than the webview's current one belongs to a superseded cycle, so
+the process drops it (traced as `FrameDropped`) instead of storing and composing
+it, and the abandoned cycle's pending composition is dropped when the new
+cycle's `RenderStarted` arrives.
+
+A dropped frame is decoded before the drop: decoding is what registers the
+frame's fonts in the webview's transport state, and a document sends each font
+only on the frame that first draws it (every later frame names it by id). A
+drop that skipped registration would leave the following frames asking for a
+font this process never received, which `FontTransportReceiver::resolve_font`
+reports by asserting on the unknown font id rather than drawing with an empty
+font.
 
 Two gates keep that path from doing redundant work:
 
@@ -378,17 +387,26 @@ update").
   batching is one composition per top-level frame.
 - **A `RenderStarted` deadline composes without a late top-level frame.**
   The UA sends `GraphicsCommand::RenderStarted { webview_id, deadline_ms }`
-  (16 ms, a 60 Hz frame) when it queues a top-level update-the-rendering
-  cycle. Graphics arms a per-webview deadline. When the top-level `PaintFrame`
-  arrives, the deadline is cleared and composition proceeds normally. When it
-  is late or never arrives — a content event loop blocked in script — the
-  deadline fires and graphics composes against the last committed root, so a
-  worker animation keeps running while the window's main thread is busy. The
+  when it queues a top-level update-the-rendering cycle, with the display
+  deadline the embedder measured (the AppKit display link reports the interval
+  to the refresh it targets; `FRAME_DEADLINE_MS`, a 60 Hz frame, stands in for
+  the winit backends, which have no display link). Graphics arms a one-shot
+  timer at three quarters of that interval: the remaining quarter is what the
+  composed frame needs to reach the window server before the refresh. When the
+  top-level `PaintFrame` arrives, the deadline is cleared and composition
+  proceeds normally, which retires the timer. When it is late or never
+  arrives — a content event loop blocked in script — the timer fires and
+  graphics composes against the last committed root, so a worker animation
+  keeps running while the window's main thread is busy. The
   deadline only fires when a root frame has been committed and an out-of-band
   layer (a worker's `OffscreenCanvas` commit or a video frame) actually
   changed; those are committed independently of the top-level content render,
   while a dirty child frame rides the normal render cycle and is composed with
-  the top-level frame as before. A later top-level frame composes again, so a
+  the top-level frame as before. A layer that becomes dirty after its
+  webview's deadline has already fired is composed immediately, because the
+  loop checks expired deadlines whenever another event wakes it: the one-shot
+  timer covers only the earliest deadline still ahead. A later top-level frame
+  composes again, so a
   cycle whose top-level frame was late can produce two compositions.
 - **The composed scene aggregates the animating flag across the composed
   frames.** `PaintFrame.animating` is recorded per stored frame; a

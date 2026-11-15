@@ -6,10 +6,11 @@
 //! view whose layer `contents` is set to the shared IOSurface from the
 //! graphics process (the zero-copy blit). The chrome is native AppKit
 //! controls: a tab strip of rounded tab cells and an editable `NSTextField`
-//! address bar. A `CVDisplayLink` paces animated content: each tick
+//! address bar. A `CADisplayLink` paces animated content: each tick
 //! requests the next frame via `WebviewProvider::frame_needed` at the
-//! display refresh rate, and the link runs only while the composed scene is
-//! animating.
+//! display refresh rate, reports the interval to the refresh it targets as
+//! the frame's display deadline, and the link runs only while the composed
+//! scene is animating.
 
 mod automation_host;
 
@@ -41,20 +42,20 @@ use objc2_app_kit::{
 };
 use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSFontWeightMedium};
 use objc2_core_foundation::CFRetained;
-use objc2_core_video::{CVDisplayLink, CVOptionFlags, CVReturn, CVTimeStamp, kCVReturnSuccess};
 use objc2_foundation::NSInteger;
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSDictionary, NSNotification, NSObject, NSObjectProtocol, NSPoint,
-    NSRange, NSRect, NSSet, NSSize, NSString, ns_string,
+    NSRange, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSet, NSSize, NSString, ns_string,
 };
 use objc2_io_surface::IOSurfaceRef;
-use objc2_quartz_core::{CAAutoresizingMask, CALayer};
+use objc2_quartz_core::{CAAutoresizingMask, CACurrentMediaTime, CADisplayLink, CALayer};
 use std::cell::UnsafeCell;
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use uuid::Uuid;
 use verification::TraceSender;
 use webview::{
@@ -264,6 +265,16 @@ define_class!(
     unsafe impl NSTextFieldDelegate for Delegate {}
 
     impl Delegate {
+        #[unsafe(method(displayLinkFired:))]
+        fn display_link_fired(&self, display_link: &CADisplayLink) {
+            // SAFETY: the delegate's ivars hold the app pointer that
+            // `Delegate::new` installed (a live `MacApp` for the delegate's
+            // lifetime); a display link added to the main run loop fires on the
+            // main thread, which is where the app state lives.
+            let app = unsafe { &mut *(*self.ivars().app.get()) };
+            app.display_link_tick(Some(display_deadline(display_link)));
+        }
+
         #[unsafe(method(quit:))]
         fn quit(&self, _sender: Option<&AnyObject>) {
             // SAFETY: the delegate's ivars hold the app pointer that
@@ -466,33 +477,17 @@ impl MainThreadHandle {
 
 // ── Display link ───────────────────────────────────────────────────────────
 
-/// The CVDisplayLink context, kept alive for the app's lifetime and passed
-/// to the C callback as user data.
-struct DisplayLinkContext {
-    handle: MainThreadHandle,
+/// The interval from now until the refresh the display link's next frame
+/// targets: the time a frame composed now has to reach the window server
+/// before that refresh.
+fn display_deadline(display_link: &CADisplayLink) -> Duration {
+    display_deadline_between(display_link.targetTimestamp(), CACurrentMediaTime())
 }
 
-/// # Safety
-///
-/// CoreVideo calls this on the display-link thread with the context pointer
-/// installed at creation, which the app keeps alive with the link.
-unsafe extern "C-unwind" fn display_link_callback(
-    _link: NonNull<CVDisplayLink>,
-    _now: NonNull<CVTimeStamp>,
-    _output: NonNull<CVTimeStamp>,
-    _flags: CVOptionFlags,
-    _flags_out: NonNull<CVOptionFlags>,
-    context: *mut c_void,
-) -> CVReturn {
-    // SAFETY: the display link was created with this context as its user
-    // data, and it lives until the link is released (the app owns both).
-    let context = unsafe { &*context.cast::<DisplayLinkContext>() };
-    let handle = context.handle;
-    dispatch::Queue::main().exec_async(move || {
-        let app = unsafe { &mut *handle.app_ptr() };
-        app.display_link_tick();
-    });
-    kCVReturnSuccess
+/// The interval from `now` to the display the `refresh` timestamp names, in
+/// the same clock (CoreAnimation's). A refresh already past leaves no time.
+fn display_deadline_between(refresh: f64, now: f64) -> Duration {
+    Duration::from_secs_f64((refresh - now).max(0.0))
 }
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -636,8 +631,7 @@ pub(crate) struct MacApp {
     /// so the intermediate about:blank document is never visible.
     pending_script_webviews: HashSet<WebviewId>,
     provider: Option<WebviewProvider>,
-    display_link: Option<CFRetained<CVDisplayLink>>,
-    display_link_context: Option<Box<DisplayLinkContext>>,
+    display_link: Option<Retained<CADisplayLink>>,
     display_link_running: bool,
     event_monitor: Option<Retained<AnyObject>>,
     automation: AutomationController,
@@ -668,7 +662,6 @@ impl MacApp {
             pending_script_webviews: HashSet::new(),
             provider: None,
             display_link: None,
-            display_link_context: None,
             display_link_running: false,
             event_monitor: None,
             automation: AutomationController::default(),
@@ -700,7 +693,7 @@ impl MacApp {
 
         app.install_event_monitor()?;
         app.install_main_menu();
-        app.create_display_link()?;
+        app.create_display_link();
 
         let title = window_title.unwrap_or_else(|| String::from("formal-web"));
         let destination = startup_destination_url(startup_url.as_deref())
@@ -751,7 +744,7 @@ impl MacApp {
         }
         self.exiting = true;
         info!("[mac-embedder] exiting");
-        self.stop_display_link();
+        self.invalidate_display_link();
         if let Some(monitor) = self.event_monitor.take() {
             // SAFETY: the monitor object is the one returned by the
             // addLocalMonitor call.
@@ -765,32 +758,30 @@ impl MacApp {
 
     // ── Display link ───────────────────────────────────────────────────────
 
-    fn create_display_link(&mut self) -> Result<(), String> {
-        let mut link_ptr: *mut CVDisplayLink = std::ptr::null_mut();
-        #[allow(deprecated)]
-        // SAFETY: `link_ptr` is a live local out-parameter; the call writes a
-        // newly created display link into it and returns the status.
-        let ret =
-            unsafe { CVDisplayLink::create_with_active_cg_displays(NonNull::from(&mut link_ptr)) };
-        if ret != kCVReturnSuccess || link_ptr.is_null() {
-            return Err(format!("failed to create CVDisplayLink (CVReturn {ret})"));
+    fn create_display_link(&mut self) {
+        // The delegate is the display link's target: it outlives the link (the
+        // app retains it) and its ivars hold the app pointer the callback
+        // runs against.
+        // SAFETY: `displayLinkFired:` is the selector of the delegate's
+        // `display_link_fired` method, and the delegate stays alive while the
+        // link retains it.
+        let link = unsafe {
+            CADisplayLink::displayLinkWithTarget_selector(
+                self.delegate.as_ref(),
+                sel!(displayLinkFired:),
+            )
+        };
+        // The link fires from the main run loop, which is where the app state
+        // lives; the common modes keep it running while a menu tracks or a
+        // window resizes. It is paused before it enters the run loop, so the
+        // first tick only arrives from `start_display_link`.
+        link.setPaused(true);
+        // SAFETY: the main run loop and the common-modes constant outlive the
+        // app.
+        unsafe {
+            link.addToRunLoop_forMode(&NSRunLoop::mainRunLoop(), NSRunLoopCommonModes);
         }
-        // SAFETY: the display link was just created with a +1 retain.
-        let link = unsafe { CFRetained::from_raw(NonNull::new(link_ptr).unwrap()) };
-        let context = Box::new(DisplayLinkContext {
-            handle: self.handle.expect("app handle must be installed"),
-        });
-        let context_ptr: *mut c_void = &*context as *const DisplayLinkContext as *mut c_void;
-        #[allow(deprecated)]
-        let ret = unsafe { link.set_output_callback(Some(display_link_callback), context_ptr) };
-        if ret != kCVReturnSuccess {
-            return Err(format!(
-                "failed to set CVDisplayLink output callback (CVReturn {ret})"
-            ));
-        }
-        self.display_link_context = Some(context);
         self.display_link = Some(link);
-        Ok(())
     }
 
     fn start_display_link(&mut self) {
@@ -805,12 +796,9 @@ impl MacApp {
             return;
         }
         if let Some(link) = &self.display_link {
-            #[allow(deprecated)]
-            let started = link.start() == kCVReturnSuccess;
-            if started {
-                self.display_link_running = true;
-                info!("[mac-embedder] display link started");
-            }
+            link.setPaused(false);
+            self.display_link_running = true;
+            info!("[mac-embedder] display link started");
         }
     }
 
@@ -852,14 +840,23 @@ impl MacApp {
             return;
         }
         if let Some(link) = &self.display_link {
-            #[allow(deprecated)]
-            link.stop();
+            link.setPaused(true);
         }
         self.display_link_running = false;
         info!("[mac-embedder] display link stopped");
     }
 
-    fn display_link_tick(&mut self) {
+    /// Take the display link out of the run loop: the app is exiting, so no
+    /// further tick may reach `display_link_tick`.
+    fn invalidate_display_link(&mut self) {
+        self.display_link_running = false;
+        if let Some(link) = self.display_link.take() {
+            link.invalidate();
+            info!("[mac-embedder] display link invalidated");
+        }
+    }
+
+    fn display_link_tick(&mut self, display_deadline: Option<Duration>) {
         if self.exiting {
             return;
         }
@@ -869,7 +866,7 @@ impl MacApp {
         if let Some(window_id) = self.active_window_id
             && let Some(webview_id) = self.windows.get(&window_id).and_then(|w| w.active_tab)
             && let Some(provider) = &self.provider
-            && let Err(error) = provider.frame_needed(webview_id)
+            && let Err(error) = provider.frame_needed(webview_id, display_deadline)
         {
             error!("[mac-embedder] frame needed: {error}");
         }
@@ -2249,7 +2246,7 @@ impl MacApp {
         self.refresh_chrome(window_id);
         self.update_provider_viewport(window_id);
         if let Some(provider) = self.provider.as_ref() {
-            let _ = provider.frame_needed(webview_id);
+            let _ = provider.frame_needed(webview_id, None);
         }
         // The display link follows the visible tab's stored surface: an
         // animating tab (a playing video) keeps it running, a static tab
@@ -2421,7 +2418,7 @@ impl MacApp {
             }
             if let Some(provider) = self.provider.as_ref()
                 && let Some(active) = active
-                && let Err(error) = provider.frame_needed(active)
+                && let Err(error) = provider.frame_needed(active, None)
             {
                 error!("[mac-embedder] frame needed: {error}");
             }
@@ -2712,7 +2709,7 @@ impl MacApp {
             let _ = provider.set_default_viewport(Some(viewport));
             if let Some(webview_id) = webview_id {
                 let _ = provider.set_traversable_viewport(webview_id, viewport, 0.0, 0.0);
-                let _ = provider.frame_needed(webview_id);
+                let _ = provider.frame_needed(webview_id, None);
             }
         }
     }
@@ -2733,7 +2730,7 @@ impl MacApp {
             && let Some(webview_id) = webview_id
         {
             let _ = provider.set_traversable_viewport(webview_id, viewport, 0.0, 0.0);
-            let _ = provider.frame_needed(webview_id);
+            let _ = provider.frame_needed(webview_id, None);
         }
     }
 
@@ -2819,7 +2816,7 @@ impl MacApp {
 
     fn frame_needed(&self, webview_id: WebviewId) {
         if let Some(provider) = &self.provider
-            && let Err(error) = provider.frame_needed(webview_id)
+            && let Err(error) = provider.frame_needed(webview_id, None)
         {
             error!("[mac-embedder] frame needed: {error}");
         }
@@ -3586,4 +3583,20 @@ pub fn run_windowed_app(
     let mtm = MainThreadMarker::new()
         .ok_or_else(|| String::from("the macOS embedder must run on the main thread"))?;
     MacApp::run(mtm, trace_sender, startup_url, window_title, cdp_port)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::display_deadline_between;
+
+    #[test]
+    fn display_deadline_measures_the_time_to_the_refresh() {
+        // CoreAnimation's clock is in seconds: a refresh 16 ms ahead.
+        assert!((display_deadline_between(0.516, 0.5).as_secs_f64() - 0.016).abs() < 1e-9);
+    }
+
+    #[test]
+    fn display_deadline_is_zero_for_a_refresh_already_past() {
+        assert_eq!(display_deadline_between(0.5, 16.0), super::Duration::ZERO);
+    }
 }

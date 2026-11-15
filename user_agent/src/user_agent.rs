@@ -26,6 +26,14 @@ use log::{debug, error, info, trace};
 /// `RenderStarted`, assuming a 60 Hz display: how long a rendering cycle's
 /// top-level frame has to arrive before graphics composes without it.
 const FRAME_DEADLINE_MS: u64 = 16;
+
+/// How long a rendering cycle may wait for its top-level frame before the user
+/// agent treats the frame as missed and starts the next cycle. A frame slower
+/// than one display refresh is late, not lost, and the user agent keeps waiting
+/// for it; this timeout is the backstop for a cycle whose frame never arrives
+/// (a content event loop blocked with no out-of-band layer for graphics to
+/// compose).
+const MISSED_FRAME_TIMEOUT_MS: u64 = 1000;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -627,8 +635,9 @@ pub struct DocumentState {
 }
 
 /// One top-level navigable's render cycle: the number the user agent stamps on
-/// the updates it queues for it, and when the current cycle started (the
-/// deadline graphics was given, after which a frame is missed).
+/// the updates it queues for it, and when the current wait for that cycle's
+/// frame began (each `RenderStarted` starts one, and the composition that
+/// settles the update ends it).
 #[derive(Clone, Copy)]
 pub struct RenderCycle {
     pub cycle: u64,
@@ -1050,9 +1059,12 @@ pub enum UserAgentCommand {
     },
     /// The embedder is about to paint a frame: the UA notes a rendering
     /// opportunity and queues update the rendering when a UI state update is
-    /// pending.
+    /// pending. `display_deadline` is the interval the embedder measured from
+    /// this paint to the display refresh it targets (a display link reports
+    /// it); it becomes the graphics process's composition deadline.
     RenderingOpportunity {
         webview_id: WebviewId,
+        display_deadline: Option<Duration>,
     },
     DispatchEventFor {
         traversable_id: NavigableId,
@@ -1271,9 +1283,19 @@ impl UserAgent {
     /// The embedder is about to paint a frame; the UA notes a
     /// <https://html.spec.whatwg.org/multipage/webappapis.html#rendering-opportunity>
     /// and queues update the rendering when a UI state update is pending.
-    pub fn frame_needed(&self, webview_id: WebviewId) -> Result<(), String> {
+    /// `display_deadline` is the interval from this paint to the display
+    /// refresh the embedder targets, as its display link reports it; `None`
+    /// when the embedder has no display link.
+    pub fn frame_needed(
+        &self,
+        webview_id: WebviewId,
+        display_deadline: Option<Duration>,
+    ) -> Result<(), String> {
         self.command_sender
-            .send(UserAgentCommand::RenderingOpportunity { webview_id })
+            .send(UserAgentCommand::RenderingOpportunity {
+                webview_id,
+                display_deadline,
+            })
             .map_err(|error| format!("failed to forward frame needed: {error}"))
     }
 
@@ -1619,6 +1641,12 @@ struct UserAgentWorker {
     /// is queued only when there is a rendering opportunity AND a UI state
     /// update is pending.
     rendering_opportunities: HashSet<NavigableId>,
+    /// The interval from the embedder's latest rendering opportunity to the
+    /// display refresh it targets, per top-level navigable, measured by the
+    /// embedder's display link. Sent to the graphics process with
+    /// `RenderStarted` as its composition deadline; `FRAME_DEADLINE_MS` stands
+    /// in for an embedder that has no display link.
+    display_deadlines: HashMap<NavigableId, Duration>,
     /// Dedicated workers with a pending animation frame request, grouped by
     /// the navigable whose rendering cycle runs their callbacks (the
     /// traversable of the worker's owner document, resolved through the
@@ -1713,6 +1741,7 @@ impl UserAgentWorker {
             ),
             queued_ui_state_updates: HashMap::new(),
             rendering_opportunities: HashSet::new(),
+            display_deadlines: HashMap::new(),
             pending_worker_animation_frames: HashMap::new(),
             trace_sender,
             next_automation_request_id: 1,
@@ -1852,8 +1881,11 @@ impl UserAgentWorker {
             } => {
                 self.handle_set_traversable_viewport(traversable_id, snapshot, offset_x, offset_y);
             }
-            UserAgentCommand::RenderingOpportunity { webview_id } => {
-                self.note_rendering_opportunity(webview_id);
+            UserAgentCommand::RenderingOpportunity {
+                webview_id,
+                display_deadline,
+            } => {
+                self.note_rendering_opportunity(webview_id, display_deadline);
             }
             UserAgentCommand::SendUiEvent {
                 webview_id,
@@ -4784,19 +4816,27 @@ impl UserAgentWorker {
     }
 
     /// <https://html.spec.whatwg.org/multipage/webappapis.html#rendering-opportunity>
-    fn note_rendering_opportunity(&mut self, webview_id: WebviewId) {
+    fn note_rendering_opportunity(
+        &mut self,
+        webview_id: WebviewId,
+        display_deadline: Option<Duration>,
+    ) {
         let navigable_id = webview_id.0;
-        // The frame the previous cycle asked content for is later than the
-        // deadline graphics was given: the frame is missed. The user agent stops
-        // waiting for it, drops the cycle, and starts the next one from this
-        // request; the abandoned cycle's frames carry the older cycle number and
-        // are dropped by the graphics process.
+        if let Some(deadline) = display_deadline {
+            self.display_deadlines.insert(navigable_id, deadline);
+        }
+        // A cycle whose frame is still outstanding after a full second is
+        // stuck, not slow: content never produced the frame (its event loop is
+        // blocked and no out-of-band layer changed, or the update never
+        // reached it). The user agent stops waiting for it, drops the cycle,
+        // and starts the next one from this paint; the abandoned cycle's frames
+        // carry the older cycle number and are dropped by the graphics process.
         let missed = self.render_cycles.get(&navigable_id).is_some_and(|render| {
-            render.started.elapsed() > Duration::from_millis(FRAME_DEADLINE_MS)
+            render.started.elapsed() > Duration::from_millis(MISSED_FRAME_TIMEOUT_MS)
         }) && self.pending_update_the_rendering.contains(&navigable_id);
         if missed {
             error!(
-                "[render-pipe] missed frame navigable={navigable_id}: no frame for the cycle before the next paint",
+                "[render-pipe] missed frame navigable={navigable_id}: no frame for the cycle within {MISSED_FRAME_TIMEOUT_MS}ms",
             );
             verification::tla_log!(
                 self.tla_tracer,
@@ -4812,7 +4852,6 @@ impl UserAgentWorker {
             }
             if let Some(render) = self.render_cycles.get_mut(&navigable_id) {
                 render.cycle += 1;
-                render.started = Instant::now();
             }
         }
         verification::tla_log!(
@@ -5224,6 +5263,18 @@ impl UserAgentWorker {
         self.queue_update_the_rendering(navigable_id);
     }
 
+    /// The deadline, in milliseconds, the user agent gives the graphics
+    /// process for the top-level frame of `navigable_id`: the display deadline
+    /// the embedder measured at its latest rendering opportunity, or
+    /// `FRAME_DEADLINE_MS` for an embedder without a display link.
+    fn display_deadline_ms(&self, navigable_id: NavigableId) -> u64 {
+        self.display_deadlines
+            .get(&navigable_id)
+            .map_or(FRAME_DEADLINE_MS, |deadline| {
+                deadline.as_millis().clamp(1, u128::from(u64::MAX)) as u64
+            })
+    }
+
     /// <https://html.spec.whatwg.org/multipage/webappapis.html#update-the-rendering>
     fn queue_update_the_rendering(&mut self, navigable_id: NavigableId) {
         if self.pending_update_the_rendering.contains(&navigable_id) {
@@ -5327,28 +5378,32 @@ impl UserAgentWorker {
                     .get(&top)
                     .map_or(0, |render| render.cycle)
             });
+        // The top-level navigable's own queueing is what arms a cycle: its
+        // `RenderStarted` is the moment the user agent starts waiting for the
+        // cycle's frame, which the missed-frame timeout measures from. A child
+        // navigable's update only propagates here when the top-level has
+        // nothing in flight, so the propagated queueing is the top-level's own
+        // wait as well.
         if let Some(top_level_traversable_id) = self.state.top_level_traversable_id(navigable_id)
             && top_level_traversable_id == navigable_id
-            && let Some(graphics_sender) = &self.graphics_extension_sender
-            && let Err(error) = graphics_sender.send(GraphicsCommand::RenderStarted {
-                webview_id: WebviewId(navigable_id),
-                deadline_ms: FRAME_DEADLINE_MS,
-                cycle,
-            })
         {
-            error!("[render-pipe] failed to send render-started to graphics: {error}");
+            self.render_cycles.insert(
+                navigable_id,
+                RenderCycle {
+                    cycle,
+                    started: Instant::now(),
+                },
+            );
+            if let Some(graphics_sender) = &self.graphics_extension_sender
+                && let Err(error) = graphics_sender.send(GraphicsCommand::RenderStarted {
+                    webview_id: WebviewId(navigable_id),
+                    deadline_ms: self.display_deadline_ms(navigable_id),
+                    cycle,
+                })
+            {
+                error!("[render-pipe] failed to send render-started to graphics: {error}");
+            }
         }
-        self.render_cycles
-            .entry(
-                self.state
-                    .top_level_traversable_id(navigable_id)
-                    .unwrap_or(navigable_id),
-            )
-            .or_insert_with(|| RenderCycle {
-                cycle,
-                started: Instant::now(),
-            })
-            .started = Instant::now();
 
         let command = ContentCommand::UpdateTheRendering {
             traversable_id: navigable_id,
@@ -5828,7 +5883,7 @@ impl UserAgentWorker {
         &mut self,
         incoming: &mut ipc::IpcIncoming<ipc_messages::graphics::GraphicsEvent>,
     ) {
-        use ipc_messages::graphics::GraphicsEvent;
+        use ipc_messages::graphics::{CompositionKind, GraphicsEvent};
         match &incoming.payload {
             GraphicsEvent::PixelFrameReady {
                 webview_id,
@@ -5899,13 +5954,19 @@ impl UserAgentWorker {
                 // second update while the first is still in flight.
                 let completed_pending_update = composition_kind.settles_content_update()
                     && self.pending_update_the_rendering.remove(&webview_id.0);
-                if composition_kind.settles_content_update()
+                // Only a composition that presents the cycle's own top-level
+                // frame ends the cycle and moves to the next number: that is
+                // the point where a newer content state exists and the frames
+                // still in flight are older than it. A deadline composition
+                // releases the update (the next queued one dispatches a
+                // worker's animation frame callbacks) but presents the
+                // committed root, so the frame content is still producing
+                // belongs to the same cycle and must still compose when it
+                // arrives.
+                if *composition_kind == CompositionKind::ContentUpdate
                     && let Some(render) = self.render_cycles.get_mut(&webview_id.0)
                 {
-                    // The cycle this composition belongs to is over: the next
-                    // update the rendering starts a new one.
                     render.cycle += 1;
-                    render.started = Instant::now();
                 }
                 if completed_pending_update {
                     // All child frames included in the composition have also

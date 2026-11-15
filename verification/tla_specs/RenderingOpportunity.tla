@@ -266,7 +266,9 @@ Deadline(top) ==
           ELSE IF g \in hierarchy THEN FALSE
           ELSE pending_update[g]]
      /\ cycle' = [g \in Frame |->
-          IF g \in hierarchy THEN FALSE ELSE cycle[g]]
+          IF queues_update(g) THEN TRUE
+          ELSE IF g \in hierarchy THEN FALSE
+          ELSE cycle[g]]
      /\ rendering_opportunity' = [rendering_opportunity EXCEPT ![top] =
           IF any THEN FALSE ELSE rendering_opportunity[top]]
      /\ ui_state_update_count' = [g \in Frame |->
@@ -288,8 +290,8 @@ FrameDropped(top) ==
   /\ UNCHANGED <<live, parent, queued, rendering_updated, composed, pending_update,
                  cycle, ui_state_update_count, animating, rendering_opportunity>>
 
-\* The embedder asked the user agent for the next frame after the cycle's
-\* deadline passed without the frame: that frame is missed. The user agent stops
+\* The user agent asked the embedder for the next frame after a cycle's update
+\* stayed outstanding past its timeout: that frame is missed. The user agent stops
 \* waiting for it and drops the cycle, so the next request starts a new one and
 \* the abandoned cycle's frames arrive as dropped frames.
 MissedFrame(top) ==

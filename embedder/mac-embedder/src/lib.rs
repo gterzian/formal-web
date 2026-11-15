@@ -3,7 +3,7 @@
 //! NSApplication with NSWindow/NSView/CALayer display, presents composited
 //! web content zero-copy by setting the content layer's `contents` to the
 //! shared IOSurface from the graphics process, and paces animated content
-//! with a CVDisplayLink that requests the next frame via
+//! with a CADisplayLink that requests the next frame via
 //! `WebviewProvider::frame_needed`.
 //!
 //! The crate is self-contained: it shares nothing with the winit embedder

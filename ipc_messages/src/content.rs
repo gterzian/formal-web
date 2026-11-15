@@ -657,18 +657,18 @@ impl FontTransportReceiver {
     }
 
     pub fn resolve_font(&self, font_ids: &[FontIdentifier], scene_font_id: u32) -> FontData {
-        let font_id = font_ids
-            .get(scene_font_id as usize)
-            .copied()
-            .unwrap_or_else(|| {
-                debug_assert!(false, "recorded scene referenced missing scene font id");
-                FontIdentifier::default()
-            });
-
-        self.fonts.get(&font_id).cloned().unwrap_or_else(|| {
-            debug_assert!(false, "recorded scene referenced an unregistered font");
-            FontData::new(Vec::<u8>::new().into(), font_id.index)
-        })
+        // A recorded scene only names font ids the sender resolved, and every
+        // font a document sends is registered when its frame is decoded
+        // (`FontTransportReceiver::register_fonts`): a scene naming an unknown
+        // font is a transport invariant violation, so it fails here by name
+        // instead of in vello's `FontRef::from_index` as `OutOfBounds`.
+        let Some(&font_id) = font_ids.get(scene_font_id as usize) else {
+            panic!("recorded scene referenced missing scene font id {scene_font_id}");
+        };
+        let Some(font) = self.fonts.get(&font_id) else {
+            panic!("recorded scene referenced an unregistered font {font_id:?}");
+        };
+        font.clone()
     }
 }
 
@@ -1586,6 +1586,7 @@ mod tests {
             prepared,
             &mut next_shmem_key,
             false,
+            0,
         )
         .expect("paint frame should serialize into shared memory");
 
@@ -1595,6 +1596,44 @@ mod tests {
             .expect("paint frame should deserialize scene bytes");
 
         assert_eq!(roundtripped, expected_recorded);
+    }
+
+    #[test]
+    fn discarding_a_decoded_frame_keeps_its_fonts_registered() {
+        // A document sends each font once, on the frame that first draws it, and
+        // every later frame names it by id only. A consumer that discards a
+        // frame — graphics drops the frames of superseded render cycles — must
+        // therefore register the fonts before discarding it.
+        let font = FontData::new(vec![1_u8, 2, 3, 4].into(), 0);
+        let mut sender = FontTransportSender::default();
+        let mut next_shmem_key = 0;
+        let prepared = sender.prepare_scene(
+            31,
+            scene_with_glyph(&font, 9, 4.0, 6.0),
+            &mut next_shmem_key,
+        );
+        let scene_font_ids = prepared.scene.font_ids.clone();
+        let (paint_frame, shmem_regions) = PaintFrame::new(
+            WebviewId(NavigableId::from_u128(7)),
+            FrameId::from_u128(7),
+            320,
+            240,
+            FrameCompositionMetadata::default(),
+            prepared,
+            &mut next_shmem_key,
+            false,
+            0,
+        )
+        .expect("paint frame should serialize");
+
+        let mut receiver = FontTransportReceiver::default();
+        let discarded = paint_frame
+            .into_recorded_scene(&mut receiver, &shmem_regions)
+            .expect("frame should decode");
+        drop(discarded);
+
+        let resolved = receiver.resolve_font(&scene_font_ids, 0);
+        assert_eq!(resolved.data.data(), &[1, 2, 3, 4]);
     }
 
     #[test]
@@ -1618,6 +1657,7 @@ mod tests {
             first_prepared,
             &mut next_shmem_key,
             false,
+            0,
         )
         .expect("first frame should serialize");
         let first_summary = first_frame.transport_summary(&first_shmem_regions);
@@ -1649,6 +1689,7 @@ mod tests {
             second_prepared,
             &mut next_shmem_key,
             false,
+            1,
         )
         .expect("second frame should serialize");
         let second_summary = second_frame.transport_summary(&second_shmem_regions);

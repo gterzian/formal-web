@@ -73,9 +73,10 @@ deadline and out-of-band composition kinds.
 
 A render cycle is numbered: the user agent stamps the number on the updates it
 queues, content carries it on the frames it paints, and graphics drops a frame
-whose cycle a newer one superseded (`FrameDropped`). A cycle whose frame does
-not arrive before the deadline the user agent gave graphics is a missed frame:
-the user agent stops waiting for it, drops the cycle and starts the next one
+whose cycle a newer one superseded (`FrameDropped`). Only a composition that
+presents the top-level content frame advances the number. A cycle whose update
+stays outstanding past the user agent's timeout is a missed frame: the user
+agent stops waiting for it, drops the cycle and starts the next one
 (`MissedFrame`), so the abandoned cycle's late frames are dropped instead of
 composing. Frames are accounted for as presented (`GraphicsComputed`) or
 dropped (`FrameDropped`), which is what keeps the pipeline bounded.
@@ -100,11 +101,30 @@ worker's canvas commit) and `OutOfBandComputed` needs one to present, so the
 two actions are enabled by the model's own gates (`cycle` armed, no content
 cycle in flight) and not by layer state.
 
-The recorded session's pages do not miss a frame: their content is either fast
-enough for the cycle or has a dirty out-of-band layer for the deadline
-composition to present, so `MissedFrame` and `FrameDropped` are only checked by
-the base model. Producing them needs a page whose render cycle outlives the
-deadline with no out-of-band layer and a paint in between.
+The recorded session's pages do not miss a frame, so `MissedFrame` and
+`FrameDropped` are only checked by the base model. A miss needs a cycle's wait
+to stay unserved for the user agent's timeout with a paint after it, and the
+session's pages either finish in time or have a dirty out-of-band layer: the
+deadline composition ends the wait and starts the next one, so an
+out-of-band-animated page keeps the pipeline alive while its content event loop
+is blocked and never misses.
+
+`FrameDropped` has the same gap, and a trace that produces drops does not
+validate yet. A page whose worker-driven offscreen canvas animation runs while
+the document blocks its event loop does produce them (the content frames arrive
+after the user agent already armed later cycles), but its trace also reaches a
+`Deadline` composition while a content frame is in flight: the model clears
+graphics' deadline when content *runs* the update (`UpdateTheRendering`), while
+the code clears it when the frame *arrives* at graphics. Closing that gap needs
+a traced frame-arrival event and a model action that carries it
+(`PendingUpdateLeadsComposition` would have to move from the update's queueing
+to its frame's arrival), which is deferred.
+
+The base model's `UiStateUpdatesServiced` liveness property fails independently
+of any trace: TLC's counterexample ends stuttering with a batched UI state
+update and no rendering opportunity, and the committed model reaches it too.
+The invariants (`TypeOK`, `QueuedLeadsRendering`, `RenderingLeadsComposed`,
+`DoubleBufferBound`, `PendingUpdateLeadsComposition`) all hold.
 
 The model abstracts all UI state update notes into `NoteUiStateUpdate` and
 relies on `RenderingOpportunity` fairness to eventually service a batched

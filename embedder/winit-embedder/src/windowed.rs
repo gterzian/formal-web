@@ -567,10 +567,12 @@ impl WindowedApp {
         }
 
         // Notify the UA that a frame is needed before rendering, so the
-        // next content render can start in parallel with this paint.
+        // next content render can start in parallel with this paint. The
+        // winit backend has no display link, so the UA uses its default
+        // display deadline.
         if let Some(webview_id) = state.active_tab
             && let Some(provider) = provider.as_ref()
-            && let Err(error) = provider.frame_needed(webview_id)
+            && let Err(error) = provider.frame_needed(webview_id, None)
         {
             error!("[embedder] frame needed: {error}");
         }
@@ -636,7 +638,7 @@ impl WindowedApp {
         // frame at display cadence: keep requesting redraws so each paint
         // sends frame_needed to the UA, which sustains the render cycle.
         // (The AppKit embedder paces animated content with its
-        // CVDisplayLink.) The request is a no-op while the window is
+        // CADisplayLink.) The request is a no-op while the window is
         // hidden or occluded, so the loop pauses there.
         if state
             .active_tab

@@ -18,7 +18,7 @@ Three crates, sharing nothing but the `webview` crate API:
 | Crate | Purpose |
 |-------|---------|
 | `embedder` (root) | Thin dispatcher: CLI entry points (`run_default`, `run_webdriver`, `run_cdp`) and the windowed-backend selection (AppKit on macOS by default, winit elsewhere or when `winit_embedder` is enabled). Builds the `formal-web-embedder` binary. |
-| `mac-embedder` | Self-contained AppKit app (macOS only): `NSApplication` lifecycle, native chrome, `CVDisplayLink` pacing, zero-copy IOSurface presentation. No winit, Blitz, or GPU dependencies. |
+| `mac-embedder` | Self-contained AppKit app (macOS only): `NSApplication` lifecycle, native chrome, `CADisplayLink` pacing, zero-copy IOSurface presentation. No winit, Blitz, or GPU dependencies. |
 | `winit-embedder` | Self-contained winit app: a windowed app with a Blitz-rendered chrome and a headless app for automation (WebDriver, CDP, WPT). The windowed app is gated behind the `windowed` feature (on by default); the headless app is always available and pulls no graphics dependencies. |
 
 Each embedder owns its own user-event bus (`FormalWebUserEvent`, its own
@@ -45,8 +45,11 @@ fails with a clear error).
 
 - **`mac-embedder`** (AppKit): the default on macOS. Native AppKit chrome
   (menu bar, `NSToolbar`, tab strip), zero-copy IOSurface presentation via
-  the content layer's `contents`, and a `CVDisplayLink` pacing animated
-  content via `WebviewProvider::frame_needed`.  Menu key equivalents run
+  the content layer's `contents`, and a `CADisplayLink` pacing animated
+  content via `WebviewProvider::frame_needed`, which it also reports the
+  interval to the target refresh with (the user agent forwards it as the
+  graphics process's composition deadline; the winit backends pass `None` and
+  the default display deadline is used).  Menu key equivalents run
   through `NSMenu::performKeyEquivalent` so unbound ⌘-combinations still
   reach the web content.  Mouse events over the titlebar/toolbar/tab-strip
   region pass through to AppKit; the web viewport is the window's

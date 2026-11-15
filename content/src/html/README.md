@@ -554,7 +554,7 @@ Remaining gaps:
   windowed app routes `request_next_frame` through the OS, so the UA's
   rendering-opportunity gate lands at display cadence, but the AppKit app
   services `request_next_frame` by calling `frame_needed` immediately and its
-  `CVDisplayLink` only runs while the surface's `animating` flag is set —
+  `CADisplayLink` only runs while the surface's `animating` flag is set —
   and a worker-only animation leaves that flag false. A worker
   `requestAnimationFrame` loop therefore still runs at IPC round-trip speed
   on the AppKit browser. Closing the gap needs the worker's pending

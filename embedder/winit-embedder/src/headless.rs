@@ -299,7 +299,7 @@ impl ApplicationHandler<FormalWebUserEvent> for HeadlessEmbedderApp {
                 // Headless has no window to paint; notify the UA that a
                 // frame is needed for the requested webview.
                 if let Some(provider) = self.provider.as_ref()
-                    && let Err(error) = provider.frame_needed(webview_id)
+                    && let Err(error) = provider.frame_needed(webview_id, None)
                 {
                     error!("[embedder] frame needed: {error}");
                 }
@@ -343,7 +343,7 @@ impl ApplicationHandler<FormalWebUserEvent> for HeadlessEmbedderApp {
                 // Headless has no display pacing; request the next frame
                 // immediately.
                 if let Some(provider) = self.provider.as_ref()
-                    && let Err(error) = provider.frame_needed(webview_id)
+                    && let Err(error) = provider.frame_needed(webview_id, None)
                 {
                     error!("[embedder] frame needed: {error}");
                 }

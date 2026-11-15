@@ -25,7 +25,6 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["block2"] }
 objc2-core-foundation = "0.3"
 objc2-core-graphics = "0.3"
-objc2-core-video = "0.3"
 objc2-foundation = "0.3"
 objc2-io-surface = "0.3"
 objc2-quartz-core = "0.3"

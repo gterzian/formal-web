@@ -59,8 +59,12 @@ pub enum GraphicsCommand {
     /// loop). The deadline is cleared when the top-level frame arrives.
     RenderStarted {
         webview_id: WebviewId,
-        /// Milliseconds to wait for the top-level frame before composing with
-        /// the last committed root.
+        /// The interval from the user agent's rendering opportunity to the
+        /// display refresh the embedder targets, in milliseconds. The
+        /// graphics process composes at a share of it (`COMPOSITION_DEADLINE_*
+        /// in `graphics/src/lib.rs`), so the composed frame still reaches the
+        /// refresh. The user agent uses a default when its embedder has no
+        /// display link.
         deadline_ms: u64,
         /// The render cycle the user agent is starting. A `PaintFrame` carrying
         /// an older cycle belongs to a superseded cycle: graphics drops it.
@@ -206,8 +210,10 @@ pub enum CompositionKind {
 }
 
 impl CompositionKind {
-    /// Whether the composition settles the navigable's in-flight content
-    /// update. Only an out-of-band composition presents no new content state.
+    /// Whether the composition releases the navigable's in-flight content
+    /// update: the user agent stops waiting for a frame it did not receive.
+    /// Only an out-of-band composition leaves it waiting, since it presents no
+    /// new state and serves no update the user agent queued.
     pub fn settles_content_update(self) -> bool {
         !matches!(self, Self::OutOfBand)
     }
