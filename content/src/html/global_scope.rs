@@ -1078,8 +1078,11 @@ impl GlobalScope {
         Ok(())
     }
 
-    /// <https://html.spec.whatwg.org/#destroy-a-child-navigable>
-    /// Unregisters the iframe node -> content navigable mapping.
+    /// Unregisters the iframe node -> content navigable mapping: the content
+    /// half of step 3 of
+    /// <https://html.spec.whatwg.org/#destroy-a-child-navigable> ("Set
+    /// container's content navigable to null"), run by the iframe element's
+    /// removing steps.
     pub(crate) fn unregister_iframe_content_navigable(
         &self,
         node_id: usize,

@@ -211,6 +211,13 @@ settle 30
 navigate "verification/outofband-trace-page.html"
 settle 30
 
+# A page with a pending animation frame callback: every composed frame reports
+# the document animating, so the user agent notes the next cycle's UI state
+# updates and the model's animated-content path (traced as NoteUiStateUpdate)
+# keeps the pipeline going.
+navigate "verification/animating-trace-page.html"
+settle 30
+
 webdriver_request DELETE "/session/${SESSION_ID}" >/dev/null
 SESSION_ID=""
 

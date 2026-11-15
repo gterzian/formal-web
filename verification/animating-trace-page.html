@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Animating trace page</title>
+  </head>
+  <body>
+    <p id="counter">0</p>
+    <script>
+      // A pending animation frame callback makes the document animating: every
+      // composed frame reports it, and the user agent notes the next cycle's UI
+      // state updates for it (the RenderingOpportunity model's animated-content
+      // path, which reaches the model as NoteUiStateUpdate events).
+      let frames = 0;
+      const counter = document.getElementById("counter");
+      function tick() {
+        frames += 1;
+        counter.textContent = String(frames);
+        window.requestAnimationFrame(tick);
+      }
+      window.requestAnimationFrame(tick);
+    </script>
+  </body>
+</html>

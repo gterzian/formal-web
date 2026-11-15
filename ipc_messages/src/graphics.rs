@@ -193,9 +193,9 @@ pub struct FrameHitInfo {
     pub child_frame_ids: Vec<FrameId>,
 }
 
-/// Which path triggered a composition. The user agent traces the
-/// `RenderingOpportunity` TLA+ action the composition implements on receipt of
-/// `GraphicsEvent::PixelFrameReady`.
+/// Which path triggered a composition. The graphics process traces the
+/// `RenderingOpportunity` TLA+ action the composition implements immediately
+/// before it sends `GraphicsEvent::PixelFrameReady`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CompositionKind {
     /// A top-level content frame arrived and its render cycle composed it.

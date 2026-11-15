@@ -866,6 +866,7 @@ fn collect_rendering_opportunity_trace_ids(
             "NoteUiStateUpdate"
             | "RenderingOpportunity"
             | "UpdateTheRendering"
+            | "FrameStored"
             | "GraphicsComputed"
             | "Deadline"
             | "OutOfBandComputed"

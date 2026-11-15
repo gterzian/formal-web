@@ -80,8 +80,8 @@ pub struct FrameMetadata {
     /// that carry the animating flag; the UA notes UI state updates for these
     /// navigables.
     pub animating_frame_ids: Vec<FrameId>,
-    /// Which composition path produced this frame; the UA traces the
-    /// render-cycle action it implements.
+    /// Which composition path produced this frame; the graphics process traces
+    /// the render-cycle action it names before the frame is sent.
     pub composition_kind: CompositionKind,
 }
 

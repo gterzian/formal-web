@@ -3479,12 +3479,13 @@ impl UserAgentWorker {
             self.state.remove_traversable(*traversable_id);
             self.state
                 .remove_pending_navigation_fetches_for_traversable(*traversable_id);
-            let _ = self
-                .state
+            self.state
                 .remove_pending_navigation_finalizations_for_traversable(*traversable_id);
             self.pending_update_the_rendering.remove(traversable_id);
             self.queued_ui_state_updates.remove(traversable_id);
             self.pending_worker_animation_frames.remove(traversable_id);
+            self.render_cycles.remove(traversable_id);
+            self.display_deadlines.remove(traversable_id);
             self.rendering_opportunities.remove(traversable_id);
             self.state
                 .frame_hit_info
@@ -3581,8 +3582,7 @@ impl UserAgentWorker {
         }
         self.state
             .remove_pending_navigation_fetches_for_traversable(traversable_id);
-        let _ = self
-            .state
+        self.state
             .remove_pending_navigation_finalizations_for_traversable(traversable_id);
         self.state
             .documents
@@ -3607,6 +3607,8 @@ impl UserAgentWorker {
         self.pending_update_the_rendering.remove(&traversable_id);
         self.queued_ui_state_updates.remove(&traversable_id);
         self.pending_worker_animation_frames.remove(&traversable_id);
+        self.render_cycles.remove(&traversable_id);
+        self.display_deadlines.remove(&traversable_id);
         self.rendering_opportunities.remove(&traversable_id);
         self.state.frame_hit_info.remove(&WebviewId(traversable_id));
 
@@ -5721,8 +5723,7 @@ impl UserAgentWorker {
 
             self.state
                 .remove_pending_navigation_fetches_for_traversable(*traversable_id);
-            let _ = self
-                .state
+            self.state
                 .remove_pending_navigation_finalizations_for_traversable(*traversable_id);
             if let Some(document_id) = self
                 .state
@@ -5761,6 +5762,8 @@ impl UserAgentWorker {
             self.pending_update_the_rendering.remove(traversable_id);
             self.queued_ui_state_updates.remove(traversable_id);
             self.pending_worker_animation_frames.remove(traversable_id);
+            self.render_cycles.remove(traversable_id);
+            self.display_deadlines.remove(traversable_id);
             // The navigable left the user-agent state: no later navigation
             // can find it in its affected set, and its document was destroyed
             // above, so no beforeunload check can reach it either.
@@ -5999,6 +6002,14 @@ impl UserAgentWorker {
                     let frame_timestamp_epoch_ms = self.epoch_millis(Instant::now());
                     self.queued_ui_state_updates
                         .insert(webview_id.0, frame_timestamp_epoch_ms);
+                    // Each note is a UI state update like any other, so the
+                    // render-cycle trace records it as one.
+                    verification::tla_log!(
+                        self.tla_tracer,
+                        -> "RenderingOpportunity",
+                        "NoteUiStateUpdate",
+                        webview_id.0
+                    );
                     for frame_id in animating_frame_ids {
                         if let Some(child_wv) = child_frame_to_webview.get(frame_id) {
                             // A child on the top-level's own event loop is
@@ -6009,6 +6020,12 @@ impl UserAgentWorker {
                             }
                             self.queued_ui_state_updates
                                 .insert(child_wv.0, frame_timestamp_epoch_ms);
+                            verification::tla_log!(
+                                self.tla_tracer,
+                                -> "RenderingOpportunity",
+                                "NoteUiStateUpdate",
+                                child_wv.0
+                            );
                         }
                         // Frame ids not in the child map belong to the
                         // top-level frame itself, already noted above.

@@ -11,10 +11,11 @@ compile_error!(
 );
 
 use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use crate::renderer::{ReadbackChannels, SurfaceRenderer};
 use compositor::{Compositor, CompositorVideoFrame, ContentFrame, LayerUpdate};
-use crossbeam_channel::{select, tick};
+use crossbeam_channel::{Receiver, after, never, select, tick};
 use ipc_messages::content::{
     CanvasId, FrameId, ImageIdentifier, WebviewId, deserialize_scene_from_slice,
 };
@@ -89,7 +90,7 @@ struct WebviewState<R> {
     /// composited against the last committed root at the deadline, so a
     /// worker's OffscreenCanvas keeps animating while the content event loop
     /// is blocked.
-    cycle_deadline: Option<std::time::Instant>,
+    cycle_deadline: Option<Instant>,
 }
 
 impl<R: SurfaceRenderer> WebviewState<R> {
@@ -166,7 +167,7 @@ pub fn run_graphics_extension(
 /// the generic `R` (see graphics/README.md); the loop interacts with it only
 /// through the `SurfaceRenderer` trait.
 pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
-    cmd_rx: crossbeam_channel::Receiver<ipc::IpcIncoming<GraphicsCommand>>,
+    cmd_rx: Receiver<ipc::IpcIncoming<GraphicsCommand>>,
     graphics_event_tx: ipc::IpcSender<GraphicsEvent>,
     media_backend: Option<B>,
 ) {
@@ -212,17 +213,15 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
     // Sample tick: dynamically switches between never() (no active pipelines)
     // and tick(8ms) (at least one pipeline needs sampling). This avoids waking
     // the select! loop every 8ms when everything is idle.
-    let mut sample_tick: crossbeam_channel::Receiver<std::time::Instant> =
-        crossbeam_channel::never();
+    let mut sample_tick: Receiver<Instant> = never();
     let mut had_active_pipelines = false;
     // Composition-deadline timer: one `after()` at the earliest armed deadline
     // across webviews, replaced when that instant changes and dropped
     // (`never()`) when no deadline is armed. `after` cannot be cancelled, so a
     // composition that stores the top-level frame before its deadline clears
     // the webview's deadline, which retires the receiver on the next pass.
-    let mut deadline_timer: crossbeam_channel::Receiver<std::time::Instant> =
-        crossbeam_channel::never();
-    let mut deadline_timer_at: Option<std::time::Instant> = None;
+    let mut deadline_timer: Receiver<Instant> = never();
+    let mut deadline_timer_at: Option<Instant> = None;
 
     // Reverse mapping from child webview -> (parent webview, content_frame_id).
     // Populated by RegisterChildNavigableHost and used in PaintFrame to remap
@@ -251,7 +250,7 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
             let rx = b.event_receiver();
             (Some(b), rx)
         }
-        None => (None, crossbeam_channel::never()),
+        None => (None, never()),
     };
 
     loop {
@@ -260,10 +259,10 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
         // select! loop doesn't wake up at all for sampling.
         let has_active_pipelines = pipelines.values().any(|p| !p.is_done());
         if has_active_pipelines && !had_active_pipelines {
-            sample_tick = tick(std::time::Duration::from_millis(8));
+            sample_tick = tick(Duration::from_millis(8));
             had_active_pipelines = true;
         } else if !has_active_pipelines && had_active_pipelines {
-            sample_tick = crossbeam_channel::never();
+            sample_tick = never();
             had_active_pipelines = false;
         }
         // A deadline that expired while another event woke the loop is checked
@@ -273,7 +272,7 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
         // frame) must still compose against the committed root.
         if webviews.values().any(|slot| {
             slot.cycle_deadline
-                .is_some_and(|deadline| deadline <= std::time::Instant::now())
+                .is_some_and(|deadline| deadline <= Instant::now())
         }) {
             compose_expired_deadlines(
                 &mut webviews,
@@ -291,15 +290,13 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
         let next_deadline = webviews
             .values()
             .filter_map(|slot| slot.cycle_deadline)
-            .filter(|deadline| *deadline > std::time::Instant::now())
+            .filter(|deadline| *deadline > Instant::now())
             .min();
         if next_deadline != deadline_timer_at {
             deadline_timer_at = next_deadline;
             deadline_timer = match next_deadline {
-                Some(deadline) => crossbeam_channel::after(
-                    deadline.saturating_duration_since(std::time::Instant::now()),
-                ),
-                None => crossbeam_channel::never(),
+                Some(deadline) => after(deadline.saturating_duration_since(Instant::now())),
+                None => never(),
             };
         }
 
@@ -682,6 +679,14 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
                 // top-level frame references has arrived, so a child frame
                 // racing behind it is still included (never dropped). The
                 // top-level frame arrived: the cycle's deadline is satisfied.
+                // Traced before the deadline is cleared, so the model learns
+                // the frame arrived at the user agent's behalf.
+                verification::tla_log!(
+                    *tla_tracer,
+                    -> "RenderingOpportunity",
+                    "FrameStored",
+                    webview_id.0
+                );
                 slot.compositor
                     .mark_composition_pending(CompositionKind::ContentUpdate);
                 slot.cycle_deadline = None;
@@ -763,11 +768,11 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
             // Compose three quarters of the way to the display refresh the
             // embedder targets: the remaining quarter is the time the composed
             // frame has to reach the window server before that refresh.
-            let composition_deadline = std::time::Duration::from_millis(
+            let composition_deadline = Duration::from_millis(
                 deadline_ms.saturating_mul(COMPOSITION_DEADLINE_NUMERATOR)
                     / COMPOSITION_DEADLINE_DENOMINATOR,
             );
-            slot.cycle_deadline = Some(std::time::Instant::now() + composition_deadline);
+            slot.cycle_deadline = Some(Instant::now() + composition_deadline);
             debug!(
                 "[render-pipe] Graphics render started webview={} display_deadline_ms={} composition_deadline_ms={}",
                 webview_id.0,
@@ -1082,7 +1087,7 @@ fn compose_expired_deadlines<R: SurfaceRenderer>(
     composed_scene_sender: &ipc::IpcSender<GraphicsEvent>,
     tla_tracer: &mut TLATracer,
 ) {
-    let now = std::time::Instant::now();
+    let now = Instant::now();
     let expired: Vec<WebviewId> = webviews
         .iter()
         .filter(|(_, slot)| slot.cycle_deadline.is_some_and(|deadline| deadline <= now))

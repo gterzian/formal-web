@@ -2245,8 +2245,10 @@ impl MacApp {
         }
         self.refresh_chrome(window_id);
         self.update_provider_viewport(window_id);
-        if let Some(provider) = self.provider.as_ref() {
-            let _ = provider.frame_needed(webview_id, None);
+        if let Some(provider) = self.provider.as_ref()
+            && let Err(error) = provider.frame_needed(webview_id, None)
+        {
+            error!("[mac-embedder] frame needed: {error}");
         }
         // The display link follows the visible tab's stored surface: an
         // animating tab (a playing video) keeps it running, a static tab
@@ -2257,8 +2259,10 @@ impl MacApp {
     fn action_new_tab(&mut self) {
         // New tabs start on a blank page; the startup destination is only
         // loaded into the first window at launch.
-        if let Some(provider) = self.provider.as_ref() {
-            let _ = provider.navigate(None, "about:blank");
+        if let Some(provider) = self.provider.as_ref()
+            && let Err(error) = provider.navigate(None, "about:blank")
+        {
+            error!("[mac-embedder] navigate: {error}");
         }
     }
 
@@ -2325,8 +2329,10 @@ impl MacApp {
         // Session history (and hence a dedicated reload command) is not
         // implemented in the user agent yet; re-navigating to the committed
         // URL performs a fresh load.
-        if let Some(provider) = self.provider.as_ref() {
-            let _ = provider.navigate(Some(webview_id), &url);
+        if let Some(provider) = self.provider.as_ref()
+            && let Err(error) = provider.navigate(Some(webview_id), &url)
+        {
+            error!("[mac-embedder] navigate: {error}");
         }
         if let Some(window_state) = self.windows.get_mut(&window_id)
             && let Some(tab) = window_state.tabs.get_mut(&webview_id)
@@ -2440,8 +2446,10 @@ impl MacApp {
         else {
             return;
         };
-        if let Some(provider) = self.provider.as_ref() {
-            let _ = provider.navigate(Some(webview_id), &url);
+        if let Some(provider) = self.provider.as_ref()
+            && let Err(error) = provider.navigate(Some(webview_id), &url)
+        {
+            error!("[mac-embedder] navigate: {error}");
         }
         if let Some(window_state) = self.windows.get_mut(&window_id)
             && let Some(tab) = window_state.tabs.get_mut(&webview_id)
@@ -2611,8 +2619,11 @@ impl MacApp {
         };
 
         update_window_viewport_snapshot(Some(Self::viewport_tuple(content_size, scale)));
-        if let Some(provider) = self.provider.as_mut() {
-            let _ = provider.set_default_viewport(Some(Self::viewport_tuple(content_size, scale)));
+        if let Some(provider) = self.provider.as_mut()
+            && let Err(error) =
+                provider.set_default_viewport(Some(Self::viewport_tuple(content_size, scale)))
+        {
+            error!("[mac-embedder] set default viewport: {error}");
         }
 
         window.center();
@@ -2623,8 +2634,10 @@ impl MacApp {
         // default; clear the focus the window just assigned.
         window.makeFirstResponder(None);
 
-        if let Some(provider) = self.provider.as_ref() {
-            let _ = provider.navigate(None, destination);
+        if let Some(provider) = self.provider.as_ref()
+            && let Err(error) = provider.navigate(None, destination)
+        {
+            error!("[mac-embedder] navigate: {error}");
         }
 
         Ok(window_id)
@@ -2706,10 +2719,18 @@ impl MacApp {
 
         update_window_viewport_snapshot(Some(viewport));
         if let Some(provider) = self.provider.as_mut() {
-            let _ = provider.set_default_viewport(Some(viewport));
+            if let Err(error) = provider.set_default_viewport(Some(viewport)) {
+                error!("[mac-embedder] set default viewport: {error}");
+            }
             if let Some(webview_id) = webview_id {
-                let _ = provider.set_traversable_viewport(webview_id, viewport, 0.0, 0.0);
-                let _ = provider.frame_needed(webview_id, None);
+                if let Err(error) =
+                    provider.set_traversable_viewport(webview_id, viewport, 0.0, 0.0)
+                {
+                    error!("[mac-embedder] set traversable viewport: {error}");
+                }
+                if let Err(error) = provider.frame_needed(webview_id, None) {
+                    error!("[mac-embedder] frame needed: {error}");
+                }
             }
         }
     }
@@ -2729,8 +2750,12 @@ impl MacApp {
         if let Some(provider) = self.provider.as_mut()
             && let Some(webview_id) = webview_id
         {
-            let _ = provider.set_traversable_viewport(webview_id, viewport, 0.0, 0.0);
-            let _ = provider.frame_needed(webview_id, None);
+            if let Err(error) = provider.set_traversable_viewport(webview_id, viewport, 0.0, 0.0) {
+                error!("[mac-embedder] set traversable viewport: {error}");
+            }
+            if let Err(error) = provider.frame_needed(webview_id, None) {
+                error!("[mac-embedder] frame needed: {error}");
+            }
         }
     }
 
@@ -2779,7 +2804,9 @@ impl MacApp {
 
         update_window_viewport_snapshot(Some(viewport));
         if let Some(provider) = self.provider.as_mut() {
-            let _ = provider.set_default_viewport(Some(viewport));
+            if let Err(error) = provider.set_default_viewport(Some(viewport)) {
+                error!("[mac-embedder] set default viewport: {error}");
+            }
             for tab_webview_id in tab_webview_ids {
                 if let Err(error) =
                     provider.set_traversable_viewport(tab_webview_id, viewport, 0.0, 0.0)

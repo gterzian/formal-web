@@ -11,12 +11,11 @@ VARIABLES
     pending_update,
     cycle,
     ui_state_update_count,
-    animating,
     rendering_opportunity,
     trace_index
 
 vars == <<live, parent, queued, rendering_updated, composed, dropped, pending_update, cycle,
-          ui_state_update_count, animating, rendering_opportunity, trace_index>>
+          ui_state_update_count, rendering_opportunity, trace_index>>
 
 Base == INSTANCE RenderingOpportunity WITH
     Frame <- TraceFrame,
@@ -32,7 +31,6 @@ Base == INSTANCE RenderingOpportunity WITH
     pending_update <- pending_update,
     cycle <- cycle,
     ui_state_update_count <- ui_state_update_count,
-    animating <- animating,
     rendering_opportunity <- rendering_opportunity
 
 TraceLength == Len(Trace)
@@ -101,6 +99,18 @@ UpdateTheRenderingTrace ==
 \* GraphicsComputed, the render cycle's deadline expiring first is
 \* Deadline, and a video frame presented against the committed root with no
 \* content cycle in flight is OutOfBandComputed.
+\* Graphics stored the top-level frame for the cycle: the deadline graphics held
+\* for it is satisfied. The composition that presents the frame follows.
+FrameStoredTrace ==
+    /\ trace_index \in 1..TraceLength
+    /\ CurrentEvent = "FrameStored"
+    /\ Len(CurrentArgs) = 1
+    /\ LET f == EventArg(1)
+       IN
+       /\ f \in live
+       /\ Base!FrameStored(f)
+       /\ Advance
+
 GraphicsComputedTrace ==
     /\ trace_index \in 1..TraceLength
     /\ CurrentEvent = "GraphicsComputed"
@@ -160,6 +170,7 @@ Next ==
     \/ NoteUiStateUpdateTrace
     \/ RenderingOpportunityTrace
     \/ UpdateTheRenderingTrace
+    \/ FrameStoredTrace
     \/ GraphicsComputedTrace
     \/ DeadlineTrace
     \/ OutOfBandComputedTrace

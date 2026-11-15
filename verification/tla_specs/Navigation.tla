@@ -81,17 +81,18 @@ CreateChildNavigable(parentID) ==
        /\ freeNavIDs' = freeNavIDs \ {nID}
     /\ UNCHANGED <<navigations, freeNkIDs, navigationStartQueue>>
 
-\* A child navigable is destroyed (destroy a child navigable): it leaves the
-\* user agent's navigable set, so it is no longer part of any later
-\* navigation's affected set. Its own document was destroyed with it, so no
-\* beforeunload check can target it.
+\* A child navigable is destroyed (destroy a child navigable): it and its
+\* descendants leave the user agent's navigable set, so they are no longer part
+\* of any later navigation's affected set. Their documents were destroyed with
+\* them, so no beforeunload check can target any of them.
 RemoveNavigable(nID) ==
     /\ nID \in ActiveNavigables
-    /\ Children(nID) = {}
-    /\ \A nk \in ActiveNavigations :
-           <<"Queued", nk>> \notin navigables[nID].before_unload_status
-    /\ navigables' = [n \in ActiveNavigables \ {nID} |-> navigables[n]]
-    /\ freeNavIDs' = freeNavIDs \cup {nID}
+    /\ LET removed == {nID} \cup Descendants(nID)
+       IN
+       /\ \A n \in removed, nk \in ActiveNavigations :
+              <<"Queued", nk>> \notin navigables[n].before_unload_status
+       /\ navigables' = [n \in ActiveNavigables \ removed |-> navigables[n]]
+       /\ freeNavIDs' = freeNavIDs \cup removed
     /\ UNCHANGED <<navigations, freeNkIDs, navigationStartQueue>>
 
 CreateNavigation(navableID) ==
