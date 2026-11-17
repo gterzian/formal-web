@@ -514,7 +514,7 @@ fn open_method(
     let undefined = ec.value_undefined();
     let url = ec.to_rust_string(args.first().cloned().unwrap_or_else(|| undefined.clone()))?;
     let target = ec.to_rust_string(args.get(1).cloned().unwrap_or_else(|| undefined.clone()))?;
-    let features = ec.to_rust_string(args.get(2).cloned().unwrap_or_else(|| undefined))?;
+    let features = ec.to_rust_string(args.get(2).cloned().unwrap_or(undefined))?;
 
     let window = window_domain_from(this, ec)?;
     window.open(&url, &target, &features, ec)
@@ -716,7 +716,7 @@ fn cancel_animation_frame_method(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let undefined = ec.value_undefined();
-    let handle = ec.to_uint32(args.first().cloned().unwrap_or_else(|| undefined))?;
+    let handle = ec.to_uint32(args.first().cloned().unwrap_or(undefined))?;
     let window = window_domain_from(this, ec)?;
     window.global_scope.cancel_animation_frame(handle, ec);
     Ok(ec.value_undefined())
@@ -729,7 +729,7 @@ fn set_timeout_method(
 ) -> Completion<JsValue, crate::js::Types> {
     let undefined = ec.value_undefined();
     let handler = args.first().cloned().unwrap_or_else(|| undefined.clone());
-    let delay = args.get(1).cloned().unwrap_or_else(|| undefined);
+    let delay = args.get(1).cloned().unwrap_or(undefined);
     let extra_args: Vec<JsValue> = args.iter().skip(2).cloned().collect();
     let window = window_domain_from(this, ec)?;
     window
@@ -743,7 +743,7 @@ fn clear_timeout_method(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let undefined = ec.value_undefined();
-    let timer_id = ec.to_uint32(args.first().cloned().unwrap_or_else(|| undefined))?;
+    let timer_id = ec.to_uint32(args.first().cloned().unwrap_or(undefined))?;
     let window = window_domain_from(this, ec)?;
     window.clear_timeout(timer_id, ec);
     Ok(ec.value_undefined())
@@ -756,7 +756,7 @@ fn set_interval_method(
 ) -> Completion<JsValue, crate::js::Types> {
     let undefined = ec.value_undefined();
     let handler = args.first().cloned().unwrap_or_else(|| undefined.clone());
-    let delay = args.get(1).cloned().unwrap_or_else(|| undefined);
+    let delay = args.get(1).cloned().unwrap_or(undefined);
     let extra_args: Vec<JsValue> = args.iter().skip(2).cloned().collect();
     let window = window_domain_from(this, ec)?;
     window
@@ -770,7 +770,7 @@ fn clear_interval_method(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let undefined = ec.value_undefined();
-    let timer_id = ec.to_uint32(args.first().cloned().unwrap_or_else(|| undefined))?;
+    let timer_id = ec.to_uint32(args.first().cloned().unwrap_or(undefined))?;
     let window = window_domain_from(this, ec)?;
     window.clear_interval(timer_id, ec);
     Ok(ec.value_undefined())
@@ -782,7 +782,7 @@ fn get_computed_style_method(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let undefined = ec.value_undefined();
-    let pseudo_elt = if args.get(1).map_or(true, |v| {
+    let pseudo_elt = if args.get(1).is_none_or(|v| {
         crate::js::Types::value_is_null(v) || crate::js::Types::value_is_undefined(v)
     }) {
         None
@@ -795,7 +795,7 @@ fn get_computed_style_method(
         let err_object = ec.new_type_error("element receiver is not an object");
         let object = match args
             .first()
-            .and_then(|v| <crate::js::Types as JsTypes>::value_as_object(v))
+            .and_then(<crate::js::Types as JsTypes>::value_as_object)
         {
             Some(o) => o,
             None => return Err(err_object),
@@ -807,7 +807,7 @@ fn get_computed_style_method(
         window_computed_style_properties_for_element(&element, pseudo_elt.as_deref())
     };
     // ec borrow from with_object_any is released here.
-    style_declaration_object(&properties, ec).map(|obj| crate::js::Types::value_from_object(obj))
+    style_declaration_object(&properties, ec).map(crate::js::Types::value_from_object)
 }
 
 /// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>

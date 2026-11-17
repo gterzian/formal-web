@@ -279,6 +279,17 @@ pub enum GraphicsEvent {
     /// change sits in the parent's compositor until an unrelated input event
     /// drives a top-level render.
     CompositionChanged { webview_id: WebviewId },
+    /// The pixel dimensions of a video pipeline's frames, reported when they
+    /// are first known (and whenever they change). The graphics process owns
+    /// decoding, so it is the only process that knows the video's intrinsic
+    /// size; the content process needs it to size the `<video>` element's box
+    /// (the element has no intrinsic dimensions of its own).
+    VideoIntrinsicSize {
+        webview_id: WebviewId,
+        paint_id: VideoPaintId,
+        width: u32,
+        height: u32,
+    },
     /// The graphics process is shutting down.
     ShutdownComplete,
 }

@@ -1,6 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
+use blitz_traits::NodeId;
 use html5ever::{LocalName, QualName, ns};
 use url::Url;
 
@@ -38,19 +39,20 @@ impl Document {
         creation_url: Url,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Self {
+        let document_node_id = super::document_node_id(&document.borrow());
         Self {
-            node: Node::new(document, 0, ec),
+            node: Node::new(document, document_node_id, ec),
             creation_url,
         }
     }
 
     /// <https://dom.spec.whatwg.org/#dom-nonelementparentnode-getelementbyid>
-    pub(crate) fn get_element_by_id(&self, id: &str) -> Option<usize> {
+    pub(crate) fn get_element_by_id(&self, id: &str) -> Option<NodeId> {
         self.node.document.borrow().get_element_by_id(id)
     }
 
     /// <https://dom.spec.whatwg.org/#dom-parentnode-queryselector>
-    pub(crate) fn query_selector(&self, selectors: &str) -> Result<Option<usize>, String> {
+    pub(crate) fn query_selector(&self, selectors: &str) -> Result<Option<NodeId>, String> {
         self.node
             .document
             .borrow()
@@ -59,7 +61,7 @@ impl Document {
     }
 
     /// <https://dom.spec.whatwg.org/#dom-parentnode-queryselectorall>
-    pub(crate) fn query_selector_all(&self, selectors: &str) -> Result<Vec<usize>, String> {
+    pub(crate) fn query_selector_all(&self, selectors: &str) -> Result<Vec<NodeId>, String> {
         self.node
             .document
             .borrow()
@@ -72,7 +74,7 @@ impl Document {
     pub(crate) fn get_elements_by_tag_name(
         &self,
         qualified_name: &str,
-    ) -> Result<Vec<usize>, String> {
+    ) -> Result<Vec<NodeId>, String> {
         self.node
             .document
             .borrow()
@@ -84,7 +86,7 @@ impl Document {
     }
 
     /// <https://dom.spec.whatwg.org/#dom-document-documentelement>
-    pub(crate) fn document_element(&self) -> Option<usize> {
+    pub(crate) fn document_element(&self) -> Option<NodeId> {
         let document = self.node.document.borrow();
         let root = document.get_node(self.node.node_id)?;
         root.children.iter().copied().find(|child_id| {
@@ -95,7 +97,7 @@ impl Document {
     }
 
     /// <https://dom.spec.whatwg.org/#dom-document-createelement>
-    pub(crate) fn create_element(&self, local_name: &str) -> usize {
+    pub(crate) fn create_element(&self, local_name: &str) -> NodeId {
         let mut document = self.node.document.borrow_mut();
         let mut mutator = document.mutate();
         mutator.create_element(
@@ -109,7 +111,7 @@ impl Document {
         &self,
         namespace: Option<&str>,
         qualified_name: &str,
-    ) -> Result<usize, String> {
+    ) -> Result<NodeId, String> {
         let namespace = match namespace {
             None | Some("") | Some("http://www.w3.org/1999/xhtml") => ns!(html),
             Some(other) => {
@@ -128,23 +130,22 @@ impl Document {
     }
 
     /// <https://dom.spec.whatwg.org/#dom-document-createtextnode>
-    pub(crate) fn create_text_node(&self, data: &str) -> usize {
+    pub(crate) fn create_text_node(&self, data: &str) -> NodeId {
         let mut document = self.node.document.borrow_mut();
         let mut mutator = document.mutate();
         mutator.create_text_node(data)
     }
 
     /// <https://dom.spec.whatwg.org/#dom-document-createcomment>
-    pub(crate) fn create_comment(&self, _data: &str) -> usize {
+    pub(crate) fn create_comment(&self, data: &str) -> NodeId {
         // Step 1: "Return a new Comment node whose data is data and node document is this."
-        // Note: Blitz exposes comment nodes without comment-text storage, so the implementation preserves the node identity and tree behavior but not the comment payload yet.
         let mut document = self.node.document.borrow_mut();
         let mut mutator = document.mutate();
-        mutator.create_comment_node()
+        mutator.create_comment_node(data)
     }
 
     /// <https://html.spec.whatwg.org/#dom-document-body>
-    pub(crate) fn body(&self) -> Result<Option<usize>, String> {
+    pub(crate) fn body(&self) -> Result<Option<NodeId>, String> {
         self.node
             .document
             .borrow()
@@ -187,11 +188,11 @@ impl Document {
     }
 
     /// <https://html.spec.whatwg.org/#document.title>
-    pub(crate) fn title_child_node_ids(&self) -> Vec<usize> {
+    pub(crate) fn title_child_node_ids(&self) -> Vec<NodeId> {
         let document = self.node.document.borrow();
         document
             .find_title_node()
-            .map(|node| node.children.clone())
+            .map(|node| node.children.to_vec())
             .unwrap_or_default()
     }
 

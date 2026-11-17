@@ -1477,6 +1477,7 @@ impl MacApp {
                 coords: pointer.coords,
                 buttons: pointer.buttons,
                 mods: pointer.mods,
+                element: pointer.element,
             }),
         };
 

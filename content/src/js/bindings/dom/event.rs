@@ -313,7 +313,7 @@ fn set_cancel_bubble(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let undef = ec.value_undefined();
-    let value = args.first().map_or(false, |v| ec.to_boolean(v));
+    let value = args.first().is_some_and(|v| ec.to_boolean(v));
     with_event_mut(this, ec, |event, ec| event.set_cancel_bubble(value, ec))?;
     Ok(undef)
 }

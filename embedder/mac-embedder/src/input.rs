@@ -1,13 +1,13 @@
 //! NSEvent → input event mapping for the AppKit backend.
 
 use crate::platform::read_clipboard_text;
-use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
+use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers, NamedKey};
 use log::error;
 use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
 use objc2_foundation::NSInteger;
 use webview::{
     BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, KeyState, MouseEventButton,
-    MouseEventButtons, PointerCoords, PointerDetails, SmolStr,
+    MouseEventButtons, Point, PointerCoords, PointerDetails, SmolStr,
 };
 
 /// Map a macOS virtual key code (NSEvent.keyCode) to a W3C keyboard code.
@@ -64,7 +64,7 @@ pub(super) fn code_from_keycode(keycode: u16) -> Code {
         0x31 => Code::Space,
         0x33 => Code::Backspace,
         0x35 => Code::Escape,
-        0x36 => Code::Super,
+        0x36 => Code::MetaLeft,
         0x37 => Code::ShiftLeft,
         0x39 => Code::AltLeft,
         0x3A => Code::ControlLeft,
@@ -112,24 +112,24 @@ pub(super) fn code_from_keycode(keycode: u16) -> Code {
 pub(super) fn key_from_event(event: &NSEvent) -> Key {
     let code = code_from_keycode(event.keyCode());
     match code {
-        Code::Enter => Key::Enter,
-        Code::Tab => Key::Tab,
-        Code::Backspace => Key::Backspace,
-        Code::Delete => Key::Delete,
-        Code::Escape => Key::Escape,
-        Code::ArrowLeft => Key::ArrowLeft,
-        Code::ArrowRight => Key::ArrowRight,
-        Code::ArrowUp => Key::ArrowUp,
-        Code::ArrowDown => Key::ArrowDown,
-        Code::Home => Key::Home,
-        Code::End => Key::End,
-        Code::PageUp => Key::PageUp,
-        Code::PageDown => Key::PageDown,
-        Code::Super => Key::Super,
-        Code::ShiftLeft | Code::ShiftRight => Key::Shift,
-        Code::AltLeft | Code::AltRight => Key::Alt,
-        Code::ControlLeft | Code::ControlRight => Key::Control,
-        Code::CapsLock => Key::CapsLock,
+        Code::Enter => Key::Named(NamedKey::Enter),
+        Code::Tab => Key::Named(NamedKey::Tab),
+        Code::Backspace => Key::Named(NamedKey::Backspace),
+        Code::Delete => Key::Named(NamedKey::Delete),
+        Code::Escape => Key::Named(NamedKey::Escape),
+        Code::ArrowLeft => Key::Named(NamedKey::ArrowLeft),
+        Code::ArrowRight => Key::Named(NamedKey::ArrowRight),
+        Code::ArrowUp => Key::Named(NamedKey::ArrowUp),
+        Code::ArrowDown => Key::Named(NamedKey::ArrowDown),
+        Code::Home => Key::Named(NamedKey::Home),
+        Code::End => Key::Named(NamedKey::End),
+        Code::PageUp => Key::Named(NamedKey::PageUp),
+        Code::PageDown => Key::Named(NamedKey::PageDown),
+        Code::MetaLeft | Code::MetaRight => Key::Named(NamedKey::Meta),
+        Code::ShiftLeft | Code::ShiftRight => Key::Named(NamedKey::Shift),
+        Code::AltLeft | Code::AltRight => Key::Named(NamedKey::Alt),
+        Code::ControlLeft | Code::ControlRight => Key::Named(NamedKey::Control),
+        Code::CapsLock => Key::Named(NamedKey::CapsLock),
         _ => {
             let characters = event
                 .charactersIgnoringModifiers()
@@ -153,7 +153,7 @@ pub(super) fn modifiers_from_flags(flags: NSEventModifierFlags) -> KeyboardModif
         modifiers.insert(KeyboardModifiers::ALT);
     }
     if flags.contains(NSEventModifierFlags::Command) {
-        modifiers.insert(KeyboardModifiers::SUPER);
+        modifiers.insert(KeyboardModifiers::META);
     }
     modifiers
 }
@@ -192,7 +192,7 @@ pub(super) fn paste_shortcut_clipboard_text(event: &BlitzKeyEvent) -> Option<Str
     if !event.state.is_pressed() {
         return None;
     }
-    if !event.modifiers.contains(KeyboardModifiers::SUPER) {
+    if !event.modifiers.contains(KeyboardModifiers::META) {
         return None;
     }
     match &event.key {
@@ -251,6 +251,8 @@ pub(super) fn pointer_event(
         buttons,
         mods: modifiers,
         details: PointerDetails::default(),
+        element: Point { x: 0.0, y: 0.0 },
+        active_pointers: Default::default(),
     }
 }
 

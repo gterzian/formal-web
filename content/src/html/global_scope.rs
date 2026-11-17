@@ -19,6 +19,7 @@ use super::workers::dedicated_worker_agent::{
 };
 
 use blitz_dom::BaseDocument;
+use blitz_traits::NodeId;
 use ipc::IpcSender;
 use ipc_messages::content::{
     CanvasId, DocumentId, Event as ContentEvent, EventLoopId, ImageElementId, NavigableId,
@@ -55,13 +56,23 @@ type NodeReflector = JsObject;
 
 /// The shared (document_id, node_id) → CanvasId registry held by both
 /// GlobalScope and ContentProcess.
-type CanvasRegistry = Rc<RefCell<HashMap<(DocumentId, usize), CanvasId>>>;
+pub(crate) type CanvasRegistry = Rc<RefCell<HashMap<(DocumentId, usize), CanvasId>>>;
+
+/// The shared (document_id, node_id) → VideoPaintId registry.
+pub(crate) type VideoPaintRegistry = HashMap<(DocumentId, usize), VideoPaintId>;
+
+/// The media pipelines each document's `<video>` elements created.
+pub(crate) type MediaPipelineRegistry = HashMap<DocumentId, Vec<MediaPipelineId>>;
+
+/// Documents `window.open` created while JS runs, keyed by document id.
+pub(crate) type NewDocumentRegistry =
+    HashMap<DocumentId, (EnvironmentSettingsObject, Rc<RefCell<BaseDocument>>)>;
 
 fn timer_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
 }
 
-fn collect_subtree_node_ids(document: &BaseDocument, node_id: usize, node_ids: &mut Vec<usize>) {
+fn collect_subtree_node_ids(document: &BaseDocument, node_id: NodeId, node_ids: &mut Vec<NodeId>) {
     let Some(node) = document.get_node(node_id) else {
         return;
     };
@@ -91,7 +102,7 @@ pub enum GlobalScopeKind {
 pub struct CachedNodeObject {
     /// <https://dom.spec.whatwg.org/#interface-node>
     #[ignore_trace]
-    pub node_id: usize,
+    pub node_id: NodeId,
 
     /// <https://webidl.spec.whatwg.org/#dfn-platform-object>
     #[cfg(v8_backend)]
@@ -135,7 +146,7 @@ pub struct CachedWindowProxy {
     /// The iframe element's node id in this realm's document when the
     /// navigable is that element's content navigable.
     #[ignore_trace]
-    pub iframe_node_id: Option<usize>,
+    pub iframe_node_id: Option<NodeId>,
 }
 
 /// <https://html.spec.whatwg.org/#list-of-animation-frame-callbacks>
@@ -237,11 +248,11 @@ pub struct GlobalScope {
     /// Node ids whose wrapper the engine collected, shared with every
     /// reflector finalizer this realm installs.
     #[ignore_trace]
-    collected_node_ids: Rc<RefCell<Vec<usize>>>,
+    collected_node_ids: Rc<RefCell<Vec<NodeId>>>,
 
     /// Node ids an operation detached from this realm's document.
     #[ignore_trace]
-    detached_candidates: Rc<RefCell<Vec<usize>>>,
+    detached_candidates: Rc<RefCell<Vec<NodeId>>>,
 
     /// <https://html.spec.whatwg.org/#animation-frame-callback-identifier>
     #[ignore_trace]
@@ -349,17 +360,7 @@ pub struct GlobalScope {
     /// and ContentProcess (to retrieve) share the same `Rc`, so no separate
     /// flush step is needed.
     #[ignore_trace]
-    new_document_registry: Rc<
-        RefCell<
-            Option<
-                Rc<
-                    RefCell<
-                        HashMap<DocumentId, (EnvironmentSettingsObject, Rc<RefCell<BaseDocument>>)>,
-                    >,
-                >,
-            >,
-        >,
-    >,
+    new_document_registry: Rc<RefCell<Option<Rc<RefCell<NewDocumentRegistry>>>>>,
 
     /// Shared registry mapping (document_id, node_id) → VideoPaintId.
     /// Set by `ContentProcess` during document creation so that both
@@ -367,8 +368,7 @@ pub struct GlobalScope {
     /// `ContentProcess::build_frame_composition_metadata` (to read) share
     /// the same `Rc`.
     #[ignore_trace]
-    video_paint_registry:
-        Rc<RefCell<Option<Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>>>>,
+    video_paint_registry: Rc<RefCell<Option<Rc<RefCell<VideoPaintRegistry>>>>>,
 
     /// Shared registry of the media pipelines each document's `<video>`
     /// elements created, keyed by document id. Set by `ContentProcess` during
@@ -376,8 +376,7 @@ pub struct GlobalScope {
     /// pipeline and `ContentProcess::destroy_document` can destroy the
     /// document's pipelines with it.
     #[ignore_trace]
-    media_pipeline_registry:
-        Rc<RefCell<Option<Rc<RefCell<HashMap<DocumentId, Vec<MediaPipelineId>>>>>>>,
+    media_pipeline_registry: Rc<RefCell<Option<Rc<RefCell<MediaPipelineRegistry>>>>>,
 
     /// Shared registry mapping (document_id, node_id) → CanvasId. Set by
     /// `ContentProcess` during document creation so that both
@@ -1000,7 +999,7 @@ impl GlobalScope {
     /// this realm's document.
     pub(crate) fn content_navigable_for_iframe(
         &self,
-        node_id: usize,
+        node_id: NodeId,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Option<ipc_messages::content::NavigableId> {
         self.window_proxies
@@ -1017,7 +1016,7 @@ impl GlobalScope {
     /// so the `contentWindow` binding hands out a locally-backed WindowProxy.
     pub(crate) fn register_iframe_content_navigable(
         &self,
-        node_id: usize,
+        node_id: NodeId,
         navigable_id: ipc_messages::content::NavigableId,
         local_window: Option<(Window, JsObject)>,
         ec: &mut dyn ExecutionContext<Types>,
@@ -1085,7 +1084,7 @@ impl GlobalScope {
     /// removing steps.
     pub(crate) fn unregister_iframe_content_navigable(
         &self,
-        node_id: usize,
+        node_id: NodeId,
         ec: &mut dyn ExecutionContext<Types>,
     ) {
         let mut entries = self.window_proxies.borrow_mut(ec);
@@ -1098,7 +1097,7 @@ impl GlobalScope {
 
     pub(crate) fn cached_node_object(
         &self,
-        node_id: usize,
+        node_id: NodeId,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Option<JsObject> {
         // The cache is sorted by node id; clone the weak reflector out before
@@ -1116,7 +1115,7 @@ impl GlobalScope {
 
     pub(crate) fn cache_node_object(
         &self,
-        node_id: usize,
+        node_id: NodeId,
         object: JsObject,
         ec: &mut dyn ExecutionContext<Types>,
     ) {
@@ -1134,7 +1133,7 @@ impl GlobalScope {
         }
     }
 
-    pub(crate) fn queue_detached_candidates(&self, node_ids: &[usize]) {
+    pub(crate) fn queue_detached_candidates(&self, node_ids: &[NodeId]) {
         self.detached_candidates
             .borrow_mut()
             .extend_from_slice(node_ids);
@@ -1142,7 +1141,7 @@ impl GlobalScope {
 
     fn cached_node_reflector(
         &self,
-        node_id: usize,
+        node_id: NodeId,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Option<NodeReflector> {
         let entries = self.node_objects.borrow(ec);
@@ -1159,7 +1158,7 @@ impl GlobalScope {
     pub(crate) fn take_detached_root_subtrees(
         &self,
         ec: &mut dyn ExecutionContext<Types>,
-    ) -> Vec<(usize, Vec<usize>)> {
+    ) -> Vec<(NodeId, Vec<NodeId>)> {
         let collected = std::mem::take(&mut *self.collected_node_ids.borrow_mut());
         let detached = std::mem::take(&mut *self.detached_candidates.borrow_mut());
 
@@ -1188,7 +1187,8 @@ impl GlobalScope {
                 {
                     root_id = parent_id;
                 }
-                if root_id != 0 && seen_roots.insert(root_id) {
+                if root_id != crate::dom::document_node_id(&document) && seen_roots.insert(root_id)
+                {
                     roots.push(root_id);
                 }
             }
@@ -1304,6 +1304,7 @@ impl GlobalScope {
     }
 
     /// <https://html.spec.whatwg.org/#timer-initialisation-steps>
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn timer_initialization_steps(
         &self,
         previous_id: Option<u32>,
@@ -1481,15 +1482,7 @@ impl GlobalScope {
         parent_engine: Option<&mut Engine>,
         new_traversable_id: NavigableId,
         new_document_id: DocumentId,
-    ) -> Result<
-        (
-            JsObject,
-            Window,
-            super::environment_settings_object::EnvironmentSettingsObject,
-            Rc<RefCell<BaseDocument>>,
-        ),
-        String,
-    > {
+    ) -> Result<crate::html::NewRealmDocument, String> {
         let event_sender = self
             .event_sender()
             .ok_or_else(|| String::from("GlobalScope has no event sender"))?;
@@ -1532,12 +1525,7 @@ impl GlobalScope {
     /// Set the shared new-document registry that both GlobalScope and
     /// ContentProcess access.  ContentProcess sets this before running JS
     /// that may trigger `the_rules_for_choosing_a_navigable`.
-    pub(crate) fn set_new_document_registry(
-        &self,
-        registry: Rc<
-            RefCell<HashMap<DocumentId, (EnvironmentSettingsObject, Rc<RefCell<BaseDocument>>)>>,
-        >,
-    ) {
+    pub(crate) fn set_new_document_registry(&self, registry: Rc<RefCell<NewDocumentRegistry>>) {
         *self.new_document_registry.borrow_mut() = Some(registry);
     }
 
@@ -1733,7 +1721,7 @@ impl GlobalScope {
             let document = self.document();
             let document = document.borrow();
             let Some(element) = document
-                .get_node(node_id)
+                .get_node(NodeId::from_u64(node_id as u64))
                 .and_then(|node| node.element_data())
             else {
                 return Ok(());

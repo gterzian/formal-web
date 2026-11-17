@@ -73,7 +73,7 @@ default-members = [
 ]
 
 [workspace.dependencies]
-blitz-traits = { git = "https://github.com/gterzian/blitz", rev = "aeb90c0eebf9804d7dfef06304ccc006ea7d9b4d", default-features = false }
-blitz-dom = { git = "https://github.com/gterzian/blitz", rev = "aeb90c0eebf9804d7dfef06304ccc006ea7d9b4d", default-features = false }
-blitz-paint = { git = "https://github.com/gterzian/blitz", rev = "aeb90c0eebf9804d7dfef06304ccc006ea7d9b4d", default-features = false }
-blitz-html = { git = "https://github.com/gterzian/blitz", rev = "aeb90c0eebf9804d7dfef06304ccc006ea7d9b4d", default-features = false }
+blitz-traits = { git = "https://github.com/gterzian/blitz", branch = "main", default-features = false }
+blitz-dom = { git = "https://github.com/gterzian/blitz", branch = "main", default-features = false }
+blitz-paint = { git = "https://github.com/gterzian/blitz", branch = "main", default-features = false }
+blitz-html = { git = "https://github.com/gterzian/blitz", branch = "main", default-features = false }

@@ -11,7 +11,7 @@ media = ["webview/media"]
 [dependencies]
 arboard = { version = "3.6.1", default-features = false }
 automation = { path = "../../automation" }
-keyboard-types = "0.7"
+keyboard-types = "0.8"
 log = "0.4"
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }

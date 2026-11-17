@@ -123,7 +123,7 @@ fn dispatch_event(
 ) -> Completion<JsValue, crate::js::Types> {
     let event_obj = match args
         .first()
-        .and_then(|v| <crate::js::Types as JsTypes>::value_as_object(v))
+        .and_then(<crate::js::Types as JsTypes>::value_as_object)
     {
         Some(obj) => obj,
         None => return Err(ec.new_type_error("dispatchEvent requires an Event")),

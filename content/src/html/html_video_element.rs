@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use blitz_dom::BaseDocument;
+use blitz_traits::NodeId;
 
 use crate::html::html_media_element::HTMLMediaElement;
 use crate::js::Types;
@@ -23,7 +24,7 @@ pub struct HTMLVideoElement {
 impl HTMLVideoElement {
     pub fn new(
         document: Rc<RefCell<BaseDocument>>,
-        node_id: usize,
+        node_id: NodeId,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Self {
         Self {

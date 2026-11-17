@@ -25,7 +25,10 @@ use objc2_io_surface::{
 use objc2_metal::{
     MTLDevice, MTLPixelFormat, MTLStorageMode, MTLTexture, MTLTextureDescriptor, MTLTextureUsage,
 };
-use wgpu::{Extent3d, Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages};
+use wgpu::{
+    Extent3d, Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
+    TextureUses,
+};
 
 /// Metal requires the width of an IOSurface-backed texture to be a multiple
 /// of 64; the surface (and every texture importing it) is created at the
@@ -155,10 +158,12 @@ pub fn create_shared_texture(
                 height,
                 depth: 1,
             },
+            None,
         )
     };
     // SAFETY: the hal texture was created on this device and declares the
-    // same format, extent, mip count and sample count as the descriptor.
+    // same format, extent, mip count and sample count as the descriptor.  A
+    // freshly created Metal texture has no GPU-side contents yet.
     let texture = unsafe {
         device.create_texture_from_hal::<wgpu::hal::metal::Api>(
             hal_texture,
@@ -178,6 +183,7 @@ pub fn create_shared_texture(
                     | TextureUsages::COPY_SRC,
                 view_formats: &[],
             },
+            TextureUses::UNINITIALIZED,
         )
     };
     debug!(

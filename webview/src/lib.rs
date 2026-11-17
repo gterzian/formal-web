@@ -3,8 +3,8 @@ pub mod ui_event;
 pub use blitz_traits::SmolStr;
 pub use blitz_traits::events::{
     BlitzImeEvent, BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta,
-    BlitzWheelEvent, KeyState, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails,
-    UiEvent,
+    BlitzWheelEvent, KeyState, MouseEventButton, MouseEventButtons, Point, PointerCoords,
+    PointerDetails, UiEvent,
 };
 pub use blitz_traits::shell::ColorScheme;
 

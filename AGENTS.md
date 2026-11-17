@@ -340,7 +340,7 @@ Plans and temporary task notes go under `scratchpad/`.
 
 ## Commands
 
-- `rustup toolchain install 1.94.0` — installs the pinned Rust toolchain.
+- `rustup toolchain install 1.95.0` — installs the pinned Rust toolchain.
 
 ## Build Architecture
 
@@ -393,23 +393,23 @@ V8 is the default backend for running WPT tests.  Wasm is a separate feature
 
 ```bash
 # Check all — type-check every package
-rustup run 1.94.0 cargo check
+rustup run 1.95.0 cargo check
 
 # Build all — produce all binaries
-rustup run 1.94.0 cargo build --release
+rustup run 1.95.0 cargo build --release
 
 # Run all — launch the embedder
-rustup run 1.94.0 cargo run --release
+rustup run 1.95.0 cargo run --release
 
 # Run WPT tests (primary verification)
-rustup run 1.94.0 cargo run --release -- wpt
+rustup run 1.95.0 cargo run --release -- wpt
 ```
 
 ### Boa (opt-in)
 
 ```bash
-rustup run 1.94.0 cargo build --release --no-default-features --features boa,media
-rustup run 1.94.0 cargo run --release --no-default-features --features boa,media -- wpt
+rustup run 1.95.0 cargo build --release --no-default-features --features boa,media
+rustup run 1.95.0 cargo run --release --no-default-features --features boa,media -- wpt
 ```
 
 ### With WebAssembly (opt-in, Boa only)
@@ -418,21 +418,21 @@ The `wasm` feature is the Wasmtime-based WebAssembly implementation for the
 Boa engine (V8 implements WebAssembly natively — no feature needed).
 
 ```bash
-rustup run 1.94.0 cargo build --release --no-default-features --features boa,wasm,media
+rustup run 1.95.0 cargo build --release --no-default-features --features boa,wasm,media
 ```
 
 ### Without media (no video playback)
 
 ```bash
-rustup run 1.94.0 cargo build --release --no-default-features --features v8
-rustup run 1.94.0 cargo run --release --no-default-features --features v8
+rustup run 1.95.0 cargo build --release --no-default-features --features v8
+rustup run 1.95.0 cargo run --release --no-default-features --features v8
 ```
 
 ### Winit embedder (opt-in, macOS only)
 
 ```bash
-rustup run 1.94.0 cargo build --release --features winit_embedder
-rustup run 1.94.0 cargo run --release --features winit_embedder
+rustup run 1.95.0 cargo build --release --features winit_embedder
+rustup run 1.95.0 cargo run --release --features winit_embedder
 ```
 
 On macOS the AppKit backend is the default and the winit backend is not
@@ -475,18 +475,31 @@ cargo build --release -p graphics --bin formal-web-graphics
 
 ### External dependencies: blitz and anyrender
 
-Blitz crates (blitz-traits, blitz-dom, blitz-paint, blitz-html, stylo_taffy,
-debug_timer) come from the `resource_hooks` branch of
-<https://github.com/gterzian/blitz> (`0.3.0-alpha.5`).  That branch carries
-the `DocumentConfig::embedded_images` edit that keeps `<img>` out of the
-document's own scene, and the `DocumentHooks` refactor that makes the
-embedder load subresources and observe DOM tree mutations.  `Cargo.lock`
-pins the branch's revision; refresh it after the branch moves.
+Blitz crates (blitz-traits, blitz-dom, blitz-paint, blitz-html) come from the
+`main` branch of <https://github.com/gterzian/blitz> (`0.3.0-beta.4`), a fork
+of <https://github.com/DioxusLabs/blitz> rebased onto upstream `main`.  It
+carries the `DocumentConfig::embedded_images` edit that keeps `<img>` out of
+the document's own scene, and the split `MutationHooks`/`ResourceHooks` that
+make the embedder load subresources and observe DOM tree mutations.  Do not
+pin a revision: the fork's `main` is the contract, and `Cargo.lock` records
+the commit it resolved to.
 
-Stylo is `0.18.0`; the AnyRender crates (anyrender, anyrender_vello,
-anyrender_vello_cpu, anyrender_svg, wgpu_context) are sourced from crates.io
-at the versions the blitz workspace requires (0.11, 0.11.0, 0.14.0, 0.12.0,
-0.6.0 respectively).
+Stylo is `0.24.0`.  The AnyRender crates (anyrender, anyrender_vello,
+anyrender_svg, wgpu_context) come from the same Git revision the blitz
+workspace pins (`DioxusLabs/anyrender` `f749ad59226ddf0529eca739ad67c842a4f3bcb5`),
+not from crates.io: the scenes `blitz-paint` returns cross the IPC boundary, so
+both the content and graphics processes must use the identical `anyrender`
+package instance.  That revision is anyrender `0.14.0`, anyrender_vello
+`0.15.0` and wgpu_context `0.10.0`, and it fixes the `vello` (`0.12`) and
+`wgpu` (`30`) versions the graphics process builds against.
+
+The scene wire format is ours, not anyrender's: `ipc_messages` spells out
+every render-command field (`SerializableRenderCommand` and its per-command
+structs).  anyrender's own `Serialize` impls `skip_serializing_if` a
+defaulted field (the anti-aliasing flag), which a self-describing format reads
+back but postcard cannot — the omitted field leaves the reader misframed, so a
+scene serialized with anyrender's derives fails to deserialize as
+`DeserializeUnexpectedEnd`.
 
 ### IPC wire format consistency
 
@@ -761,7 +774,7 @@ At the end of each task, run the following steps **in order**:
    warnings before committing. Run from the project root:
 
    ```bash
-   rustup run 1.94.0 cargo clippy --workspace --all-targets
+   rustup run 1.95.0 cargo clippy --workspace --all-targets
    ```
 
    Fix all warnings that appear (patch and vendored warnings can be ignored;
@@ -848,7 +861,7 @@ At the end of each task, run the following steps **in order**:
    - **Default WPT run** —
 
      ```bash
-     rustup run 1.94.0 cargo run --release -- wpt
+     rustup run 1.95.0 cargo run --release -- wpt
      ```
 
      The WPT runner requires a working Python 3 with a functioning `ssl` module and `venv` support. If the run fails with a Python-related error, check `tests/wpt_runner/README.md` for debugging guidance.

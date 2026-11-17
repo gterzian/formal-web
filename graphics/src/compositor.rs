@@ -1146,17 +1146,35 @@ impl Compositor {
                     );
                     let local_w = clip_rect.width();
                     let local_h = clip_rect.height();
+                    // Fit the frame inside the element's box the way
+                    // `object-fit: contain` does: keep the frame's aspect ratio
+                    // and centre it, letterboxing to fill the rest of the box.
+                    // (The default `object-fit` for a video is `contain`.)
+                    let (draw_w, draw_h) = if video_frame.width > 0 && video_frame.height > 0 {
+                        let scale_x = local_w / video_frame.width as f64;
+                        let scale_y = local_h / video_frame.height as f64;
+                        let scale = scale_x.min(scale_y);
+                        (
+                            video_frame.width as f64 * scale,
+                            video_frame.height as f64 * scale,
+                        )
+                    } else {
+                        (local_w, local_h)
+                    };
+                    let offset_x = tx + (local_w - draw_w) / 2.0;
+                    let offset_y = ty + (local_h - draw_h) / 2.0;
                     let scale_x = if video_frame.width > 0 {
-                        local_w / video_frame.width as f64
+                        draw_w / video_frame.width as f64
                     } else {
                         1.0
                     };
                     let scale_y = if video_frame.height > 0 {
-                        local_h / video_frame.height as f64
+                        draw_h / video_frame.height as f64
                     } else {
                         1.0
                     };
-                    let video_transform = Affine::new([scale_x, 0.0, 0.0, scale_y, tx, ty]);
+                    let video_transform =
+                        Affine::new([scale_x, 0.0, 0.0, scale_y, offset_x, offset_y]);
 
                     // The video embed site is its own layer: a one-node scene
                     // drawing the decoded frame at identity, placed by

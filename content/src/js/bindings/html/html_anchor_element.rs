@@ -89,10 +89,10 @@ fn try_with_html_anchor_element_ref<R>(
 ) -> Completion<R, crate::js::Types> {
     let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("HTMLAnchorElement receiver is not an object"))?;
-    if let Some(data) = ec.with_object_any(&obj) {
-        if let Some(anchor) = data.downcast_ref::<HTMLAnchorElement>() {
-            return Ok(f(anchor));
-        }
+    if let Some(data) = ec.with_object_any(&obj)
+        && let Some(anchor) = data.downcast_ref::<HTMLAnchorElement>()
+    {
+        return Ok(f(anchor));
     }
     Err(ec.new_type_error("receiver is not an HTMLAnchorElement"))
 }

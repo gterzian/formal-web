@@ -39,15 +39,19 @@ where
 }
 
 #[cfg(v8_backend)]
+/// The function-pointer shape of a builtin with traced captures.
+pub(crate) type BuiltinBehaviourWithCaptures<T, C> = fn(
+    &[<T as JsTypes>::JsValue],
+    <T as JsTypes>::JsValue,
+    &C,
+    &mut dyn ExecutionContext<T>,
+) -> Completion<<T as JsTypes>::JsValue, T>;
+
+#[cfg(v8_backend)]
 pub(crate) fn create_builtin_fn_with_traced_captures<T, C>(
     ec: &mut dyn ExecutionContext<T>,
     captures: C,
-    behaviour: fn(
-        &[T::JsValue],
-        T::JsValue,
-        &C,
-        &mut dyn ExecutionContext<T>,
-    ) -> Completion<T::JsValue, T>,
+    behaviour: BuiltinBehaviourWithCaptures<T, C>,
     length: u32,
     name: T::PropertyKey,
     is_constructor: bool,

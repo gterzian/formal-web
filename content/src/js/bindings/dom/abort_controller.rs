@@ -65,7 +65,7 @@ fn abort(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let reason = abort_reason_from_argument(args.get(0), ec)?;
+    let reason = abort_reason_from_argument(args.first(), ec)?;
     let controller = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("AbortController receiver is not an object"))?;
     let signal =

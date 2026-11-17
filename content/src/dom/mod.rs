@@ -22,3 +22,11 @@ pub(crate) use event::{
     AddEventListenerOptions, BooleanOrAddEventListenerOptions, HasEvent, flatten, flatten_more,
 };
 pub use node::Node;
+
+use blitz_dom::BaseDocument;
+use blitz_traits::NodeId;
+
+/// The blitz node id of a document's document node.
+pub(crate) fn document_node_id(document: &BaseDocument) -> NodeId {
+    document.root_node().id
+}

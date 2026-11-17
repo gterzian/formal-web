@@ -46,6 +46,7 @@ use crate::html::{
         SerializeWithTransferResult, structured_deserialize_with_transfer,
     },
     windowproxy::{WindowProxyBacking, same_content_process_backing},
+    {MediaPipelineRegistry, NewDocumentRegistry, VideoPaintRegistry},
 };
 use crate::infra::strip_and_collapse_ascii_whitespace;
 use crate::js::Engine;
@@ -57,6 +58,8 @@ use crate::wasm::{WasmResult, compile_continuation, compile_rejection, instantia
 use anyrender::Scene as RenderScene;
 use blitz_dom::{BaseDocument, DocumentConfig, MutationHooks, ResourceHooks};
 use blitz_paint::paint_scene;
+use blitz_traits::NodeId;
+use blitz_traits::events::UiEvent;
 use blitz_traits::net::Request;
 use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
 use data_url::DataUrl;
@@ -68,7 +71,7 @@ use ipc_messages::content::Command::{
     ClickElement, CompleteDocumentFetch, ContentBootstrap, CreateEmptyDocument,
     CreateLoadedDocument, DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch,
     ImageDecoded, RunAnimationFrameCallbacks, RunImageElementTask, RunImageEnvironmentUpdate,
-    SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering,
+    SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering, VideoIntrinsicSize,
 };
 use ipc_messages::content::{
     BeforeUnloadCheckId, CanvasEmbedSite, CanvasId, ClipboardWriteRequested,
@@ -82,7 +85,7 @@ use ipc_messages::content::{
     ViewportSnapshot, WebviewId, WindowTimerKey, WorkerId, WorkerOwner,
 };
 use ipc_messages::graphics::{DecodedImage, GraphicsCommand, ImageFormat};
-use ipc_messages::media::{MediaPipelineId, VideoEmbedData, VideoPaintId};
+use ipc_messages::media::{VideoEmbedData, VideoPaintId};
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
 use log::{debug, error, info, warn};
 use std::{
@@ -189,21 +192,23 @@ pub(crate) struct LocalContentState {
 
 pub(crate) type LocalContentStateRef = Rc<RefCell<LocalContentState>>;
 
-/// Tracks the playback state of a video element across paints.
-/// Stored in the paint registry instead of on the element for now.
 /// Shared clipboard cache for paste-without-IPC.
-/// `get_clipboard_text` reads from this cache instead of doing a blocking
-/// IPC round-trip. The embedder prefetches clipboard text before dispatching
-/// paste events and writes it here via `set_clipboard_cache`.
+/// The embedder prefetches clipboard text before dispatching the key event
+/// that asks for a paste and writes it here via `set_clipboard_cache`;
+/// `request_clipboard_text` records the request, and the paste it asks for is
+/// dispatched from the cache once the key event's dispatch has returned.
 type ClipboardCache = Rc<RefCell<Option<String>>>;
 
 fn new_clipboard_cache() -> ClipboardCache {
     Rc::new(RefCell::new(None))
 }
 
+/// Whether blitz asked for the clipboard text while dispatching an event.
+type ClipboardRequest = Rc<Cell<bool>>;
+
 struct ContentShellProvider {
     event_sender: ipc::IpcSender<ContentEvent>,
-    clipboard_cache: ClipboardCache,
+    clipboard_request: ClipboardRequest,
     /// The document's pending paint work, set through this provider as blitz
     /// asks for a repaint (a resource loaded, a selection changed) or for a
     /// restyle (a hover state changed). Shared with the `ContentDocument` that
@@ -215,12 +220,12 @@ struct ContentShellProvider {
 impl ContentShellProvider {
     fn new(
         event_sender: ipc::IpcSender<ContentEvent>,
-        clipboard_cache: ClipboardCache,
+        clipboard_request: ClipboardRequest,
         paint_dirty: Rc<PaintDirty>,
     ) -> Self {
         Self {
             event_sender,
-            clipboard_cache,
+            clipboard_request,
             paint_dirty,
         }
     }
@@ -228,22 +233,21 @@ impl ContentShellProvider {
 
 impl ShellProvider for ContentShellProvider {
     fn request_redraw(&self) {
-        self.paint_dirty.note_paint();
+        self.paint_dirty.blitz_requested_redraw();
     }
 
     fn request_restyle(&self) {
         self.paint_dirty.note_restyle();
     }
 
-    fn get_clipboard_text(&self) -> Result<String, ClipboardError> {
-        // The embedder prefetches the clipboard text into the cache before
-        // dispatching a paste event (DispatchEventEntry.prefetched_clipboard_text);
-        // content never reads the system clipboard itself.
-        if let Some(text) = self.clipboard_cache.borrow_mut().take() {
-            return Ok(text);
-        }
-        error!("clipboard read requested but no prefetched clipboard text is available");
-        Ok(String::new())
+    fn request_clipboard_text(&self) -> Result<(), ClipboardError> {
+        // The embedder prefetched the clipboard text into the cache before
+        // dispatching the key event that asked for a paste
+        // (DispatchEventEntry.prefetched_clipboard_text); content never reads
+        // the system clipboard itself.  The paste is dispatched from the cache
+        // once the current event's dispatch returns.
+        self.clipboard_request.set(true);
+        Ok(())
     }
 
     fn set_clipboard_text(&self, text: String) -> Result<(), ClipboardError> {
@@ -369,7 +373,7 @@ pub(crate) struct ContentDocument {
     /// document of a `window.open` realm).
     providers: Option<Rc<DocumentProviders>>,
     pending_document_load: Option<PendingDocumentLoad>,
-    navigable_container_states: HashMap<usize, NavigableContainerState>,
+    navigable_container_states: HashMap<NodeId, NavigableContainerState>,
     viewport_offset_x: f32,
     viewport_offset_y: f32,
     /// The document's pending paint work, cleared after a render is produced.
@@ -501,26 +505,29 @@ pub(crate) struct ContentProcess {
     pending_image_decodes: HashMap<ImageIdentifier, PendingImageDecode>,
     tla_tracer: TLATracer,
     /// Shared clipboard cache. The embedder writes prefetched clipboard text
-    /// here before dispatching paste events; `ShellProvider::get_clipboard_text`
-    /// reads from this cache instead of doing a blocking IPC round-trip.
+    /// here before dispatching the key event that asks for a paste;
+    /// `ShellProvider::request_clipboard_text` records the request, and the
+    /// paste is dispatched from this cache after that event.
     clipboard_cache: ClipboardCache,
+    /// Set by `ShellProvider::request_clipboard_text` while an event is being
+    /// dispatched.
+    clipboard_request: ClipboardRequest,
     /// Shared registry for traversable documents created during JS execution
     /// (window.open).  ContentProcess holds one Rc, and before running JS it
     /// sets a clone on the source document's GlobalScope so that
     /// `register_new_traversable_document` can insert directly into this map.
-    new_document_registry:
-        Rc<RefCell<HashMap<DocumentId, (EnvironmentSettingsObject, Rc<RefCell<BaseDocument>>)>>>,
+    new_document_registry: Rc<RefCell<NewDocumentRegistry>>,
 
     /// Consolidated wasm content-process state (worker + pending tracking).
     #[cfg(all(boa_backend, feature = "wasm"))]
     wasm: crate::wasm::ContentWasmState,
 
-    video_paint_registry: Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>,
+    video_paint_registry: Rc<RefCell<VideoPaintRegistry>>,
     /// The media pipelines each document's `<video>` elements created.
     /// Destroying a document destroys its pipelines, so a navigation stops the
     /// outgoing page's video frames instead of leaving them to keep composing
     /// against the incoming document.
-    media_pipeline_registry: Rc<RefCell<HashMap<DocumentId, Vec<MediaPipelineId>>>>,
+    media_pipeline_registry: Rc<RefCell<MediaPipelineRegistry>>,
     /// Shared registry mapping (document_id, node_id) → CanvasId, set on each
     /// realm's GlobalScope so `transferControlToOffscreen` can register canvas
     /// ids and `build_frame_composition_metadata` can read them back.
@@ -600,6 +607,7 @@ impl ContentProcess {
             pending_image_decodes: HashMap::new(),
             tla_tracer: TLATracer::new("Navigation", "formal-web:content", trace_sender.clone()),
             clipboard_cache: clipboard_cache.clone(),
+            clipboard_request: Rc::new(Cell::new(false)),
             new_document_registry: Rc::new(RefCell::new(HashMap::new())),
             video_paint_registry: Rc::new(RefCell::new(HashMap::new())),
             media_pipeline_registry: Rc::new(RefCell::new(HashMap::new())),
@@ -761,7 +769,7 @@ impl ContentProcess {
             #[allow(clippy::arc_with_non_send_sync)]
             shell_provider: Some(Arc::new(ContentShellProvider::new(
                 self.event_sender.clone(),
-                self.clipboard_cache.clone(),
+                self.clipboard_request.clone(),
                 paint_dirty,
             ))),
             html_parser_provider: Some(Arc::new(JsHtmlParserProvider)),
@@ -840,7 +848,7 @@ impl ContentProcess {
                 let document_guard = document.document.borrow();
                 for node_id in image_node_ids {
                     if let Some(element) = document_guard
-                        .get_node(node_id)
+                        .get_node(NodeId::from_u64(node_id as u64))
                         .and_then(|node| node.element_data())
                     {
                         images.push((node_id, ImageAttributes::from_element(element)));
@@ -1112,10 +1120,10 @@ impl ContentProcess {
             .documents
             .get(&document_id)
             .map(|document| document.traversable_id);
-        if let Some(traversable_id) = load_traversable_id {
-            if let Err(error) = self.set_up_new_document_registry(traversable_id) {
-                warn!("failed to set up new document registry: {error}");
-            }
+        if let Some(traversable_id) = load_traversable_id
+            && let Err(error) = self.set_up_new_document_registry(traversable_id)
+        {
+            warn!("failed to set up new document registry: {error}");
         }
 
         let (ready_to_finish, traversable_id, resources_ready, scripts_ready) = {
@@ -1263,7 +1271,7 @@ impl ContentProcess {
         user_scripts: Vec<UserScript>,
     ) -> Result<(), String> {
         let viewport_state = self.document_viewport_state(traversable_id);
-        let frame_id = frame_id.unwrap_or_else(FrameId::new);
+        let frame_id = frame_id.unwrap_or_default();
         let paint_dirty = Rc::new(PaintDirty::default());
         let (document_config, providers) = self.document_config(
             traversable_id,
@@ -1609,6 +1617,7 @@ impl ContentProcess {
     }
 
     /// <https://html.spec.whatwg.org/#navigate-html>
+    #[allow(clippy::too_many_arguments)]
     fn create_loaded_document(
         &mut self,
         traversable_id: NavigableId,
@@ -1626,7 +1635,7 @@ impl ContentProcess {
             body,
         } = response;
         let viewport_state = self.document_viewport_state(traversable_id);
-        let frame_id = frame_id.unwrap_or_else(FrameId::new);
+        let frame_id = frame_id.unwrap_or_default();
         // This block continues <https://html.spec.whatwg.org/#navigate-html>.
         // Step 1: "Let document be the result of creating and initializing a `Document` object
         // given `html`, `text/html`, and navigationParams."
@@ -2184,7 +2193,7 @@ impl ContentProcess {
                 .documents
                 .get(&document_id)
                 .map(|doc| doc.traversable_id)
-                .unwrap_or(NavigableId::new());
+                .unwrap_or_default();
 
             // Set up shared registry so window.open can register new documents
             // (same as click_element does).
@@ -2213,6 +2222,25 @@ impl ContentProcess {
                 document.viewport_offset_y,
                 event,
             )?;
+
+            // blitz asked for the clipboard text while dispatching the event
+            // (a paste keybinding): dispatch the paste it asks for now that the
+            // event's dispatch has returned.
+            if self.clipboard_request.replace(false) {
+                let clipboard_text = self.clipboard_cache.borrow_mut().take();
+                match clipboard_text {
+                    Some(text) => {
+                        dispatch_ui_event(
+                            Rc::clone(&document.document),
+                            &mut document.settings,
+                            document.viewport_offset_x,
+                            document.viewport_offset_y,
+                            UiEvent::Paste(text),
+                        )?;
+                    }
+                    None => error!("clipboard read requested but no prefetched text is available"),
+                }
+            }
 
             if let Err(error) = self.tear_down_new_document_registry(traversable_id) {
                 warn!("failed to tear down new document registry: {error}");
@@ -3031,7 +3059,7 @@ impl ContentProcess {
 
     fn node_absolute_border_origin(
         document: &BaseDocument,
-        node_id: usize,
+        node_id: NodeId,
         scale: f64,
     ) -> Option<(f64, f64)> {
         let mut x = -document.viewport_scroll().x * scale;
@@ -3039,8 +3067,8 @@ impl ContentProcess {
         let mut current = Some(node_id);
         while let Some(id) = current {
             let node = document.get_node(id)?;
-            x += (f64::from(node.final_layout.location.x) - node.scroll_offset.x) * scale;
-            y += (f64::from(node.final_layout.location.y) - node.scroll_offset.y) * scale;
+            x += (f64::from(node.final_layout().location.x) - node.scroll_offset().x) * scale;
+            y += (f64::from(node.final_layout().location.y) - node.scroll_offset().y) * scale;
             current = node.parent;
         }
         Some((x, y))
@@ -3048,14 +3076,14 @@ impl ContentProcess {
 
     fn content_box_for_node(
         document: &BaseDocument,
-        node_id: usize,
+        node_id: NodeId,
         scale: f64,
     ) -> Option<(f64, f64, f64, f64)> {
         let node = document.get_node(node_id)?;
-        let layout = node.final_layout;
+        let layout = node.final_layout();
         let edge = layout.padding + layout.border;
         debug!(
-            "[layout] node {} layout size=({}, {}) padding+border=({},{},{},{}) scroll=({},{})",
+            "[layout] node {:?} layout size=({}, {}) padding+border=({},{},{},{}) scroll=({},{})",
             node_id,
             layout.size.width,
             layout.size.height,
@@ -3063,8 +3091,8 @@ impl ContentProcess {
             edge.right,
             edge.top,
             edge.bottom,
-            node.scroll_offset.x,
-            node.scroll_offset.y
+            node.scroll_offset().x,
+            node.scroll_offset().y
         );
         let (border_x, border_y) = Self::node_absolute_border_origin(document, node_id, scale)?;
         let x = border_x + f64::from(edge.left) * scale;
@@ -3073,7 +3101,7 @@ impl ContentProcess {
         let height = (f64::from(layout.size.height) - f64::from(edge.top + edge.bottom)) * scale;
         if width <= 0.0 || height <= 0.0 {
             debug!(
-                "[layout] node {} skipped: computed size ({:.1},{:.1})",
+                "[layout] node {:?} skipped: computed size ({:.1},{:.1})",
                 node_id, width, height
             );
             return None;
@@ -3086,7 +3114,7 @@ impl ContentProcess {
         document_id: DocumentId,
         navigable_id: NavigableId,
         document: &BaseDocument,
-        container_states: &HashMap<usize, NavigableContainerState>,
+        container_states: &HashMap<NodeId, NavigableContainerState>,
         scale: f64,
         video_paint_registry: &mut HashMap<(DocumentId, usize), VideoPaintId>,
         canvas_registry: &HashMap<(DocumentId, usize), CanvasId>,
@@ -3136,7 +3164,7 @@ impl ContentProcess {
             );
             let clip_svg_path = format!("M0,0 L{width},0 L{width},{height} L0,{height} Z");
             embed_sites.push(EmbedSite::Frame(IframeEmbedSite {
-                embed_site_id: EmbedSiteId((iframe_node_id as u64).wrapping_add(1)),
+                embed_site_id: EmbedSiteId(iframe_node_id.as_u64().wrapping_add(1)),
                 child_frame_id: state.content_frame_id,
                 background_policy: EmbedBackgroundPolicy::OpaqueWhite,
                 clip_svg_path,
@@ -3214,8 +3242,8 @@ impl ContentProcess {
                 .unwrap_or(0.0);
 
             let paint_id = video_paint_registry
-                .entry((document_id, video_node_id))
-                .or_insert_with(VideoPaintId::new);
+                .entry((document_id, video_node_id.as_u64() as usize))
+                .or_default();
 
             embed_sites.push(EmbedSite::Video(VideoEmbedData {
                 paint_id: *paint_id,
@@ -3241,7 +3269,8 @@ impl ContentProcess {
         for (canvas_offset, ((_, canvas_node_id), canvas_id)) in
             canvas_entries.into_iter().enumerate()
         {
-            let Some((x, y, width, height)) = Self::canvas_box(document, *canvas_node_id, scale)
+            let Some((x, y, width, height)) =
+                Self::canvas_box(document, NodeId::from_u64(*canvas_node_id as u64), scale)
             else {
                 debug!("[layout] canvas node {canvas_node_id} skipped: no box");
                 continue;
@@ -3270,8 +3299,11 @@ impl ContentProcess {
             else {
                 continue;
             };
-            let element =
-                images_processing_model::image_element(image_registry, document_id, image_node_id);
+            let element = images_processing_model::image_element(
+                image_registry,
+                document_id,
+                image_node_id.as_u64() as usize,
+            );
             if !images_processing_model::is_available(&element) {
                 continue;
             }
@@ -3280,8 +3312,8 @@ impl ContentProcess {
             };
             let clip_svg_path = format!("M0,0 L{width},0 L{width},{height} L0,{height} Z");
             embed_sites.push(EmbedSite::Image(ImageEmbedData {
-                embed_site_id: EmbedSiteId((image_node_id as u64).wrapping_add(1)),
-                paint_id: ImagePaintId::for_node(navigable_id, image_node_id),
+                embed_site_id: EmbedSiteId(image_node_id.as_u64().wrapping_add(1)),
+                paint_id: ImagePaintId::for_node(navigable_id, image_node_id.as_u64() as usize),
                 image_id,
                 background_policy: EmbedBackgroundPolicy::Transparent,
                 clip_svg_path,
@@ -3300,7 +3332,7 @@ impl ContentProcess {
 
     fn canvas_box(
         document: &BaseDocument,
-        node_id: usize,
+        node_id: NodeId,
         scale: f64,
     ) -> Option<(f64, f64, f64, f64)> {
         if let Some(box_) = Self::content_box_for_node(document, node_id, scale) {
@@ -3679,13 +3711,15 @@ impl ContentProcess {
     }
 
     /// Drops the blitz restyle damage an `<img>`'s image attribute change
-    /// inserted.  Blitz inserts damage for every attribute change, while these
-    /// attributes are owned by the image processing model: whether the
-    /// document's own scene changes is decided by the presentation the image's
-    /// decode produces (`apply_pending_image_presentation`), and the embed layer
-    /// is re-presented from the composition either way. Left in place, the
-    /// damage would make the next resolve pass repaint the whole page for a
-    /// change that cannot affect it.
+    /// inserted, and ends the window in which blitz's repaint request for that
+    /// mutation is dropped (`PaintDirty::blitz_requested_redraw`).  Blitz inserts
+    /// damage for every attribute change, while these attributes are owned by the
+    /// image processing model: whether the document's own scene changes is
+    /// decided by the presentation the image's decode produces
+    /// (`apply_pending_image_presentation`), and the embed layer is re-presented
+    /// from the composition either way.  Left in place, the damage would make the
+    /// next resolve pass repaint the whole page for a change that cannot affect
+    /// it.
     fn clear_embed_only_attribute_damage(&mut self) {
         let pending = {
             let mut local_state = self.local_state.borrow_mut();
@@ -3695,6 +3729,7 @@ impl ContentProcess {
             let Some(content_document) = self.documents.get(&change.document_id) else {
                 continue;
             };
+            content_document.paint_dirty.clear_embed_only_mutation();
             let mut document = content_document.document.borrow_mut();
             if let Some(node) = document.get_node_mut(change.img_node_id) {
                 node.clear_damage_mut();
@@ -3744,11 +3779,13 @@ impl ContentProcess {
             let mut released_canvas_ids = Vec::new();
             for (_, node_ids) in &droppable {
                 for node_id in node_ids.iter().copied() {
-                    image_registry.forget_element(document_id, node_id);
-                    if let Some(canvas_id) = canvas_registry.remove(&(document_id, node_id)) {
+                    image_registry.forget_element(document_id, node_id.as_u64() as usize);
+                    if let Some(canvas_id) =
+                        canvas_registry.remove(&(document_id, node_id.as_u64() as usize))
+                    {
                         released_canvas_ids.push(canvas_id);
                     }
-                    video_paint_registry.remove(&(document_id, node_id));
+                    video_paint_registry.remove(&(document_id, node_id.as_u64() as usize));
                 }
             }
             released_canvas_ids
@@ -3768,7 +3805,7 @@ impl ContentProcess {
             }
         }
 
-        let dropped_node_ids: HashSet<usize> = droppable
+        let dropped_node_ids: HashSet<NodeId> = droppable
             .iter()
             .flat_map(|(_, node_ids)| node_ids.iter().copied())
             .collect();
@@ -3846,10 +3883,9 @@ impl ContentProcess {
                             matches!(site, EmbedSite::Image(image) if image.paint_id == paint_id)
                         })
                         });
-                let fixed_box = Self::image_box_is_independent_of_intrinsic_size(
-                    &document,
-                    presentation.node_id,
-                );
+                let image_node_id = NodeId::from_u64(presentation.node_id as u64);
+                let fixed_box =
+                    Self::image_box_is_independent_of_intrinsic_size(&document, image_node_id);
                 let composition_only = had_embed_site && fixed_box;
                 if composition_only {
                     // `set_image_intrinsic_size` inserts restyle damage on the
@@ -3864,11 +3900,11 @@ impl ContentProcess {
                     // task still repaints.
                     let damaged_before = Self::damaged_nodes(&document);
                     document.set_image_intrinsic_size(
-                        presentation.node_id,
+                        image_node_id,
                         presentation.width,
                         presentation.height,
                     );
-                    let added_damage: Vec<usize> = Self::damaged_nodes(&document)
+                    let added_damage: Vec<NodeId> = Self::damaged_nodes(&document)
                         .difference(&damaged_before)
                         .copied()
                         .collect();
@@ -3879,7 +3915,7 @@ impl ContentProcess {
                     }
                 } else {
                     document.set_image_intrinsic_size(
-                        presentation.node_id,
+                        image_node_id,
                         presentation.width,
                         presentation.height,
                     );
@@ -3905,7 +3941,10 @@ impl ContentProcess {
     // from its contents (a float or an auto-width `inline-block` does, and the
     // element then keeps the layout of the previous image until something else
     // repaints the document).
-    fn image_box_is_independent_of_intrinsic_size(document: &BaseDocument, node_id: usize) -> bool {
+    fn image_box_is_independent_of_intrinsic_size(
+        document: &BaseDocument,
+        node_id: NodeId,
+    ) -> bool {
         let Some(node) = document.get_node(node_id) else {
             return false;
         };
@@ -3918,7 +3957,7 @@ impl ContentProcess {
     }
 
     /// The nodes whose restyle damage is not empty.
-    fn damaged_nodes(document: &BaseDocument) -> HashSet<usize> {
+    fn damaged_nodes(document: &BaseDocument) -> HashSet<NodeId> {
         let mut damaged = HashSet::new();
         document.visit(|node_id, node| {
             if node.damage().is_some_and(|damage| !damage.is_empty()) {
@@ -4180,19 +4219,18 @@ impl ContentProcess {
                 // to clean up.
                 if let WorkerOwner::Document(document_id) = handle.owner
                     && self.documents.contains_key(&document_id)
+                    && let Some(document) = self.documents.get_mut(&document_id)
                 {
-                    if let Some(document) = self.documents.get_mut(&document_id) {
-                        with_global_scope(document.settings.ec(), |global_scope, ec| {
-                            global_scope.discard_owned_worker(worker_id, ec);
-                            Ok(())
-                        })
-                        .map_err(|error| {
-                            format!(
-                                "failed to discard closed worker {worker_id}: {}",
-                                error.display()
-                            )
-                        })?;
-                    }
+                    with_global_scope(document.settings.ec(), |global_scope, ec| {
+                        global_scope.discard_owned_worker(worker_id, ec);
+                        Ok(())
+                    })
+                    .map_err(|error| {
+                        format!(
+                            "failed to discard closed worker {worker_id}: {}",
+                            error.display()
+                        )
+                    })?;
                 }
                 Ok(())
             }
@@ -4671,6 +4709,49 @@ impl ContentProcess {
         self.perform_microtask_checkpoint()
     }
 
+    /// Applies the pixel dimensions the graphics process reported for a video
+    /// pipeline to the `<video>` element: its layout box (the element has no
+    /// intrinsic size of its own, so without this its box falls back to the
+    /// 300x150 default object size and the frame is drawn into a box of the
+    /// wrong shape) and its platform object, whose `videoWidth`/`videoHeight`
+    /// getters read the natural size and whose ready state becomes
+    /// `HAVE_METADATA`.  Runs when the dimensions are first known and whenever
+    /// they change (a source swap to a video of another size).
+    fn apply_video_intrinsic_size(
+        &mut self,
+        paint_id: VideoPaintId,
+        width: u32,
+        height: u32,
+    ) -> Result<(), String> {
+        let location = self
+            .video_paint_registry
+            .borrow()
+            .iter()
+            .find(|(_, registered)| **registered == paint_id)
+            .map(|((document_id, node_id), _)| (*document_id, *node_id));
+        let Some((document_id, node_id)) = location else {
+            // The element is gone (or its pipeline outlived the document); its
+            // box no longer matters.
+            return Ok(());
+        };
+        let Some(content_document) = self.documents.get_mut(&document_id) else {
+            return Ok(());
+        };
+        let traversable_id = content_document.traversable_id;
+        let video_node_id = NodeId::from_u64(node_id as u64);
+        {
+            let mut document = content_document.document.borrow_mut();
+            // The dimensions are the element's intrinsic size, so they are
+            // applied the way a decoded `<img>` reports its own: as the
+            // replaced element's intrinsic size, with no paint source (the
+            // frame is drawn by the graphics process on its own layer).
+            document.set_image_intrinsic_size(video_node_id, width, height);
+        }
+        content_document.paint_dirty.note_paint();
+        self.note_ui_state_update(traversable_id);
+        Ok(())
+    }
+
     /// Runs a queued image element task: set the current URL when the
     /// algorithm's queued steps include it (steps 11.2.1 and 13.4.1), then fire
     /// `load` or `error` at the element (steps 7.4.7.3, 11.2.2, 13.4.2, 27.14,
@@ -4696,7 +4777,7 @@ impl ContentProcess {
         };
         let time_millis = content_document.settings.current_time_millis();
         let ec = content_document.settings.ec();
-        let Ok(object) = resolve_element_object(node_id, ec) else {
+        let Ok(object) = resolve_element_object(NodeId::from_u64(node_id as u64), ec) else {
             return Ok(());
         };
         let event_target = ec.with_object_any(&object).and_then(|data| {
@@ -5116,6 +5197,14 @@ impl ContentProcess {
                     &selected_source,
                     selected_pixel_density,
                 )?;
+                Ok(true)
+            }
+            VideoIntrinsicSize {
+                paint_id,
+                width,
+                height,
+            } => {
+                self.apply_video_intrinsic_size(paint_id, width, height)?;
                 Ok(true)
             }
             ContentBootstrap { .. } => {

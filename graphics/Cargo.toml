@@ -32,8 +32,8 @@ name = "formal-web-graphics"
 path = "src/bin/graphics_process.rs"
 
 [dependencies]
-anyrender = { version = "0.11", features = ["serde"] }
-anyrender_vello = "0.11.0"
+anyrender = { git = "https://github.com/DioxusLabs/anyrender", rev = "f749ad59226ddf0529eca739ad67c842a4f3bcb5", features = ["serde"] }
+anyrender_vello = { git = "https://github.com/DioxusLabs/anyrender", rev = "f749ad59226ddf0529eca739ad67c842a4f3bcb5" }
 ipc = { path = "../ipc" }
 ipc_messages = { path = "../ipc_messages" }
 media = { path = "../media" }
@@ -48,9 +48,9 @@ serde = { version = "1", features = ["derive"] }
 log = "0.4"
 env_logger = "0.11"
 crossbeam-channel = "0.5"
-wgpu_context = "0.6.0"
-wgpu = "29"
-vello = "0.9"
+wgpu_context = { git = "https://github.com/DioxusLabs/anyrender", rev = "f749ad59226ddf0529eca739ad67c842a4f3bcb5" }
+wgpu = "30"
+vello = "0.12"
 pollster = "0.4"
 
 # The slow cross-platform decoder (`renderer/image/cpu.rs`) is the only code

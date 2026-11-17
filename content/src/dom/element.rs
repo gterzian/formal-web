@@ -2,14 +2,10 @@ use std::{cell::RefCell, rc::Rc};
 
 use crate::js::Types;
 use blitz_dom::BaseDocument;
+use blitz_traits::NodeId;
 use html5ever::{LocalName, Prefix, QualName, ns};
 use js_engine::ExecutionContext;
 use js_engine::gc_struct;
-use style::dom_apis::{
-    MayUseInvalidation, QueryAll, QueryFirst, QuerySelectorAllResult,
-    element_closest as style_element_closest, element_matches as style_element_matches,
-    query_selector as style_query_selector,
-};
 
 use super::event::{EventTarget, EventTargetAccess};
 use super::{DOMException, Node};
@@ -68,7 +64,7 @@ impl EventTargetAccess for Element {
 impl Element {
     pub fn new(
         document: Rc<RefCell<BaseDocument>>,
-        node_id: usize,
+        node_id: NodeId,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Self {
         Self {
@@ -141,7 +137,7 @@ impl Element {
         let mut document = self.node.document.borrow_mut();
         let child_ids = document
             .get_node(self.node.node_id)
-            .map(|node| node.children.clone())
+            .map(|node| node.children.to_vec())
             .unwrap_or_default();
         let mut mutator = document.mutate();
         for child_id in child_ids {
@@ -167,15 +163,11 @@ impl Element {
         let Some(node) = document.get_node(self.node.node_id) else {
             return Ok(false);
         };
-        Ok(style_element_matches::<&blitz_dom::Node>(
-            &node,
-            &selector_list,
-            style::context::QuirksMode::NoQuirks,
-        ))
+        Ok(node.matches_selector_raw(&selector_list))
     }
 
     /// <https://dom.spec.whatwg.org/#dom-element-closest>
-    pub(crate) fn closest(&self, selectors: &str) -> Result<Option<usize>, String> {
+    pub(crate) fn closest(&self, selectors: &str) -> Result<Option<NodeId>, String> {
         // Step 1: Let selector be the result of parse a selector from selectors.
         // Step 2: If selector is failure, then throw a "SyntaxError" DOMException.
         let document = self.node.document.borrow();
@@ -192,16 +184,11 @@ impl Element {
         let Some(root_node) = document.get_node(self.node.node_id) else {
             return Ok(None);
         };
-        let matched = style_element_closest::<&blitz_dom::Node>(
-            root_node,
-            &selector_list,
-            style::context::QuirksMode::NoQuirks,
-        );
-        Ok(matched.map(|node| node.id))
+        Ok(root_node.closest_raw(&selector_list))
     }
 
     /// <https://dom.spec.whatwg.org/#dom-parentnode-queryselector>
-    pub(crate) fn query_selector(&self, selectors: &str) -> Result<Option<usize>, String> {
+    pub(crate) fn query_selector(&self, selectors: &str) -> Result<Option<NodeId>, String> {
         let document = self.node.document.borrow();
         let selector_list = document
             .try_parse_selector_list(selectors)
@@ -210,18 +197,11 @@ impl Element {
             return Ok(None);
         };
 
-        let mut result = None;
-        style_query_selector::<&blitz_dom::Node, QueryFirst>(
-            root_node,
-            &selector_list,
-            &mut result,
-            MayUseInvalidation::Yes,
-        );
-        Ok(result.map(|node| node.id))
+        Ok(root_node.query_selector_raw(&selector_list))
     }
 
     /// <https://dom.spec.whatwg.org/#dom-parentnode-queryselectorall>
-    pub(crate) fn query_selector_all(&self, selectors: &str) -> Result<Vec<usize>, String> {
+    pub(crate) fn query_selector_all(&self, selectors: &str) -> Result<Vec<NodeId>, String> {
         let document = self.node.document.borrow();
         let selector_list = document
             .try_parse_selector_list(selectors)
@@ -230,14 +210,7 @@ impl Element {
             return Ok(Vec::new());
         };
 
-        let mut results = QuerySelectorAllResult::new();
-        style_query_selector::<&blitz_dom::Node, QueryAll>(
-            root_node,
-            &selector_list,
-            &mut results,
-            MayUseInvalidation::Yes,
-        );
-        Ok(results.into_iter().map(|node| node.id).collect())
+        Ok(root_node.query_selector_all_raw(&selector_list).to_vec())
     }
 
     /// <https://dom.spec.whatwg.org/#dom-element-insertadjacenttext>
@@ -256,13 +229,14 @@ impl Element {
 
         // Step 1: "Let text be a new Text node whose data is data and node document is this's node document."
         let mut document = self.node.document.borrow_mut();
+        let document_node_id = super::document_node_id(&document);
         let mut mutator = document.mutate();
         let text_node_id = mutator.create_text_node(data);
 
         // Step 2: "Run insert adjacent, given this, where, and text."
         match where_ {
             "beforebegin" => {
-                if parent_id == Some(0) {
+                if parent_id == Some(document_node_id) {
                     return Err(DOMException::hierarchy_request_error());
                 }
                 if parent_id.is_some() {
@@ -280,7 +254,7 @@ impl Element {
                 mutator.append_children(self.node.node_id, &[text_node_id]);
             }
             "afterend" => {
-                if parent_id == Some(0) {
+                if parent_id == Some(document_node_id) {
                     return Err(DOMException::hierarchy_request_error());
                 }
                 if parent_id.is_some() {
@@ -333,10 +307,11 @@ impl Element {
     /// <https://dom.spec.whatwg.org/#connected>
     pub(crate) fn is_connected(&self) -> bool {
         let document = self.node.document.borrow();
+        let document_node_id = super::document_node_id(&document);
         let mut current = Some(self.node.node_id);
 
         while let Some(node_id) = current {
-            if node_id == 0 {
+            if node_id == document_node_id {
                 return true;
             }
 
@@ -398,16 +373,16 @@ impl Element {
             let Some(node) = document.get_node(node_id) else {
                 return Vec::new();
             };
-            x += f64::from(node.final_layout.location.x) - node.scroll_offset.x;
-            y += f64::from(node.final_layout.location.y) - node.scroll_offset.y;
+            x += f64::from(node.final_layout().location.x) - node.scroll_offset().x;
+            y += f64::from(node.final_layout().location.y) - node.scroll_offset().y;
             current = node.parent;
         }
 
         let Some(node) = document.get_node(self.node.node_id) else {
             return Vec::new();
         };
-        let width = f64::from(node.final_layout.size.width).max(0.0);
-        let height = f64::from(node.final_layout.size.height).max(0.0);
+        let width = f64::from(node.final_layout().size.width).max(0.0);
+        let height = f64::from(node.final_layout().size.height).max(0.0);
         vec![DomRect {
             x,
             y,
@@ -424,14 +399,14 @@ impl Element {
         let document = self.node.document.borrow();
         let node = document.get_node(self.node.node_id)?;
         Some(ElementBoxMetrics {
-            border_top: f64::from(node.final_layout.border.top),
-            border_right: f64::from(node.final_layout.border.right),
-            border_bottom: f64::from(node.final_layout.border.bottom),
-            border_left: f64::from(node.final_layout.border.left),
-            padding_top: f64::from(node.final_layout.padding.top),
-            padding_right: f64::from(node.final_layout.padding.right),
-            padding_bottom: f64::from(node.final_layout.padding.bottom),
-            padding_left: f64::from(node.final_layout.padding.left),
+            border_top: f64::from(node.final_layout().border.top),
+            border_right: f64::from(node.final_layout().border.right),
+            border_bottom: f64::from(node.final_layout().border.bottom),
+            border_left: f64::from(node.final_layout().border.left),
+            padding_top: f64::from(node.final_layout().padding.top),
+            padding_right: f64::from(node.final_layout().padding.right),
+            padding_bottom: f64::from(node.final_layout().padding.bottom),
+            padding_left: f64::from(node.final_layout().padding.left),
         })
     }
 
@@ -513,7 +488,10 @@ impl Element {
         Self::suppress_snapshot_on_unstyled_element(&self.node.document, self.node.node_id);
     }
 
-    fn suppress_snapshot_on_unstyled_element(document: &Rc<RefCell<BaseDocument>>, node_id: usize) {
+    fn suppress_snapshot_on_unstyled_element(
+        document: &Rc<RefCell<BaseDocument>>,
+        node_id: NodeId,
+    ) {
         // Note: blitz's set_attribute/clear_attribute record a stylo snapshot
         // for descendant invalidation on every attribute change, and the
         // snapshot invalidation path assumes computed styles exist: stylo's
@@ -527,7 +505,7 @@ impl Element {
             return;
         };
         if node.primary_styles().is_none() {
-            node.snapshot_handled
+            node.snapshot_handled()
                 .store(true, std::sync::atomic::Ordering::SeqCst);
         }
     }

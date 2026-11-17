@@ -2,10 +2,13 @@ use anyrender::Scene as RenderScene;
 use blitz_dom::{BaseDocument, Document, DocumentConfig, qual_name};
 use blitz_html::HtmlDocument;
 use blitz_paint::paint_scene;
+use blitz_traits::NodeId;
 use blitz_traits::events::{BlitzKeyEvent, UiEvent};
 use blitz_traits::shell::{ShellProvider, Viewport};
 use keyboard_types::Key;
 use std::sync::Arc;
+
+use crate::winit_integration::PendingClipboardText;
 
 const DEFAULT_CHROME_HEIGHT_CSS: f32 = 80.0;
 
@@ -147,8 +150,8 @@ pub struct ChromeViewState {
 }
 
 struct ChromeNodeIds {
-    shell: usize,
-    address: usize,
+    shell: NodeId,
+    address: NodeId,
 }
 
 pub struct ChromeUi {
@@ -157,6 +160,9 @@ pub struct ChromeUi {
     full_viewport: Viewport,
     height_css: f32,
     shell_provider: Arc<dyn ShellProvider>,
+    /// Clipboard text a paste request read, delivered as a `UiEvent::Paste`
+    /// once the key event that asked for it has been dispatched.
+    pending_clipboard_text: PendingClipboardText,
     last_tab_count: usize,
     last_labels: Vec<String>,
 }
@@ -188,13 +194,21 @@ impl ChromeUi {
     pub fn new(
         full_viewport: Viewport,
         shell_provider: Arc<dyn ShellProvider>,
+        pending_clipboard_text: PendingClipboardText,
     ) -> Result<Self, String> {
-        Self::from_html(full_viewport, shell_provider, "", &[])
+        Self::from_html(
+            full_viewport,
+            shell_provider,
+            pending_clipboard_text,
+            "",
+            &[],
+        )
     }
 
     fn from_html(
         full_viewport: Viewport,
         shell_provider: Arc<dyn ShellProvider>,
+        pending_clipboard_text: PendingClipboardText,
         url: &str,
         tabs: &[ChromeTabInfo],
     ) -> Result<Self, String> {
@@ -226,6 +240,7 @@ impl ChromeUi {
             full_viewport,
             height_css: DEFAULT_CHROME_HEIGHT_CSS,
             shell_provider,
+            pending_clipboard_text,
             last_tab_count: tabs.len(),
             last_labels: tabs.iter().map(|t| t.label.clone()).collect(),
         };
@@ -362,6 +377,10 @@ impl ChromeUi {
                     return Some(ChromeAction::Navigate);
                 }
                 self.document.handle_ui_event(UiEvent::KeyDown(event));
+                let pending_clipboard_text = self.pending_clipboard_text.lock().unwrap().take();
+                if let Some(text) = pending_clipboard_text {
+                    self.document.handle_ui_event(UiEvent::Paste(text));
+                }
                 None
             }
             UiEvent::PointerMove(event) => {
@@ -378,6 +397,18 @@ impl ChromeUi {
             }
             UiEvent::Ime(event) => {
                 self.document.handle_ui_event(UiEvent::Ime(event));
+                None
+            }
+            UiEvent::PointerCancel(event) => {
+                self.document.handle_ui_event(UiEvent::PointerCancel(event));
+                None
+            }
+            UiEvent::PointerLeave(event) => {
+                self.document.handle_ui_event(UiEvent::PointerLeave(event));
+                None
+            }
+            UiEvent::Paste(text) => {
+                self.document.handle_ui_event(UiEvent::Paste(text));
                 None
             }
             UiEvent::AppleStandardKeybinding(event) => {
@@ -427,7 +458,7 @@ impl ChromeUi {
 
 fn is_submit_key(event: &BlitzKeyEvent) -> bool {
     match &event.key {
-        Key::Enter => true,
+        Key::Named(keyboard_types::NamedKey::Enter) => true,
         Key::Character(v) if v == "\n" => true,
         _ => false,
     }

@@ -69,7 +69,7 @@ impl SizeAlgorithm {
                 let value = invoke_callback_function(
                     ec,
                     callback,
-                    &[chunk.clone()],
+                    std::slice::from_ref(chunk),
                     ExceptionBehavior::Rethrow,
                     None,
                 )?;

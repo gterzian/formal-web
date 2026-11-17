@@ -4,6 +4,7 @@ use js_engine::gc_struct;
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::{BaseDocument, NodeData};
+use blitz_traits::NodeId;
 
 use super::{
     DOMException,
@@ -31,7 +32,7 @@ pub struct Node {
 
     /// <https://dom.spec.whatwg.org/#interface-node>
     #[ignore_trace]
-    pub node_id: usize,
+    pub node_id: NodeId,
 }
 
 impl EventTargetAccess for Node {
@@ -43,7 +44,7 @@ impl EventTargetAccess for Node {
 impl Node {
     pub fn new(
         document: Rc<RefCell<BaseDocument>>,
-        node_id: usize,
+        node_id: NodeId,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Self {
         Self {
@@ -54,18 +55,18 @@ impl Node {
     }
 
     /// <https://dom.spec.whatwg.org/#dom-node-childnodes>
-    pub(crate) fn child_node_ids(&self) -> Vec<usize> {
+    pub(crate) fn child_node_ids(&self) -> Vec<NodeId> {
         // Step 1: "Return a NodeList rooted at this matching only children."
         // The binding layer materializes the returned children as an array-backed list.
         let document = self.document.borrow();
         document
             .get_node(self.node_id)
-            .map(|node| node.children.clone())
+            .map(|node| node.children.to_vec())
             .unwrap_or_default()
     }
 
     /// <https://dom.spec.whatwg.org/#dom-node-firstchild>
-    pub(crate) fn first_child(&self) -> Option<usize> {
+    pub(crate) fn first_child(&self) -> Option<NodeId> {
         // "Return this’s first child."
         let document = self.document.borrow();
         document
@@ -74,7 +75,7 @@ impl Node {
     }
 
     /// <https://dom.spec.whatwg.org/#dom-node-lastchild>
-    pub(crate) fn last_child(&self) -> Option<usize> {
+    pub(crate) fn last_child(&self) -> Option<NodeId> {
         // "Return this’s last child."
         let document = self.document.borrow();
         document
@@ -83,14 +84,14 @@ impl Node {
     }
 
     /// <https://dom.spec.whatwg.org/#dom-node-parentnode>
-    pub(crate) fn parent_node(&self) -> Option<usize> {
+    pub(crate) fn parent_node(&self) -> Option<NodeId> {
         // "Return this’s parent."
         let document = self.document.borrow();
         document.get_node(self.node_id).and_then(|node| node.parent)
     }
 
     /// <https://dom.spec.whatwg.org/#dom-node-previoussibling>
-    pub(crate) fn previous_sibling(&self) -> Option<usize> {
+    pub(crate) fn previous_sibling(&self) -> Option<NodeId> {
         // "Return this’s previous sibling."
         let document = self.document.borrow();
         let node = document.get_node(self.node_id)?;
@@ -106,7 +107,7 @@ impl Node {
     }
 
     /// <https://dom.spec.whatwg.org/#dom-node-nextsibling>
-    pub(crate) fn next_sibling(&self) -> Option<usize> {
+    pub(crate) fn next_sibling(&self) -> Option<NodeId> {
         // "Return this’s next sibling."
         let document = self.document.borrow();
         let node = document.get_node(self.node_id)?;
@@ -127,12 +128,12 @@ impl Node {
         };
 
         match node.data {
-            NodeData::Document => 9,
+            NodeData::Document(_) => 9,
             // Blitz can synthesize anonymous block boxes during layout, but the JS-visible DOM
             // still treats them as element nodes so tree APIs do not expose a Blitz-only kind.
             NodeData::Element(_) | NodeData::AnonymousBlock(_) => 1,
             NodeData::Text(_) => 3,
-            NodeData::Comment => 8,
+            NodeData::Comment { .. } => 8,
         }
     }
 
@@ -144,7 +145,7 @@ impl Node {
         };
 
         match &node.data {
-            NodeData::Document => String::from("#document"),
+            NodeData::Document(_) => String::from("#document"),
             NodeData::Element(element) | NodeData::AnonymousBlock(element) => {
                 // Anonymous blocks inherit their backing element name rather than surfacing a
                 // compositor/layout-specific pseudo-name through the DOM.
@@ -155,14 +156,16 @@ impl Node {
                 }
             }
             NodeData::Text(_) => String::from("#text"),
-            NodeData::Comment => String::from("#comment"),
+            NodeData::Comment { .. } => String::from("#comment"),
         }
     }
 
     /// <https://dom.spec.whatwg.org/#dom-node-ownerdocument>
-    pub(crate) fn owner_document_node_id(&self) -> Option<usize> {
+    pub(crate) fn owner_document_node_id(&self) -> Option<NodeId> {
         // Step 1: "Return null, if this is a document; otherwise this's node document."
-        (self.node_id != 0).then_some(0)
+        let document = self.document.borrow();
+        let document_node_id = super::document_node_id(&document);
+        (self.node_id != document_node_id).then_some(document_node_id)
     }
 
     /// <https://dom.spec.whatwg.org/#dom-node-haschildnodes>
@@ -174,13 +177,11 @@ impl Node {
     /// <https://dom.spec.whatwg.org/#dom-node-nodevalue>
     pub(crate) fn node_value(&self) -> Option<String> {
         let document = self.document.borrow();
-        let Some(node) = document.get_node(self.node_id) else {
-            return None;
-        };
+        let node = document.get_node(self.node_id)?;
 
         match &node.data {
             NodeData::Text(text) => Some(text.content.clone()),
-            NodeData::Comment => Some(String::new()),
+            NodeData::Comment { .. } => Some(String::new()),
             _ => None,
         }
     }
@@ -203,8 +204,8 @@ impl Node {
             NodeData::Text(_) => self.set_text_content(Some(normalized_value)),
 
             // Step 3: "Do nothing."
-            NodeData::Comment
-            | NodeData::Document
+            NodeData::Comment { .. }
+            | NodeData::Document(_)
             | NodeData::Element(_)
             | NodeData::AnonymousBlock(_) => {}
         }
@@ -236,7 +237,7 @@ impl Node {
     }
 
     /// <https://dom.spec.whatwg.org/#dom-node-appendchild>
-    pub(crate) fn append_child(&self, child: &Node) -> Result<usize, DOMException> {
+    pub(crate) fn append_child(&self, child: &Node) -> Result<NodeId, DOMException> {
         // Step 1: "Return the result of appending node to this."
         Self::append(child, self)
     }
@@ -246,7 +247,7 @@ impl Node {
         &self,
         child: &Node,
         reference_child: Option<&Node>,
-    ) -> Result<usize, DOMException> {
+    ) -> Result<NodeId, DOMException> {
         // Step 1: "Return the result of pre-inserting node into this before child."
         Self::pre_insert(child, self, reference_child)
     }
@@ -349,14 +350,13 @@ impl Node {
             // the repaint here; `PaintDirty::note_paint` is what the hooks use
             // for the same purpose.
             document.shell_provider.request_redraw();
-            return;
         }
 
         // Step 4: "Do nothing."
     }
 
     /// <https://dom.spec.whatwg.org/#concept-node-append>
-    fn append(node: &Node, parent: &Node) -> Result<usize, DOMException> {
+    fn append(node: &Node, parent: &Node) -> Result<NodeId, DOMException> {
         // Step 1: "Pre-insert node into parent before null."
         Self::pre_insert(node, parent, None)
     }
@@ -425,7 +425,11 @@ impl Node {
     }
 
     /// <https://dom.spec.whatwg.org/#concept-node-pre-insert>
-    fn pre_insert(node: &Node, parent: &Node, child: Option<&Node>) -> Result<usize, DOMException> {
+    fn pre_insert(
+        node: &Node,
+        parent: &Node,
+        child: Option<&Node>,
+    ) -> Result<NodeId, DOMException> {
         // Step 1: "Ensure pre-insert validity of node into parent before child."
         Self::ensure_pre_insertion_validity(node, parent, child)?;
 
@@ -449,7 +453,7 @@ impl Node {
     fn insert(
         node: &Node,
         parent: &Node,
-        reference_child_node_id: Option<usize>,
+        reference_child_node_id: Option<NodeId>,
     ) -> Result<(), DOMException> {
         // Step 1: "Let nodes be node's children, if node is a DocumentFragment node; otherwise « node »."
         // Note: The current JavaScript-visible DOM implementation does not yet expose DocumentFragment nodes, so this helper always inserts « node ».
@@ -511,10 +515,10 @@ impl Node {
         let node = document.get_node(node.node_id)?;
 
         Some(match &node.data {
-            NodeData::Document => NodeKind::Document,
+            NodeData::Document(_) => NodeKind::Document,
             NodeData::Element(_) | NodeData::AnonymousBlock(_) => NodeKind::Element,
             NodeData::Text(_) => NodeKind::Text,
-            NodeData::Comment => NodeKind::Comment,
+            NodeData::Comment { .. } => NodeKind::Comment,
         })
     }
 
@@ -578,12 +582,12 @@ impl Node {
 }
 
 /// <https://dom.spec.whatwg.org/#string-replace-all>
-fn string_replace_all(document: &Rc<RefCell<BaseDocument>>, parent_node_id: usize, string: &str) {
+fn string_replace_all(document: &Rc<RefCell<BaseDocument>>, parent_node_id: NodeId, string: &str) {
     let mut document = document.borrow_mut();
     let Some(parent) = document.get_node(parent_node_id) else {
         return;
     };
-    let child_ids = parent.children.clone();
+    let child_ids = parent.children.to_vec();
 
     // Step 1: "Let node be null."
     let mut replacement_node_id = None;

@@ -9,13 +9,13 @@ natively — see `../v8/README.md`.)
 
 ```bash
 # Build js_engine crate
-rustup run 1.94.0 cargo build --release --no-default-features --features boa -p js_engine
+rustup run 1.95.0 cargo build --release --no-default-features --features boa -p js_engine
 
 # Build content binary with Boa
-rustup run 1.94.0 cargo build --release --no-default-features --features boa,media -p content --bin formal-web-content
+rustup run 1.95.0 cargo build --release --no-default-features --features boa,media -p content --bin formal-web-content
 
 # Run a single WPT test via Boa
-rustup run 1.94.0 cargo run --release --no-default-features --features boa,media -- wpt dom/nodes/Element-hasAttribute.html
+rustup run 1.95.0 cargo run --release --no-default-features --features boa,media -- wpt dom/nodes/Element-hasAttribute.html
 ```
 
 ## Known issues

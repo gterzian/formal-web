@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use blitz_dom::BaseDocument;
+use blitz_traits::NodeId;
 use log::{debug, error};
 
 use crate::js::Types;
@@ -126,7 +127,7 @@ impl HTMLMediaElement {
 impl HTMLMediaElement {
     pub fn new(
         document: Rc<RefCell<BaseDocument>>,
-        node_id: usize,
+        node_id: NodeId,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Self {
         Self {
@@ -372,7 +373,11 @@ impl HTMLMediaElement {
         // metadata builder can find the same UUID for this video element.
         if let Some(document_id) = document_id {
             let _ = with_global_scope(ec, |global_scope, _ec| {
-                global_scope.register_video_paint_id(document_id, node_id, video_paint_id);
+                global_scope.register_video_paint_id(
+                    document_id,
+                    node_id.as_u64() as usize,
+                    video_paint_id,
+                );
                 Ok(())
             });
         }

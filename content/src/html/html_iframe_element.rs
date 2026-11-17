@@ -9,6 +9,7 @@ use std::{
 };
 
 use blitz_dom::BaseDocument;
+use blitz_traits::NodeId;
 use html5ever::{local_name, ns};
 use js_engine::gc::{GcCell, gc_cell_new};
 use js_engine::{ExecutionContext, gc_struct};
@@ -43,7 +44,7 @@ impl EventTargetAccess for HTMLIFrameElement {
 impl HTMLIFrameElement {
     pub fn new(
         document: Rc<RefCell<BaseDocument>>,
-        node_id: usize,
+        node_id: NodeId,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Self {
         Self {
@@ -183,7 +184,7 @@ fn matches_about_blank(url: &Url) -> bool {
 fn shared_attribute_processing_steps_for_iframe_and_frame_elements(
     document: &BaseDocument,
     creation_url: &Url,
-    iframe_node_id: usize,
+    iframe_node_id: NodeId,
     _initial_insertion: bool,
 ) -> Option<Url> {
     // Shared step 1: "Let url be the URL record about:blank."
@@ -195,16 +196,15 @@ fn shared_attribute_processing_steps_for_iframe_and_frame_elements(
     // then set url to maybeURL."
     let node = document.get_node(iframe_node_id)?;
     let element = node.element_data()?;
-    if let Some(src) = element.attr(local_name!("src")).map(str::trim) {
-        if !src.is_empty() {
-            if let Ok(url) = creation_url.join(src) {
-                // TODO: Shared step 3: "If the inclusive ancestor navigables of element's
-                // node navigable contains a navigable whose active document's URL equals url
-                // with exclude fragments set to true, then return null."
-                // This needs user-agent-owned navigable ancestry.
-                return Some(url);
-            }
-        }
+    if let Some(src) = element.attr(local_name!("src")).map(str::trim)
+        && !src.is_empty()
+        && let Ok(url) = creation_url.join(src)
+    {
+        // TODO: Shared step 3: "If the inclusive ancestor navigables of element's
+        // node navigable contains a navigable whose active document's URL equals url
+        // with exclude fragments set to true, then return null."
+        // This needs user-agent-owned navigable ancestry.
+        return Some(url);
     }
 
     // TODO: Shared step 4: "If url matches about:blank and initialInsertion is true,
@@ -215,7 +215,7 @@ fn shared_attribute_processing_steps_for_iframe_and_frame_elements(
     Some(url)
 }
 
-fn connected_iframe_node_ids(document: &BaseDocument) -> Vec<usize> {
+fn connected_iframe_node_ids(document: &BaseDocument) -> Vec<NodeId> {
     let mut iframe_node_ids = Vec::new();
     document.visit(|node_id, node| {
         let Some(element) = node.element_data() else {
@@ -295,7 +295,7 @@ fn create_a_new_child_navigable(
     process: &mut ContentProcess,
     parent_navigable_id: NavigableId,
     parent_document_id: DocumentId,
-    iframe_node_id: usize,
+    iframe_node_id: NodeId,
 ) -> Result<(), String> {
     // Early return if this iframe already has a content navigable.
     if process
@@ -495,7 +495,7 @@ fn create_a_new_child_navigable(
 fn navigable_container_for_child_navigable(
     process: &ContentProcess,
     content_frame_id: FrameId,
-) -> Option<(DocumentId, usize)> {
+) -> Option<(DocumentId, NodeId)> {
     process
         .documents
         .iter()
@@ -513,7 +513,7 @@ fn navigable_container_for_child_navigable(
 fn run_iframe_load_event_steps(
     process: &mut ContentProcess,
     parent_document_id: DocumentId,
-    iframe_node_id: usize,
+    iframe_node_id: NodeId,
 ) -> Result<(), String> {
     let Some(content_document) = process.documents.get_mut(&parent_document_id) else {
         return Ok(());
@@ -638,7 +638,7 @@ pub(crate) fn fire_deferred_iframe_load_events(
     // container document's parser-discovered scripts, which this implementation
     // defers to the parent's document load completion ("the end", steps 5-9).
     // Called by the parent's load completion.
-    let pending: Vec<usize> = {
+    let pending: Vec<NodeId> = {
         let Some(content_document) = process.documents.get(&parent_document_id) else {
             return Ok(());
         };
@@ -666,7 +666,7 @@ pub(crate) fn fire_deferred_iframe_load_events(
 pub(crate) fn run_iframe_post_connection_steps(
     process: &mut ContentProcess,
     parent_document_id: DocumentId,
-    iframe_node_id: usize,
+    iframe_node_id: NodeId,
 ) -> Result<(), String> {
     // Step 1: "If insertedNode's node document's browsing context is null, then return."
     // Note: A document created by the user agent has a browsing context; a
@@ -726,7 +726,7 @@ pub(crate) fn run_iframe_post_connection_steps_for_document(
 pub(crate) fn run_iframe_removing_steps(
     process: &mut ContentProcess,
     parent_document_id: DocumentId,
-    iframe_node_id: usize,
+    iframe_node_id: NodeId,
 ) -> Result<(), String> {
     // "The iframe HTML element removing steps, given removedNode, are to destroy a child
     // navigable given removedNode."
@@ -795,7 +795,7 @@ pub(crate) fn run_iframe_removing_steps_for_document(
 pub(crate) fn process_iframe_attributes(
     process: &mut ContentProcess,
     parent_document_id: DocumentId,
-    iframe_node_id: usize,
+    iframe_node_id: NodeId,
     initial_insertion: bool,
 ) -> Result<(), String> {
     let Some(parent_traversable_id) = process
@@ -918,7 +918,7 @@ pub(crate) fn process_iframe_attributes(
 fn record_container_navigation_key(
     process: &mut ContentProcess,
     parent_document_id: DocumentId,
-    iframe_node_id: usize,
+    iframe_node_id: NodeId,
     desired_key: String,
 ) -> Option<(NavigableId, FrameId)> {
     // Note: The spec checks whether the pending-navigations map already

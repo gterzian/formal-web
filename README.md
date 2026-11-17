@@ -14,8 +14,8 @@ Note: the current set of implementations of generic components reflects macOS be
 ## Getting Started
 
 The project has only been run on macOS; all build commands assume macOS. The
-Rust toolchain is pinned to 1.94.0 (`rustup toolchain install 1.94.0`); if it
-is not your default toolchain, prefix the commands below with `rustup run 1.94.0`.
+Rust toolchain is pinned to 1.95.0 (`rustup toolchain install 1.95.0`); if it
+is not your default toolchain, prefix the commands below with `rustup run 1.95.0`.
 
 ### Build and run with default features on macOS
 

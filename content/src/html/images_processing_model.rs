@@ -361,7 +361,7 @@ pub(crate) fn removing_steps(
     // Step 1: "If isSubtreeRoot is true and oldAncestor is a picture element, then count this as a relevant mutation for removedNode."
     // Note: Only a removal from a `<picture>` parent re-runs the algorithm: it is the case where the selected source could change (picture selection itself is not tracked), while any other removal would re-run the algorithm only to fire a redundant `load` for an available image.
     let removed_from_picture =
-        old_ancestor.is_some_and(|ancestor| ancestor.name.local.as_ref() == "picture");
+        old_ancestor.is_some_and(|ancestor| &*ancestor.name.local == "picture");
     if !is_subtree_root || !removed_from_picture {
         return;
     }

@@ -19,6 +19,7 @@ use style_traits::ParsingMode;
 /// Holds useful CSS-related functions that do not belong elsewhere.
 ///
 /// https://drafts.csswg.org/css-conditional-3/#the-css-namespace
+#[allow(clippy::upper_case_acronyms)]
 pub(crate) struct CSS;
 
 impl CSS {
@@ -44,8 +45,8 @@ impl CSS {
         let url_data = UrlExtraData(ServoArc::new(
             url::Url::parse("about:blank").expect("about:blank is a valid URL"),
         ));
-        let context = parser_context_for_supports(&url_data);
-        declaration.eval(&context)
+        let mut context = parser_context_for_supports(&url_data);
+        declaration.eval(&mut context)
     }
 
     /// <https://drafts.csswg.org/css-conditional-3/#dom-css-supports-conditiontext-conditiontext>
@@ -53,17 +54,16 @@ impl CSS {
         let url_data = UrlExtraData(ServoArc::new(
             url::Url::parse("about:blank").expect("about:blank is a valid URL"),
         ));
-        let context = parser_context_for_supports(&url_data);
+        let mut context = parser_context_for_supports(&url_data);
 
         // Step 1: If conditionText, parsed and evaluated as a <supports-condition>,
         //          would return true, return true.
         {
-            let mut input = cssparser::ParserInput::new(condition_text);
-            let mut parser: Parser = cssparser::Parser::new(&mut input);
-            if let Ok(condition) = parser.parse_entirely(|input| SupportsCondition::parse(input)) {
-                if condition.eval(&context) {
-                    return true;
-                }
+            let mut parser: Parser = cssparser::Parser::new(condition_text);
+            if let Ok(condition) = parser.parse_entirely(|input| SupportsCondition::parse(input))
+                && condition.eval(&mut context)
+            {
+                return true;
             }
         }
 
@@ -76,14 +76,12 @@ impl CSS {
         // parse_condition_or_declaration entry point handles both, matching the spec's intent.
         let wrapped = format!("({condition_text})");
         {
-            let mut input = cssparser::ParserInput::new(&wrapped);
-            let mut parser: Parser = cssparser::Parser::new(&mut input);
+            let mut parser: Parser = cssparser::Parser::new(&wrapped);
             if let Ok(condition) =
                 parser.parse_entirely(|input| parse_condition_or_declaration(input))
+                && condition.eval(&mut context)
             {
-                if condition.eval(&context) {
-                    return true;
-                }
+                return true;
             }
         }
 

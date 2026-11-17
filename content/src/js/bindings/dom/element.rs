@@ -715,7 +715,7 @@ fn insert_adjacent_text(
     })?
     .map_err(|error| {
         create_interface_instance::<crate::js::Types, DOMException>(error, ec)
-            .map(|obj| crate::js::Types::value_from_object(obj))
+            .map(crate::js::Types::value_from_object)
             .unwrap_or_else(|err| err)
     })?;
     Ok(ec.value_undefined())

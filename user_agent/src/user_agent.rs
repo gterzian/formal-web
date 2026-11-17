@@ -1015,6 +1015,7 @@ impl UserAgentState {
 /// Commands that enter the user-agent thread from the embedder and webview
 /// layers: each is dispatched directly on the user-agent thread, which owns
 /// all browser-global state.
+#[allow(clippy::large_enum_variant)]
 pub enum UserAgentCommand {
     CreateFreshTopLevelTraversable {
         destination_url: String,
@@ -4043,7 +4044,7 @@ impl UserAgentWorker {
             }
 
             let traversable_id = self.traversable_id_for_navigable(navigable_id)?;
-            let navigation_id = request.navigation_id.unwrap_or_else(NavigationId::new);
+            let navigation_id = request.navigation_id.unwrap_or_default();
             self.navigate(
                 navigable_id,
                 request.destination_url.clone(),
@@ -6161,6 +6162,37 @@ impl UserAgentWorker {
                     webview_id
                 );
                 self.note_ui_state_update(webview_id.0);
+            }
+            GraphicsEvent::VideoIntrinsicSize {
+                webview_id,
+                paint_id,
+                width,
+                height,
+            } => {
+                // The graphics process owns decoding, so it is the only process
+                // that knows the video's pixel dimensions; the content process
+                // sizes the `<video>` element's box with them.
+                let event_loop_id = match self.state.traversable_handles.get(&webview_id.0) {
+                    Some(event_loop_id) => *event_loop_id,
+                    None => return,
+                };
+                let Some(agent) = window_agent(&self.state, event_loop_id) else {
+                    return;
+                };
+                if let Err(error) =
+                    agent
+                        .event_loop
+                        .command_sender
+                        .send(ContentCommand::VideoIntrinsicSize {
+                            paint_id: *paint_id,
+                            width: *width,
+                            height: *height,
+                        })
+                {
+                    error!(
+                        "failed to send a video's intrinsic size to event loop {event_loop_id}: {error}"
+                    );
+                }
             }
             GraphicsEvent::ShutdownComplete => {
                 debug!("[graphics] graphics process shutdown complete");

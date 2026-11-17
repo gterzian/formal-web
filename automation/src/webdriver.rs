@@ -130,10 +130,10 @@ impl WebDriverServer {
 impl Drop for WebDriverServer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(thread) = self.thread.take() {
-            if let Err(error) = thread.join() {
-                error!("[webdriver] failed to join server thread: {error:?}");
-            }
+        if let Some(thread) = self.thread.take()
+            && let Err(error) = thread.join()
+        {
+            error!("[webdriver] failed to join server thread: {error:?}");
         }
     }
 }

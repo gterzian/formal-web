@@ -11,11 +11,16 @@ use js_engine::{
 /// `&mut dyn ExecutionContext<Ty>`.  Binding functions use
 /// `Ty::value_as_object` and `ec.with_platform_data` for upcast/downcast,
 /// avoiding engine-specific dependencies.
+type NativeMethod<T> = fn(
+    &<T as JsTypes>::JsValue,
+    &[<T as JsTypes>::JsValue],
+    &mut dyn ExecutionContext<T>,
+) -> Completion<<T as JsTypes>::JsValue, T>;
+
 pub(crate) struct OperationDef<T: JsTypes> {
     pub id: &'static str,
     pub length: usize,
-    pub method:
-        fn(&T::JsValue, &[T::JsValue], &mut dyn ExecutionContext<T>) -> Completion<T::JsValue, T>,
+    pub method: NativeMethod<T>,
     pub static_: bool,
     pub unforgeable: bool,
     pub promise_type: bool,
@@ -87,19 +92,15 @@ where
 
     for op in operations {
         // Step 1.1: "If op is not exposed in realm, then continue."
-        if let Some(exposed_globals) = op.exposed {
-            if exposed_globals != "Window" {
-                continue;
-            }
+        if let Some(exposed_globals) = op.exposed
+            && exposed_globals != "Window"
+        {
+            continue;
         }
         #[gc_struct]
         struct OpCapture<T: JsTypes> {
             #[ignore_trace]
-            func: fn(
-                &T::JsValue,
-                &[T::JsValue],
-                &mut dyn ExecutionContext<T>,
-            ) -> Completion<T::JsValue, T>,
+            func: NativeMethod<T>,
         }
 
         fn op_fn<T: JsTypes>(

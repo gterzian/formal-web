@@ -18,6 +18,14 @@ use super::{SourceMethod, WritableStream, WritableStreamController, WritableStre
 type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
 
+/// The `start`, `write`, `close` and `abort` methods of an underlying sink.
+type UnderlyingSinkMethods = (
+    Option<JsObject>,
+    Option<JsObject>,
+    Option<JsObject>,
+    Option<JsObject>,
+);
+
 /// <https://streams.spec.whatwg.org/#set-up-writable-stream-default-controller-from-underlying-sink>
 #[gc_struct]
 pub(crate) enum StartAlgorithm {
@@ -72,7 +80,7 @@ impl WriteAlgorithm {
                         // and error the stream synchronously.  Converting to a
                         // rejected promise postpones the error handling to a
                         // microtask, which the pipe-to pump cannot rely on.
-                        return Err(error_value);
+                        Err(error_value)
                     }
                 }
             }
@@ -601,8 +609,7 @@ pub(crate) fn create_writable_stream_default_controller(
     let controller_object = create_interface_instance::<Types, WritableStreamDefaultController>(
         controller.clone(),
         ec,
-    )?
-    .into();
+    )?;
     Ok((controller, controller_object))
 }
 
@@ -624,6 +631,7 @@ pub(crate) fn with_writable_stream_default_controller_ref<R>(
 }
 
 /// <https://streams.spec.whatwg.org/#set-up-writable-stream-default-controller>
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn set_up_writable_stream_default_controller(
     stream: WritableStream,
     controller: WritableStreamDefaultController,
@@ -725,20 +733,16 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
     let (controller, controller_object) = create_writable_stream_default_controller(ec)?;
 
     // Step 2-9: Extract optional methods.
-    let sink_methods: Option<(
-        Option<JsObject>,
-        Option<JsObject>,
-        Option<JsObject>,
-        Option<JsObject>,
-    )> = if let Some(ref underlying_sink) = underlying_sink_object {
-        let start = get_callable_method(underlying_sink, "start", ec)?;
-        let write = get_callable_method(underlying_sink, "write", ec)?;
-        let close = get_callable_method(underlying_sink, "close", ec)?;
-        let abort = get_callable_method(underlying_sink, "abort", ec)?;
-        Some((start, write, close, abort))
-    } else {
-        None
-    };
+    let sink_methods: Option<UnderlyingSinkMethods> =
+        if let Some(ref underlying_sink) = underlying_sink_object {
+            let start = get_callable_method(underlying_sink, "start", ec)?;
+            let write = get_callable_method(underlying_sink, "write", ec)?;
+            let close = get_callable_method(underlying_sink, "close", ec)?;
+            let abort = get_callable_method(underlying_sink, "abort", ec)?;
+            Some((start, write, close, abort))
+        } else {
+            None
+        };
 
     // Step 2: "Let startAlgorithm be an algorithm that returns undefined."
     let mut start_algorithm = StartAlgorithm::ReturnUndefined;

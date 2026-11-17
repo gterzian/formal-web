@@ -293,11 +293,11 @@ fn the_drain_clears_node_id_keyed_registries() {
     test.process
         .image_registry
         .borrow_mut()
-        .element_id(test.document_id, image_node_id);
-    test.process
-        .canvas_registry
-        .borrow_mut()
-        .insert((test.document_id, canvas_node_id), CanvasId::new());
+        .element_id(test.document_id, image_node_id.as_u64() as usize);
+    test.process.canvas_registry.borrow_mut().insert(
+        (test.document_id, canvas_node_id.as_u64() as usize),
+        CanvasId::new(),
+    );
     let iframe_navigable_id = NavigableId::new();
     {
         let settings = test.settings();
@@ -338,7 +338,7 @@ fn the_drain_clears_node_id_keyed_registries() {
         test.process
             .image_registry
             .borrow()
-            .existing_element_id(test.document_id, image_node_id)
+            .existing_element_id(test.document_id, image_node_id.as_u64() as usize)
             .is_none(),
         "the image registry must forget the dropped element"
     );
@@ -347,7 +347,7 @@ fn the_drain_clears_node_id_keyed_registries() {
             .process
             .canvas_registry
             .borrow()
-            .contains_key(&(test.document_id, canvas_node_id)),
+            .contains_key(&(test.document_id, canvas_node_id.as_u64() as usize)),
         "the canvas registry must forget the dropped element"
     );
     {
@@ -390,7 +390,8 @@ fn the_drain_clears_node_id_keyed_registries() {
                     .borrow()
                     .query_selector("#image-node")
                     .expect("parse image selector")
-                    .expect("reused image node"),
+                    .expect("reused image node")
+                    .as_u64() as usize,
             )
             .is_none(),
         "a new element must not inherit the dropped element's registry entry"

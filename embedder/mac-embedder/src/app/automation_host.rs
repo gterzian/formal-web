@@ -11,7 +11,7 @@ use serde_json::Value;
 use std::time::Duration;
 use webview::{
     BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, MouseEventButton,
-    MouseEventButtons, PointerDetails, UiEvent,
+    MouseEventButtons, Point, PointerDetails, UiEvent,
 };
 
 impl AutomationHost for MacApp {
@@ -91,6 +91,8 @@ impl AutomationHost for MacApp {
                 buttons,
                 mods,
                 details: PointerDetails::default(),
+                element: Point { x: 0.0, y: 0.0 },
+                active_pointers: Default::default(),
             }),
         )?;
         buttons |= MouseEventButton::Main.into();
@@ -104,6 +106,8 @@ impl AutomationHost for MacApp {
                 buttons,
                 mods,
                 details: PointerDetails::default(),
+                element: Point { x: 0.0, y: 0.0 },
+                active_pointers: Default::default(),
             }),
         )?;
         buttons.remove(MouseEventButton::Main.into());
@@ -117,6 +121,8 @@ impl AutomationHost for MacApp {
                 buttons,
                 mods,
                 details: PointerDetails::default(),
+                element: Point { x: 0.0, y: 0.0 },
+                active_pointers: Default::default(),
             }),
         )
     }
@@ -155,6 +161,8 @@ impl AutomationHost for MacApp {
                 buttons: MouseEventButtons::None,
                 mods,
                 details: PointerDetails::default(),
+                element: Point { x: 0.0, y: 0.0 },
+                active_pointers: Default::default(),
             }),
         )?;
         provider.send_ui_event(
@@ -164,6 +172,7 @@ impl AutomationHost for MacApp {
                 coords,
                 buttons: MouseEventButtons::None,
                 mods,
+                element: Point { x: 0.0, y: 0.0 },
             }),
         )
     }
