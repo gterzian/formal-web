@@ -50,7 +50,9 @@ use crate::html::{
 };
 use crate::infra::strip_and_collapse_ascii_whitespace;
 use crate::js::Engine;
-use crate::js::downcast::{try_with_event_target_mut, with_cloned_platform_mut};
+use crate::js::downcast::{
+    event_target_from_js_object, try_with_event_target_mut, with_cloned_platform_mut,
+};
 use crate::js::platform_objects::{resolve_element_object, with_global_scope};
 use crate::ui_event::deserialize_ui_event;
 #[cfg(all(boa_backend, feature = "wasm"))]
@@ -71,7 +73,8 @@ use ipc_messages::content::Command::{
     ClickElement, CompleteDocumentFetch, ContentBootstrap, CreateEmptyDocument,
     CreateLoadedDocument, DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch,
     ImageDecoded, RunAnimationFrameCallbacks, RunImageElementTask, RunImageEnvironmentUpdate,
-    SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering, VideoIntrinsicSize,
+    RunMediaElementTask, SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering,
+    VideoIntrinsicSize,
 };
 use ipc_messages::content::{
     BeforeUnloadCheckId, CanvasEmbedSite, CanvasId, ClipboardWriteRequested,
@@ -79,8 +82,8 @@ use ipc_messages::content::{
     ElementClickResult, EmbedBackgroundPolicy, EmbedLayout, EmbedSite, EmbedSiteId,
     Event as ContentEvent, EventLoopId, FetchResponse as ContentFetchResponse, FontTransportSender,
     FrameCompositionMetadata, FrameId, IframeEmbedSite, ImageElementId, ImageEmbedData, ImageEvent,
-    ImageIdentifier, ImagePaintId, ImageTransportSender, LoadedDocumentResponse, NavigableId,
-    NavigationId, PaintFrame, PortId, PortTaskKind, PreparedScene, RecordedScene,
+    ImageIdentifier, ImagePaintId, ImageTransportSender, LoadedDocumentResponse, MediaElementEvent,
+    NavigableId, NavigationId, PaintFrame, PortId, PortTaskKind, PreparedScene, RecordedScene,
     ResourcePartitionKey, ScriptEvaluationResult, TitleChanged, TraversableViewport, UserScript,
     ViewportSnapshot, WebviewId, WindowTimerKey, WorkerId, WorkerOwner,
 };
@@ -3312,6 +3315,7 @@ impl ContentProcess {
                 clip_radius,
                 object_fit,
                 object_position,
+                device_scale_factor: scale,
             }));
         }
 
@@ -4806,14 +4810,72 @@ impl ContentProcess {
             document.set_image_intrinsic_size(video_node_id, width, height);
         }
         let ec = content_document.settings.ec();
-        if let Ok(object) = resolve_element_object(video_node_id, ec) {
+        let events = if let Ok(object) = resolve_element_object(video_node_id, ec) {
             with_cloned_platform_mut::<HTMLVideoElement, _>(&object, ec, |video, _ec| {
-                video.set_video_intrinsic_size(width, height);
-            });
-        }
+                video.set_video_intrinsic_size(width, height)
+            })
+            .unwrap_or_default()
+        } else {
+            Default::default()
+        };
         content_document.paint_dirty.note_paint();
         self.note_ui_state_update(traversable_id);
+        if events.resize {
+            self.queue_media_element_task(document_id, node_id, MediaElementEvent::Resize);
+        }
+        if events.loaded_metadata {
+            self.queue_media_element_task(document_id, node_id, MediaElementEvent::LoadedMetadata);
+        }
         Ok(())
+    }
+
+    fn queue_media_element_task(
+        &self,
+        document_id: DocumentId,
+        node_id: usize,
+        event: MediaElementEvent,
+    ) {
+        let command = Command::RunMediaElementTask {
+            document_id,
+            node_id,
+            event,
+        };
+        if let Err(error) = self.content_command_sender.send(command) {
+            error!("failed to queue a media element task: {error}");
+        }
+    }
+
+    fn run_media_element_event(
+        &mut self,
+        document_id: DocumentId,
+        node_id: usize,
+        event: MediaElementEvent,
+    ) -> Result<(), String> {
+        let Some(content_document) = self.documents.get_mut(&document_id) else {
+            return Ok(());
+        };
+        let time_millis = content_document.settings.current_time_millis();
+        let traversable_id = content_document.traversable_id;
+        let ec = content_document.settings.ec();
+        let video_node_id = NodeId::from_u64(node_id as u64);
+        let Ok(object) = resolve_element_object(video_node_id, ec) else {
+            return Ok(());
+        };
+        let Some(event_target) = event_target_from_js_object(ec, &object) else {
+            return Ok(());
+        };
+        let event_type = match event {
+            MediaElementEvent::LoadedMetadata => "loadedmetadata",
+            MediaElementEvent::Resize => "resize",
+        };
+        if let Err(error) = fire_event(ec, &event_target, event_type, time_millis, false) {
+            warn!("failed to fire {event_type} event for <video>: {error:?}");
+        }
+        self.event_sender
+            .send(ContentEvent::NoteUiStateUpdate(traversable_id))
+            .map_err(|error| {
+                format!("failed to note ui state update for a media element event: {error}")
+            })
     }
 
     /// Runs a queued image element task: set the current URL when the
@@ -5269,6 +5331,14 @@ impl ContentProcess {
                 height,
             } => {
                 self.apply_video_intrinsic_size(paint_id, width, height)?;
+                Ok(true)
+            }
+            RunMediaElementTask {
+                document_id,
+                node_id,
+                event,
+            } => {
+                self.run_media_element_event(document_id, node_id, event)?;
                 Ok(true)
             }
             ContentBootstrap { .. } => {

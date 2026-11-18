@@ -16,7 +16,9 @@ use crate::ComposedScene;
 use ipc_messages::graphics::DecodedImage;
 
 use crate::renderer::image::StoredImage;
-use ipc_messages::media::{VideoObjectFit, VideoObjectPositionComponent, VideoPaintId};
+use ipc_messages::media::{
+    VideoObjectFit, VideoObjectPosition, VideoObjectPositionComponent, VideoPaintId,
+};
 use kurbo::{Affine, Rect, Shape};
 use log::{error, info, trace};
 use peniko::{ImageAlphaType, ImageBrushRef, ImageData, ImageFormat};
@@ -31,6 +33,60 @@ fn input_debug_enabled() -> bool {
 struct ResolvedViewport {
     width: f64,
     height: f64,
+}
+
+/// The frame's size and its offset from the element's box, in device pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct VideoDrawGeometry {
+    width: f64,
+    height: f64,
+    x: f64,
+    y: f64,
+}
+
+fn video_position_offset(component: VideoObjectPositionComponent, free_space: f64) -> f64 {
+    match component {
+        VideoObjectPositionComponent::Percentage(percentage) => free_space * percentage,
+        VideoObjectPositionComponent::Length(length) => length,
+    }
+}
+
+fn video_draw_geometry(
+    box_width: f64,
+    box_height: f64,
+    frame_width: f64,
+    frame_height: f64,
+    object_fit: VideoObjectFit,
+    object_position: VideoObjectPosition,
+    device_scale_factor: f64,
+) -> VideoDrawGeometry {
+    if frame_width <= 0.0 || frame_height <= 0.0 {
+        return VideoDrawGeometry {
+            width: box_width,
+            height: box_height,
+            x: 0.0,
+            y: 0.0,
+        };
+    }
+
+    let contain_scale = (box_width / frame_width).min(box_height / frame_height);
+    let scale = match object_fit {
+        VideoObjectFit::Fill => None,
+        VideoObjectFit::Contain => Some(contain_scale),
+        VideoObjectFit::Cover => Some((box_width / frame_width).max(box_height / frame_height)),
+        VideoObjectFit::None => Some(device_scale_factor),
+        VideoObjectFit::ScaleDown => Some(contain_scale.min(device_scale_factor)),
+    };
+    let (width, height) = match scale {
+        Some(scale) => (frame_width * scale, frame_height * scale),
+        None => (box_width, box_height),
+    };
+    VideoDrawGeometry {
+        width,
+        height,
+        x: video_position_offset(object_position.horizontal, box_width - width),
+        y: video_position_offset(object_position.vertical, box_height - height),
+    }
 }
 
 impl ResolvedViewport {
@@ -1146,44 +1202,24 @@ impl Compositor {
                     );
                     let local_w = clip_rect.width();
                     let local_h = clip_rect.height();
-                    let (draw_w, draw_h) = if video_frame.width > 0 && video_frame.height > 0 {
-                        let frame_w = f64::from(video_frame.width);
-                        let frame_h = f64::from(video_frame.height);
-                        let contain_scale = (local_w / frame_w).min(local_h / frame_h);
-                        let scale = match video_data.object_fit {
-                            VideoObjectFit::Fill => None,
-                            VideoObjectFit::Contain => Some(contain_scale),
-                            VideoObjectFit::Cover => {
-                                Some((local_w / frame_w).max(local_h / frame_h))
-                            }
-                            VideoObjectFit::None => Some(1.0),
-                            VideoObjectFit::ScaleDown => Some(contain_scale.min(1.0)),
-                        };
-                        match scale {
-                            Some(scale) => (frame_w * scale, frame_h * scale),
-                            None => (local_w, local_h),
-                        }
-                    } else {
-                        (local_w, local_h)
-                    };
-                    let position_offset =
-                        |component: VideoObjectPositionComponent, free_space: f64| match component {
-                            VideoObjectPositionComponent::Percentage(percentage) => {
-                                free_space * percentage
-                            }
-                            VideoObjectPositionComponent::Length(length) => length,
-                        };
-                    let offset_x = tx
-                        + position_offset(video_data.object_position.horizontal, local_w - draw_w);
-                    let offset_y =
-                        ty + position_offset(video_data.object_position.vertical, local_h - draw_h);
+                    let geometry = video_draw_geometry(
+                        local_w,
+                        local_h,
+                        f64::from(video_frame.width),
+                        f64::from(video_frame.height),
+                        video_data.object_fit,
+                        video_data.object_position,
+                        video_data.device_scale_factor,
+                    );
+                    let offset_x = tx + geometry.x;
+                    let offset_y = ty + geometry.y;
                     let scale_x = if video_frame.width > 0 {
-                        draw_w / video_frame.width as f64
+                        geometry.width / video_frame.width as f64
                     } else {
                         1.0
                     };
                     let scale_y = if video_frame.height > 0 {
-                        draw_h / video_frame.height as f64
+                        geometry.height / video_frame.height as f64
                     } else {
                         1.0
                     };
@@ -1640,7 +1676,7 @@ impl Compositor {
 
 #[cfg(test)]
 mod tests {
-    use super::{Compositor, ContentFrame};
+    use super::{Compositor, ContentFrame, VideoDrawGeometry, video_draw_geometry};
     use crate::renderer::image::{ImageSurface, StoredImage};
     use anyrender::Scene as RenderScene;
     use ipc_messages::content::{
@@ -1649,6 +1685,7 @@ mod tests {
         RecordedScene, ResourcePartitionKey, WebviewId,
     };
     use ipc_messages::graphics::{CompositingLayerId, DecodedImage, ImageFormat, SurfacePayload};
+    use ipc_messages::media::{VideoObjectFit, VideoObjectPosition, VideoObjectPositionComponent};
 
     const IMAGE_WIDTH: u32 = 4;
     const IMAGE_HEIGHT: u32 = 4;
@@ -1931,6 +1968,144 @@ mod tests {
                 true,
             ),
             "a re-recorded scene is dirty even though its commands are identical"
+        );
+    }
+
+    fn object_position(
+        horizontal: VideoObjectPositionComponent,
+        vertical: VideoObjectPositionComponent,
+    ) -> VideoObjectPosition {
+        VideoObjectPosition {
+            horizontal,
+            vertical,
+        }
+    }
+
+    fn centered() -> VideoObjectPosition {
+        object_position(
+            VideoObjectPositionComponent::Percentage(0.5),
+            VideoObjectPositionComponent::Percentage(0.5),
+        )
+    }
+
+    #[test]
+    fn video_fit_geometry_covers_every_object_fit_value() {
+        let cases = [
+            (
+                VideoObjectFit::Fill,
+                VideoDrawGeometry {
+                    width: 100.0,
+                    height: 100.0,
+                    x: 0.0,
+                    y: 0.0,
+                },
+            ),
+            (
+                VideoObjectFit::Contain,
+                VideoDrawGeometry {
+                    width: 100.0,
+                    height: 50.0,
+                    x: 0.0,
+                    y: 25.0,
+                },
+            ),
+            (
+                VideoObjectFit::Cover,
+                VideoDrawGeometry {
+                    width: 200.0,
+                    height: 100.0,
+                    x: -50.0,
+                    y: 0.0,
+                },
+            ),
+            (
+                VideoObjectFit::None,
+                VideoDrawGeometry {
+                    width: 400.0,
+                    height: 200.0,
+                    x: -150.0,
+                    y: -50.0,
+                },
+            ),
+            (
+                VideoObjectFit::ScaleDown,
+                VideoDrawGeometry {
+                    width: 100.0,
+                    height: 50.0,
+                    x: 0.0,
+                    y: 25.0,
+                },
+            ),
+        ];
+        for (object_fit, expected) in cases {
+            assert_eq!(
+                video_draw_geometry(100.0, 100.0, 200.0, 100.0, object_fit, centered(), 2.0),
+                expected,
+                "{object_fit:?}"
+            );
+        }
+
+        assert_eq!(
+            video_draw_geometry(
+                500.0,
+                500.0,
+                100.0,
+                50.0,
+                VideoObjectFit::ScaleDown,
+                centered(),
+                2.0,
+            ),
+            VideoDrawGeometry {
+                width: 200.0,
+                height: 100.0,
+                x: 150.0,
+                y: 200.0,
+            },
+            "scale-down must use the natural size in device pixels, not CSS pixels"
+        );
+    }
+
+    #[test]
+    fn video_object_position_accepts_percentages_and_device_lengths() {
+        assert_eq!(
+            video_draw_geometry(
+                100.0,
+                100.0,
+                200.0,
+                100.0,
+                VideoObjectFit::Contain,
+                object_position(
+                    VideoObjectPositionComponent::Length(10.0),
+                    VideoObjectPositionComponent::Percentage(0.25),
+                ),
+                1.0,
+            ),
+            VideoDrawGeometry {
+                width: 100.0,
+                height: 50.0,
+                x: 10.0,
+                y: 12.5,
+            }
+        );
+        assert_eq!(
+            video_draw_geometry(
+                100.0,
+                100.0,
+                200.0,
+                100.0,
+                VideoObjectFit::Contain,
+                object_position(
+                    VideoObjectPositionComponent::Percentage(0.25),
+                    VideoObjectPositionComponent::Length(10.0),
+                ),
+                1.0,
+            ),
+            VideoDrawGeometry {
+                width: 100.0,
+                height: 50.0,
+                x: 0.0,
+                y: 10.0,
+            }
         );
     }
 }

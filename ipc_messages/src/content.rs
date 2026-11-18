@@ -1354,6 +1354,15 @@ pub enum ImageEvent {
     Error,
 }
 
+/// An event fired by a media element task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MediaElementEvent {
+    /// <https://html.spec.whatwg.org/#event-media-loadedmetadata>
+    LoadedMetadata,
+    /// <https://html.spec.whatwg.org/#event-media-resize>
+    Resize,
+}
+
 /// A message the user agent (or the net process) sends into a content
 /// process to drive it.  A content process is one agent cluster; most
 /// commands are addressed to the cluster's single similar-origin window
@@ -1516,6 +1525,14 @@ pub enum Command {
         paint_id: VideoPaintId,
         width: u32,
         height: u32,
+    },
+    /// A media element task queued on the media element event task source:
+    /// fire the named event at the `<video>` element.
+    /// <https://html.spec.whatwg.org/#queue-a-media-element-task>
+    RunMediaElementTask {
+        document_id: DocumentId,
+        node_id: usize,
+        event: MediaElementEvent,
     },
     /// The target-process half of the window post message steps (step 8 and
     /// its substeps): the user agent routes this to the target window's event
@@ -2140,6 +2157,33 @@ mod tests {
         let error = super::serialize_scene_to_vec(&scene)
             .expect_err("a Custom paint must fail serialization by name");
         assert!(error.contains("Paint::Custom"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn serialize_scene_rejects_a_pattern_paint() {
+        let scene = super::RecordedScene {
+            tolerance: 0.1,
+            font_ids: Vec::new(),
+            commands: vec![super::SerializableRenderCommand::Fill(
+                super::SerializableFillCommand {
+                    fill: Fill::NonZero,
+                    transform: Affine::IDENTITY,
+                    brush: anyrender::Paint::Pattern(anyrender::Pattern::new(
+                        Scene::new(),
+                        peniko::kurbo::Rect::new(0.0, 0.0, 4.0, 4.0),
+                    )),
+                    brush_transform: None,
+                    shape: peniko::kurbo::BezPath::new(),
+                    anti_aliasing: AntiAliasing::Enabled,
+                },
+            )],
+        };
+        let error = super::serialize_scene_to_vec(&scene)
+            .expect_err("a Pattern paint must fail serialization by name");
+        assert!(
+            error.contains("Paint::Pattern"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

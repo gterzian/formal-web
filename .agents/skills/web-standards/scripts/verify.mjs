@@ -293,46 +293,6 @@ function collectStepsForAnchor($, anchor) {
   return map;
 }
 
-/**
- * The other numbered algorithms in the same definition item as `anchor`.
- *
- * An IDL attribute can own both getter and setter algorithms under one anchor
- * (`#dom-iframe-srcdoc` is one), and the comment on each Rust function quotes
- * the steps of its own algorithm. Collect every top-level list in the
- * definition item so verification can match a step against whichever one the
- * code implements.
- */
-function collectAlternativeStepMapsForAnchor($, anchor) {
-  const $element = $(`[id="${anchor}"]`).first();
-  if (!$element.length) return [];
-
-  const maps = [];
-  const $algorithm = $element.closest("div[data-algorithm], ol.algorithm");
-  if ($algorithm.length) {
-    let $sibling = $algorithm.next();
-    while ($sibling.length && $sibling.attr("data-algorithm") !== undefined) {
-      const map = new Map();
-      collectFromAlgorithmContainer($, $sibling, map);
-      if (map.size > 0) maps.push(map);
-      $sibling = $sibling.next();
-    }
-  }
-
-  const $item = $element.closest("dd, dt");
-  const $block = $item.length ? $item : $element.closest("p");
-  if ($block.length) {
-    $block
-      .find("ol")
-      .filter((_, list) => !$(list).parent().closest("ol").length)
-      .each((_, list) => {
-        const map = new Map();
-        collectAlgorithmSteps($, $(list), "", map);
-        if (map.size > 0) maps.push(map);
-      });
-  }
-  return maps;
-}
-
 export async function verifyPaths(paths, options = {}) {
   const files = [];
   for (const path of paths) {
@@ -385,30 +345,28 @@ export async function verifyPaths(paths, options = {}) {
     if (record.steps.length === 0) continue;
 
     const stepMap = collectStepsForAnchor($, record.anchor);
-    const alternativeStepMaps = collectAlternativeStepMapsForAnchor($, record.anchor);
     // An anchor defined in prose (an IDL attribute or method, a concept) has
     // no numbered algorithm; only the anchor itself is checked.
-    if (stepMap.size === 0 && alternativeStepMaps.every((map) => map.size === 0)) {
-      continue;
-    }
+    if (stepMap.size === 0) continue;
     for (const step of record.steps) {
       checkedSteps += 1;
-      const candidates = [stepMap, ...alternativeStepMaps]
-        .map((map) => map.get(step.number))
-        .filter((rendered) => rendered !== undefined);
-      const rendered = candidates.find((candidate) =>
-        stepTextMatches(step.text, candidate),
-      );
+      const rendered = stepMap.get(step.number);
       if (rendered === undefined) {
         issues.push({
           file: record.file,
           line: step.line,
           anchor: record.anchor,
-          message:
-            candidates.length === 0
-              ? `step ${step.number} not found in the spec algorithm`
-              : `step ${step.number} text does not match the spec`,
-          expected: candidates[0],
+          message: `step ${step.number} not found in the spec algorithm`,
+        });
+        continue;
+      }
+      if (!stepTextMatches(step.text, rendered)) {
+        issues.push({
+          file: record.file,
+          line: step.line,
+          anchor: record.anchor,
+          message: `step ${step.number} text does not match the spec`,
+          expected: rendered,
           actual: step.text,
         });
       }

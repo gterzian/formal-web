@@ -8,6 +8,13 @@ use crate::html::html_media_element::HTMLMediaElement;
 use crate::js::Types;
 use js_engine::{ExecutionContext, gc_struct};
 
+/// The media element tasks a newly reported video intrinsic size queues.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct VideoIntrinsicSizeEvents {
+    pub(crate) resize: bool,
+    pub(crate) loaded_metadata: bool,
+}
+
 /// <https://html.spec.whatwg.org/#the-video-element>
 #[gc_struct]
 pub struct HTMLVideoElement {
@@ -36,12 +43,22 @@ impl HTMLVideoElement {
 
     /// Applies the natural size the graphics process reported for the video
     /// stream, and moves the element to `HAVE_METADATA` once that size is
-    /// known.
-    pub(crate) fn set_video_intrinsic_size(&mut self, width: u32, height: u32) {
+    /// known. Returns the media element tasks the change queues.
+    pub(crate) fn set_video_intrinsic_size(
+        &mut self,
+        width: u32,
+        height: u32,
+    ) -> VideoIntrinsicSizeEvents {
+        let size_changed = self.video_width != width || self.video_height != height;
+        let became_have_metadata = self.media_element.ready_state == HTMLMediaElement::HAVE_NOTHING;
         self.video_width = width;
         self.video_height = height;
-        if self.media_element.ready_state == HTMLMediaElement::HAVE_NOTHING {
+        if became_have_metadata {
             self.media_element.ready_state = HTMLMediaElement::HAVE_METADATA;
+        }
+        VideoIntrinsicSizeEvents {
+            resize: became_have_metadata || size_changed,
+            loaded_metadata: became_have_metadata,
         }
     }
 

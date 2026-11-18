@@ -66,7 +66,7 @@ pub enum VideoObjectFit {
 pub enum VideoObjectPositionComponent {
     /// A percentage of the free space between the element's box and the video.
     Percentage(f64),
-    /// A CSS-pixel offset from the element's box edge.
+    /// A device-pixel offset from the element's box edge.
     Length(f64),
 }
 
@@ -90,4 +90,7 @@ pub struct VideoEmbedData {
     pub object_fit: VideoObjectFit,
     /// Where the fitted frame sits inside the element's box.
     pub object_position: VideoObjectPosition,
+    /// The device scale factor the element's box is measured in, so `none` and
+    /// `scale-down` can size the frame's CSS natural size in device pixels.
+    pub device_scale_factor: f64,
 }

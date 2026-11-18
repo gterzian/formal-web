@@ -518,3 +518,31 @@ pub(crate) fn install_resource(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::PaintDirty;
+
+    #[test]
+    fn unrelated_mutation_in_the_same_batch_keeps_the_repaint() {
+        let paint_dirty = PaintDirty::default();
+        // The `<img>` attribute hook arms the suppression.
+        paint_dirty.note_embed_only_mutation();
+        // Another mutation in the same blitz mutator batch runs the non-embed
+        // hook, which clears the suppression and marks the paint.
+        paint_dirty.clear_embed_only_mutation();
+        paint_dirty.note_paint();
+        // Blitz then issues the batch's single request.
+        paint_dirty.blitz_requested_redraw();
+        assert!(paint_dirty.needs_paint());
+    }
+
+    #[test]
+    fn a_cleared_token_does_not_swallow_a_later_request() {
+        let paint_dirty = PaintDirty::default();
+        paint_dirty.note_embed_only_mutation();
+        paint_dirty.clear_embed_only_mutation();
+        paint_dirty.blitz_requested_redraw();
+        assert!(paint_dirty.needs_paint());
+    }
+}
