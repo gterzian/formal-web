@@ -9,6 +9,7 @@ use std::rc::Rc;
 
 use blitz_dom::resource::{Resource, ResourceLoadResponse};
 use blitz_dom::{BaseDocument, DocumentEvent, FontFaceOverrides, ResourceHooks, ResourceRequest};
+use blitz_traits::NodeId;
 use blitz_traits::net::Bytes;
 use ipc_messages::content::{
     Command, DocumentFetchId, DocumentId, Event as ContentEvent, EventLoopId, ImageElementId,
@@ -20,7 +21,7 @@ use style::stylesheets::Origin;
 use url::Url;
 
 use crate::fetch::{FetchContext, InternalFetchRequest, fetch};
-use crate::html::images_processing_model::{ImageFetchSink, ImageRegistry};
+use crate::html::images_processing_model::{ImageFetchSink, ImageRegistry, draws_an_embed_layer};
 use crate::js::{RealmJob, RealmJobQueue};
 use crate::{LocalContentStateRef, PendingNetworkHandler};
 
@@ -30,7 +31,7 @@ use crate::{LocalContentStateRef, PendingNetworkHandler};
 pub(crate) enum AssetRequest {
     /// A `<link rel=stylesheet>` stylesheet.
     Stylesheet {
-        node_id: usize,
+        node_id: NodeId,
         url: String,
         request_id: Option<usize>,
     },
@@ -45,7 +46,7 @@ pub(crate) enum AssetRequest {
     /// `background-image`/`mask-image`). Nothing decodes it: the graphics
     /// process owns every image, so the request is answered as failed and
     /// blitz paints nothing.
-    DecodedImage { node_id: usize, url: String },
+    DecodedImage { node_id: NodeId, url: String },
 }
 
 /// The document's pending paint work.
@@ -54,6 +55,7 @@ pub(crate) struct PaintDirty {
     paint: Cell<bool>,
     restyle: Cell<bool>,
     composition: Cell<bool>,
+    embed_only_mutation: Cell<bool>,
 }
 
 impl PaintDirty {
@@ -61,6 +63,35 @@ impl PaintDirty {
     /// font loaded, an embed site appeared, the viewport changed.
     pub(crate) fn note_paint(&self) {
         self.paint.set(true);
+    }
+
+    /// Blitz asked for a repaint.  The request that follows an `<img>` image
+    /// attribute change is the mutator's own: blitz asks for a repaint once per
+    /// mutation it performs, while the change is drawn by the image layer the
+    /// graphics process composes, so that one request is dropped.  The image
+    /// processing model marks the repaint itself when the presentation it
+    /// produces can move what the document draws
+    /// (`ContentProcess::apply_pending_image_presentation`); when it cannot,
+    /// only the composition is rebuilt.
+    pub(crate) fn blitz_requested_redraw(&self) {
+        if self.embed_only_mutation.replace(false) {
+            return;
+        }
+        self.paint.set(true);
+    }
+
+    /// An `<img>` image attribute change was observed, so the repaint blitz is
+    /// about to request belongs to the embed layer
+    /// (`blitz_requested_redraw`).
+    pub(crate) fn note_embed_only_mutation(&self) {
+        self.embed_only_mutation.set(true);
+    }
+
+    /// A change the document's own scene draws was observed (or the operation
+    /// that made an embed-only change has ended): the next repaint blitz asks
+    /// for covers more than the embed layer and must be kept.
+    pub(crate) fn clear_embed_only_mutation(&self) {
+        self.embed_only_mutation.set(false);
     }
 
     /// A restyle may have changed a computed style (`:hover` state, a
@@ -115,7 +146,7 @@ pub(crate) enum IframeMutationSteps {
 /// for.
 pub(crate) struct PendingIframeSteps {
     pub(crate) document_id: DocumentId,
-    pub(crate) iframe_node_id: usize,
+    pub(crate) iframe_node_id: NodeId,
     pub(crate) steps: IframeMutationSteps,
 }
 
@@ -124,7 +155,7 @@ pub(crate) struct PendingIframeSteps {
 /// restyle damage blitz inserted for it once the operation has run.
 pub(crate) struct PendingEmbedOnlyAttributeChange {
     pub(crate) document_id: DocumentId,
-    pub(crate) img_node_id: usize,
+    pub(crate) img_node_id: NodeId,
 }
 
 /// The service providers of one content document, handed to `blitz-dom` as
@@ -226,6 +257,7 @@ impl DocumentProviders {
     /// mutates a document other than the one it runs in still marks that
     /// document), and the image processing model's redraws.
     pub(crate) fn request_redraw(&self) {
+        self.paint_dirty.clear_embed_only_mutation();
         self.paint_dirty.note_paint();
     }
 
@@ -235,7 +267,7 @@ impl DocumentProviders {
     /// realm) mutably borrowed, so the hook records the step and the process runs
     /// it at the end of the current DOM operation (see
     /// `ContentProcess::drain_dom_hook_steps`).
-    fn record_iframe_steps(&self, iframe_node_id: usize, steps: IframeMutationSteps) {
+    fn record_iframe_steps(&self, iframe_node_id: NodeId, steps: IframeMutationSteps) {
         self.local_state
             .borrow_mut()
             .pending_iframe_steps
@@ -248,21 +280,21 @@ impl DocumentProviders {
 
     /// Record the iframe HTML element post-connection steps.
     /// <https://html.spec.whatwg.org/#the-iframe-element:html-element-post-connection-steps>
-    pub(crate) fn record_iframe_post_connection_steps(&self, iframe_node_id: usize) {
+    pub(crate) fn record_iframe_post_connection_steps(&self, iframe_node_id: NodeId) {
         self.record_iframe_steps(iframe_node_id, IframeMutationSteps::PostConnection);
     }
 
     /// Record "process the iframe attributes" after an observed `src` or
     /// `srcdoc` attribute change.
     /// <https://html.spec.whatwg.org/#process-the-iframe-attributes>
-    pub(crate) fn record_iframe_attribute_change_steps(&self, iframe_node_id: usize) {
+    pub(crate) fn record_iframe_attribute_change_steps(&self, iframe_node_id: NodeId) {
         self.record_iframe_steps(iframe_node_id, IframeMutationSteps::AttributeChange);
     }
 
     /// Record the HTML element removing steps for an iframe the mutation hooks
     /// observed being removed.
     /// <https://html.spec.whatwg.org/#html-element-removing-steps>
-    pub(crate) fn record_iframe_removing_steps(&self, iframe_node_id: usize) {
+    pub(crate) fn record_iframe_removing_steps(&self, iframe_node_id: NodeId) {
         self.record_iframe_steps(iframe_node_id, IframeMutationSteps::Removing);
     }
 
@@ -271,7 +303,20 @@ impl DocumentProviders {
     /// restyle damage blitz inserted for it: whether the document's own scene
     /// changes is decided by the presentation the image's decode produces, not
     /// by the attribute write.
-    pub(crate) fn record_embed_only_attribute_change(&self, img_node_id: usize) {
+    pub(crate) fn record_embed_only_attribute_change(&self, img_node_id: NodeId) {
+        // Arm the repaint suppression only for a connected element that already
+        // has an image: blitz requests a repaint for a mutation of a node in the
+        // document, so that request is the one the suppression consumes. For a
+        // detached element blitz requests nothing, and a token left behind would
+        // drop an unrelated repaint.
+        let is_embed_layer_change = {
+            let registry = self.image_registry.borrow();
+            let element = registry.element(self.document_id, img_node_id);
+            draws_an_embed_layer(&element)
+        };
+        if is_embed_layer_change {
+            self.paint_dirty.note_embed_only_mutation();
+        }
         self.local_state
             .borrow_mut()
             .pending_embed_only_attribute_changes
@@ -329,13 +374,13 @@ impl ImageFetchSink for DocumentProviders {
     fn queue_image_element_task(
         &self,
         document_id: DocumentId,
-        node_id: usize,
+        node_id: NodeId,
         event: ImageEvent,
         current_url: Option<String>,
     ) {
         let command = Command::RunImageElementTask {
             document_id,
-            node_id,
+            node_id: node_id.as_u64(),
             event,
             current_url,
         };
@@ -347,14 +392,14 @@ impl ImageFetchSink for DocumentProviders {
     fn queue_finish_environment_update(
         &self,
         document_id: DocumentId,
-        node_id: usize,
+        node_id: NodeId,
         instance_id: u64,
         selected_source: String,
         selected_pixel_density: f64,
     ) {
         let command = Command::RunImageEnvironmentUpdate {
             document_id,
-            node_id,
+            node_id: node_id.as_u64(),
             instance_id,
             selected_source,
             selected_pixel_density,
@@ -400,6 +445,10 @@ impl ResourceHooks for DocumentProviders {
                     url: url.to_string(),
                 },
             ),
+            // An iframe is a separate navigable rendered by its own content
+            // process in this browser; the sub-document blitz would parse into
+            // this document is not used, so the request goes unanswered.
+            ResourceRequest::SubDocument { .. } => return,
         };
         let handler_id = DocumentFetchId::new();
         self.start_fetch(
@@ -467,5 +516,33 @@ pub(crate) fn install_resource(
             }));
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PaintDirty;
+
+    #[test]
+    fn unrelated_mutation_in_the_same_batch_keeps_the_repaint() {
+        let paint_dirty = PaintDirty::default();
+        // The `<img>` attribute hook arms the suppression.
+        paint_dirty.note_embed_only_mutation();
+        // Another mutation in the same blitz mutator batch runs the non-embed
+        // hook, which clears the suppression and marks the paint.
+        paint_dirty.clear_embed_only_mutation();
+        paint_dirty.note_paint();
+        // Blitz then issues the batch's single request.
+        paint_dirty.blitz_requested_redraw();
+        assert!(paint_dirty.needs_paint());
+    }
+
+    #[test]
+    fn a_cleared_token_does_not_swallow_a_later_request() {
+        let paint_dirty = PaintDirty::default();
+        paint_dirty.note_embed_only_mutation();
+        paint_dirty.clear_embed_only_mutation();
+        paint_dirty.blitz_requested_redraw();
+        assert!(paint_dirty.needs_paint());
     }
 }

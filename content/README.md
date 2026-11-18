@@ -250,15 +250,20 @@ new mutation path must mark the document itself.
 
 An `<img>`'s image attributes (`src`, `srcset`, `sizes`, `crossorigin`,
 `referrerpolicy`) are the exception among attribute changes: the hook records the
-node instead of marking a repaint, and the content process drops the restyle
-damage blitz inserted for it once the operation has run
-(`ContentProcess::clear_embed_only_attribute_damage`). The image processing model
-then decides at presentation time: if the element already had an embed site and
-its computed `width` and `height` are both specified, the new intrinsic size
-cannot move anything the document draws, so only the damage that one call added
-is dropped and the document is re-composed; otherwise the document repaints
-(the image became available, so the alt text it painted goes away, or its box
-moved).
+node instead of marking a repaint, and the content process drops both the restyle
+damage blitz inserted for it and blitz's own repaint request for the mutation
+once the operation has run
+(`ContentProcess::clear_embed_only_attribute_damage`,
+`PaintDirty::blitz_requested_redraw`). The hook arms the repaint suppression only
+for a connected element that already has a current image, because blitz requests
+the repaint for a node in the document; a detached element's attribute change
+requests none, and a token armed for it would drop an unrelated repaint. The
+image processing model then decides at presentation time: if the element already
+had an embed site and its computed `width` and `height` are both specified, the
+new intrinsic size cannot move anything the document draws, so only the damage
+that one call added is dropped and the document is re-composed; otherwise the
+document repaints (the image became available, so the alt text it painted goes
+away, or its box moved).
 
 An animating document also resolves every cycle: blitz reports CSS animation
 damage only when the resolve pass runs, and it does not request a redraw per

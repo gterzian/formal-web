@@ -469,7 +469,6 @@ impl DedicatedWorkerAgentState {
     /// Report the worker's teardown to its owner event loop (the owner joins
     /// the agent's thread and drops the owner end of its channel).  Runs as
     /// the thread's last act, also on failure or panic.
-
     /// <https://html.spec.whatwg.org/#fetch-a-classic-worker-script>
     fn start_script_fetch(&mut self, script_url: String) -> Result<(), String> {
         // Note: Partial implementation of fetch a classic worker script (the

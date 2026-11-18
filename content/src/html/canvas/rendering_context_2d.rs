@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use anyrender::{PaintScene, Scene};
+use anyrender::{AntiAliasing, PaintScene, Scene};
 use ipc_messages::content::{CanvasId, RecordedScene, serialize_scene_to_vec};
 use ipc_messages::graphics::GraphicsCommand;
 use js_engine::{Completion, ExecutionContext};
@@ -210,6 +210,7 @@ impl RenderingContext2D {
             fill_style,
             None,
             &rect.to_path(0.1),
+            AntiAliasing::Enabled,
         );
         self.commit(ec)
     }
@@ -240,6 +241,7 @@ impl RenderingContext2D {
             Color::TRANSPARENT,
             None,
             &rect.to_path(0.1),
+            AntiAliasing::Enabled,
         );
         self.commit(ec)
     }

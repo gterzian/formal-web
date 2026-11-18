@@ -22,15 +22,18 @@ pub(crate) use downcast::{
     with_cloned_platform_mut,
 };
 
+/// The function-pointer shape of a stateless builtin.
+pub(crate) type StaticBuiltinBehaviour = fn(
+    &[<Types as JsTypes>::JsValue],
+    <Types as JsTypes>::JsValue,
+    &mut dyn ExecutionContext<Types>,
+) -> Completion<<Types as JsTypes>::JsValue, Types>;
+
 /// Convert a stateless raw function pointer into a builtin function.
 /// This is the safe replacement for the removed `create_builtin_fn` trait method.
 pub(crate) fn create_builtin_fn_static(
     ec: &mut dyn ExecutionContext<Types>,
-    behaviour: fn(
-        &[<Types as JsTypes>::JsValue],
-        <Types as JsTypes>::JsValue,
-        &mut dyn ExecutionContext<Types>,
-    ) -> Completion<<Types as JsTypes>::JsValue, Types>,
+    behaviour: StaticBuiltinBehaviour,
     length: u32,
     name: <Types as JsTypes>::PropertyKey,
 ) -> <Types as JsTypes>::Function {

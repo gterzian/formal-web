@@ -1,15 +1,24 @@
 use crate::graphics::DecodedImage;
-use crate::media::VideoEmbedData;
+use crate::media::{VideoEmbedData, VideoPaintId};
 use crate::safe_passing_of_structured_data::{PortMessagePayload, PostMessageRequest};
 use anyrender::{
-    Scene,
-    recording::{GlyphRunCommand, RenderCommand},
+    AntiAliasing, BoxShadowKind, Filter, Glyph, MaskMode, NonUniformRoundedRect, NormalizedCoord,
+    Paint, Scene,
+    filters::FilterImage,
+    recording::{
+        BoxShadowCommand, ClipCommand, FillCommand, GlyphRunCommand, LayerCommand,
+        MaskLayerCommand, RenderCommand, StrokeCommand,
+    },
 };
 
+use peniko::Color;
 use peniko::FontData;
+use peniko::kurbo::{Affine, BezPath, Stroke, Vec2};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, hash_map::Entry};
+use std::convert::Infallible;
 use std::fmt;
+use std::sync::Arc;
 use uuid::Uuid;
 use verification::TraceSender;
 
@@ -79,7 +88,7 @@ impl ImagePaintId {
     /// frame-composition builder recomputes it without a side table.
     ///
     /// <https://html.spec.whatwg.org/#htmlimageelement>
-    pub fn for_node(navigable_id: NavigableId, node_id: usize) -> Self {
+    pub fn for_node(navigable_id: NavigableId, node_id: u64) -> Self {
         let name = format!("{}:{node_id}", navigable_id.0);
         Self(Uuid::new_v5(&Self::LAYER_NAMESPACE, name.as_bytes()))
     }
@@ -270,7 +279,7 @@ pub struct NavigateRequest {
     /// The document source of a navigation to the `srcdoc` resource of an
     /// iframe. The user agent answers the navigation with this body instead of
     /// fetching `about:srcdoc`.
-    /// <https://html.spec.whatwg.org/#navigate-to-the-srcdoc-resource>
+    /// <https://html.spec.whatwg.org/#about:srcdoc>
     #[serde(default)]
     pub srcdoc_html: Option<String>,
 }
@@ -594,7 +603,7 @@ impl FontTransportSender {
             .commands
             .into_iter()
             .map(|command| {
-                SerializableRenderCommand::from_render_command(command, |font_data_ref| {
+                SerializableRenderCommand::from_render_command(command, &mut |font_data_ref| {
                     let font_id = FontIdentifier::from_font_data(font_namespace, font_data_ref);
                     let next_scene_font_id = font_ids.len() as u32;
                     let scene_font_id = match scene_font_ids.entry(font_id) {
@@ -648,10 +657,10 @@ impl FontTransportReceiver {
         font_data: &HashMap<usize, Vec<u8>>,
     ) {
         for font in registered_fonts {
-            if let Entry::Vacant(entry) = self.fonts.entry(font.id) {
-                if let Some(data) = font_data.get(&font.data_shmem_key) {
-                    entry.insert(font.into_font_data_from_bytes(data.clone()));
-                }
+            if let Entry::Vacant(entry) = self.fonts.entry(font.id)
+                && let Some(data) = font_data.get(&font.data_shmem_key)
+            {
+                entry.insert(font.into_font_data_from_bytes(data.clone()));
             }
         }
     }
@@ -672,49 +681,218 @@ impl FontTransportReceiver {
     }
 }
 
+/// A render command in wire form.
+///
+/// The wire format spells every field out instead of reusing the renderer
+/// crate's own `Serialize` impls: some of those `skip_serializing_if` a
+/// defaulted field (the anti-aliasing flag), which a self-describing format can
+/// read back but postcard cannot — the omitted field leaves the reader misframed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct SerializableRenderCommand(pub RenderCommand<u32>);
+pub enum SerializableRenderCommand {
+    PushLayer(SerializableLayerCommand),
+    PushClipLayer(SerializableClipCommand),
+    PushMaskLayer(SerializableMaskCommand),
+    PopLayer,
+    Stroke(SerializableStrokeCommand),
+    Fill(SerializableFillCommand),
+    GlyphRun(SerializableGlyphRunCommand),
+    BoxShadow(SerializableBoxShadowCommand),
+}
+
+/// A filter graph whose `feImage` scenes are in transport form: each carries
+/// render commands whose font references are scene-local ids.
+pub type SerializableFilter = Filter<SerializableFilterImage>;
+
+/// The scene of a filter's `feImage` primitive, in transport form.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SerializableFilterImage {
+    pub tolerance: f64,
+    pub commands: Vec<SerializableRenderCommand>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SerializableLayerCommand {
+    pub fill: peniko::Fill,
+    pub blend: peniko::BlendMode,
+    pub alpha: f32,
+    pub transform: Affine,
+    pub clip: BezPath,
+    pub filter: Option<Arc<SerializableFilter>>,
+    pub backdrop_filter: Option<Arc<SerializableFilter>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SerializableClipCommand {
+    pub fill: peniko::Fill,
+    pub transform: Affine,
+    pub clip: BezPath,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SerializableMaskCommand {
+    pub fill: peniko::Fill,
+    pub mode: MaskMode,
+    pub transform: Affine,
+    pub clip: BezPath,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SerializableStrokeCommand {
+    pub style: Stroke,
+    pub transform: Affine,
+    pub brush: Paint,
+    pub brush_transform: Option<Affine>,
+    pub shape: BezPath,
+    pub anti_aliasing: AntiAliasing,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SerializableFillCommand {
+    pub fill: peniko::Fill,
+    pub transform: Affine,
+    pub brush: Paint,
+    pub brush_transform: Option<Affine>,
+    pub shape: BezPath,
+    pub anti_aliasing: AntiAliasing,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SerializableGlyphRunCommand {
+    /// Scene-local font id: an index into the scene's `font_ids`.
+    pub font_data: u32,
+    pub font_size: f32,
+    pub hint: bool,
+    pub normalized_coords: Vec<NormalizedCoord>,
+    pub embolden: Vec2,
+    pub style: peniko::Style,
+    pub brush: Paint,
+    pub brush_alpha: f32,
+    pub transform: Affine,
+    pub glyph_transform: Option<Affine>,
+    pub glyphs: Vec<Glyph>,
+    pub anti_aliasing: AntiAliasing,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SerializableBoxShadowCommand {
+    pub transform: Affine,
+    pub box_shape: NonUniformRoundedRect,
+    pub offset: Vec2,
+    pub spread: f64,
+    pub std_dev: f64,
+    pub color: Color,
+    pub kind: BoxShadowKind,
+}
 
 impl SerializableRenderCommand {
     fn from_render_command(
         command: RenderCommand,
-        mut scene_font_id: impl FnMut(&FontData) -> u32,
+        scene_font_id: &mut impl FnMut(&FontData) -> u32,
     ) -> Self {
         match command {
-            RenderCommand::PushLayer(command) => Self(RenderCommand::PushLayer(command)),
-            RenderCommand::PushClipLayer(command) => Self(RenderCommand::PushClipLayer(command)),
-            RenderCommand::PopLayer => Self(RenderCommand::PopLayer),
-            RenderCommand::Stroke(command) => Self(RenderCommand::Stroke(command)),
-            RenderCommand::Fill(command) => Self(RenderCommand::Fill(command)),
-            RenderCommand::GlyphRun(command) => {
-                let font_data = scene_font_id(&command.font_data);
-                Self(RenderCommand::GlyphRun(GlyphRunCommand {
-                    font_data,
-                    font_size: command.font_size,
-                    hint: command.hint,
-                    normalized_coords: command.normalized_coords,
-                    embolden: command.embolden,
-                    style: command.style,
-                    brush: command.brush,
-                    brush_alpha: command.brush_alpha,
-                    transform: command.transform,
-                    glyph_transform: command.glyph_transform,
-                    glyphs: command.glyphs,
-                }))
-            }
-            RenderCommand::BoxShadow(command) => Self(RenderCommand::BoxShadow(command)),
+            RenderCommand::PushLayer(command) => Self::PushLayer(SerializableLayerCommand {
+                fill: command.fill,
+                blend: command.blend,
+                alpha: command.alpha,
+                transform: command.transform,
+                clip: command.clip,
+                filter: record_filter(command.filter, scene_font_id),
+                backdrop_filter: record_filter(command.backdrop_filter, scene_font_id),
+            }),
+            RenderCommand::PushClipLayer(command) => Self::PushClipLayer(SerializableClipCommand {
+                fill: command.fill,
+                transform: command.transform,
+                clip: command.clip,
+            }),
+            RenderCommand::PushMaskLayer(command) => Self::PushMaskLayer(SerializableMaskCommand {
+                fill: command.fill,
+                mode: command.mode,
+                transform: command.transform,
+                clip: command.clip,
+            }),
+            RenderCommand::PopLayer => Self::PopLayer,
+            RenderCommand::Stroke(command) => Self::Stroke(SerializableStrokeCommand {
+                style: command.style,
+                transform: command.transform,
+                brush: command.brush,
+                brush_transform: command.brush_transform,
+                shape: command.shape,
+                anti_aliasing: command.anti_aliasing,
+            }),
+            RenderCommand::Fill(command) => Self::Fill(SerializableFillCommand {
+                fill: command.fill,
+                transform: command.transform,
+                brush: command.brush,
+                brush_transform: command.brush_transform,
+                shape: command.shape,
+                anti_aliasing: command.anti_aliasing,
+            }),
+            RenderCommand::GlyphRun(command) => Self::GlyphRun(SerializableGlyphRunCommand {
+                font_data: scene_font_id(&command.font_data),
+                font_size: command.font_size,
+                hint: command.hint,
+                normalized_coords: command.normalized_coords,
+                embolden: command.embolden,
+                style: command.style,
+                brush: command.brush,
+                brush_alpha: command.brush_alpha,
+                transform: command.transform,
+                glyph_transform: command.glyph_transform,
+                glyphs: command.glyphs,
+                anti_aliasing: command.anti_aliasing,
+            }),
+            RenderCommand::BoxShadow(command) => Self::BoxShadow(SerializableBoxShadowCommand {
+                transform: command.transform,
+                box_shape: command.box_shape,
+                offset: command.offset,
+                spread: command.spread,
+                std_dev: command.std_dev,
+                color: command.color,
+                kind: command.kind,
+            }),
         }
     }
 
-    fn into_render_command(self, mut font_data: impl FnMut(u32) -> FontData) -> RenderCommand {
-        match self.0 {
-            RenderCommand::PushLayer(command) => RenderCommand::PushLayer(command),
-            RenderCommand::PushClipLayer(command) => RenderCommand::PushClipLayer(command),
-            RenderCommand::PopLayer => RenderCommand::PopLayer,
-            RenderCommand::Stroke(command) => RenderCommand::Stroke(command),
-            RenderCommand::Fill(command) => RenderCommand::Fill(command),
-            RenderCommand::GlyphRun(command) => RenderCommand::GlyphRun(GlyphRunCommand {
+    fn into_render_command(self, font_data: &mut impl FnMut(u32) -> FontData) -> RenderCommand {
+        match self {
+            Self::PushLayer(command) => RenderCommand::PushLayer(LayerCommand {
+                fill: command.fill,
+                blend: command.blend,
+                alpha: command.alpha,
+                transform: command.transform,
+                clip: command.clip,
+                filter: restore_filter(command.filter, font_data),
+                backdrop_filter: restore_filter(command.backdrop_filter, font_data),
+            }),
+            Self::PushClipLayer(command) => RenderCommand::PushClipLayer(ClipCommand {
+                fill: command.fill,
+                transform: command.transform,
+                clip: command.clip,
+            }),
+            Self::PushMaskLayer(command) => RenderCommand::PushMaskLayer(MaskLayerCommand {
+                fill: command.fill,
+                mode: command.mode,
+                transform: command.transform,
+                clip: command.clip,
+            }),
+            Self::PopLayer => RenderCommand::PopLayer,
+            Self::Stroke(command) => RenderCommand::Stroke(StrokeCommand {
+                style: command.style,
+                transform: command.transform,
+                brush: command.brush,
+                brush_transform: command.brush_transform,
+                shape: command.shape,
+                anti_aliasing: command.anti_aliasing,
+            }),
+            Self::Fill(command) => RenderCommand::Fill(FillCommand {
+                fill: command.fill,
+                transform: command.transform,
+                brush: command.brush,
+                brush_transform: command.brush_transform,
+                shape: command.shape,
+                anti_aliasing: command.anti_aliasing,
+            }),
+            Self::GlyphRun(command) => RenderCommand::GlyphRun(GlyphRunCommand {
                 font_data: font_data(command.font_data),
                 font_size: command.font_size,
                 hint: command.hint,
@@ -726,9 +904,67 @@ impl SerializableRenderCommand {
                 transform: command.transform,
                 glyph_transform: command.glyph_transform,
                 glyphs: command.glyphs,
+                anti_aliasing: command.anti_aliasing,
             }),
-            RenderCommand::BoxShadow(command) => RenderCommand::BoxShadow(command),
+            Self::BoxShadow(command) => RenderCommand::BoxShadow(BoxShadowCommand {
+                transform: command.transform,
+                box_shape: command.box_shape,
+                offset: command.offset,
+                spread: command.spread,
+                std_dev: command.std_dev,
+                color: command.color,
+                kind: command.kind,
+            }),
         }
+    }
+}
+
+/// Record a layer filter, carrying each `feImage` scene in transport form.
+fn record_filter(
+    filter: Option<Arc<Filter<FilterImage>>>,
+    scene_font_id: &mut impl FnMut(&FontData) -> u32,
+) -> Option<Arc<SerializableFilter>> {
+    let filter = filter?;
+    let filter = filter.try_map_images(|image| {
+        let mut commands = Vec::with_capacity(image.scene.commands.len());
+        for command in &image.scene.commands {
+            commands.push(SerializableRenderCommand::from_render_command(
+                command.clone(),
+                scene_font_id,
+            ));
+        }
+        Ok::<_, Infallible>(SerializableFilterImage {
+            tolerance: image.scene.tolerance,
+            commands,
+        })
+    });
+    match filter {
+        Ok(filter) => Some(Arc::new(filter)),
+        Err(never) => match never {},
+    }
+}
+
+/// Rebuild a layer filter, resolving each `feImage` scene's font ids.
+fn restore_filter(
+    filter: Option<Arc<SerializableFilter>>,
+    font_data: &mut impl FnMut(u32) -> FontData,
+) -> Option<Arc<Filter<FilterImage>>> {
+    let filter = filter?;
+    let filter = filter.try_map_images(|image| {
+        let mut commands = Vec::with_capacity(image.commands.len());
+        for command in &image.commands {
+            commands.push(command.clone().into_render_command(font_data));
+        }
+        Ok::<_, Infallible>(FilterImage {
+            scene: Scene {
+                tolerance: image.tolerance,
+                commands,
+            },
+        })
+    });
+    match filter {
+        Ok(filter) => Some(Arc::new(filter)),
+        Err(never) => match never {},
     }
 }
 
@@ -749,6 +985,7 @@ pub struct SceneSummary {
     pub stroke_commands: usize,
     pub push_layer_commands: usize,
     pub push_clip_layer_commands: usize,
+    pub push_mask_layer_commands: usize,
     pub pop_layer_commands: usize,
     pub box_shadow_commands: usize,
     pub solid_glyph_brush_runs: usize,
@@ -759,7 +996,7 @@ pub struct SceneSummary {
 impl SceneSummary {
     pub fn describe(&self) -> String {
         format!(
-            "commands={} glyph_runs={} glyphs={} font_refs={} fills={} strokes={} push_layers={} push_clip_layers={} pops={} box_shadows={} glyph_brushes(solid={}, gradient={}, image={})",
+            "commands={} glyph_runs={} glyphs={} font_refs={} fills={} strokes={} push_layers={} push_clip_layers={} push_mask_layers={} pops={} box_shadows={} glyph_brushes(solid={}, gradient={}, image={})",
             self.commands,
             self.glyph_runs,
             self.glyphs,
@@ -768,6 +1005,7 @@ impl SceneSummary {
             self.stroke_commands,
             self.push_layer_commands,
             self.push_clip_layer_commands,
+            self.push_mask_layer_commands,
             self.pop_layer_commands,
             self.box_shadow_commands,
             self.solid_glyph_brush_runs,
@@ -791,7 +1029,7 @@ impl RecordedScene {
                 .commands
                 .into_iter()
                 .map(|command| {
-                    SerializableRenderCommand::from_render_command(command, |_font_data| 0)
+                    SerializableRenderCommand::from_render_command(command, &mut |_font_data| 0)
                 })
                 .collect(),
         }
@@ -805,13 +1043,18 @@ impl RecordedScene {
         };
 
         for command in &self.commands {
-            match &command.0 {
-                RenderCommand::PushLayer(_) => summary.push_layer_commands += 1,
-                RenderCommand::PushClipLayer(_) => summary.push_clip_layer_commands += 1,
-                RenderCommand::PopLayer => summary.pop_layer_commands += 1,
-                RenderCommand::Stroke(_) => summary.stroke_commands += 1,
-                RenderCommand::Fill(_) => summary.fill_commands += 1,
-                RenderCommand::GlyphRun(command) => {
+            match &command {
+                SerializableRenderCommand::PushLayer(_) => summary.push_layer_commands += 1,
+                SerializableRenderCommand::PushClipLayer(_) => {
+                    summary.push_clip_layer_commands += 1
+                }
+                SerializableRenderCommand::PushMaskLayer(_) => {
+                    summary.push_mask_layer_commands += 1
+                }
+                SerializableRenderCommand::PopLayer => summary.pop_layer_commands += 1,
+                SerializableRenderCommand::Stroke(_) => summary.stroke_commands += 1,
+                SerializableRenderCommand::Fill(_) => summary.fill_commands += 1,
+                SerializableRenderCommand::GlyphRun(command) => {
                     summary.glyph_runs += 1;
                     summary.glyphs += command.glyphs.len();
                     use anyrender::Paint;
@@ -819,10 +1062,10 @@ impl RecordedScene {
                         Paint::Solid(_) => summary.solid_glyph_brush_runs += 1,
                         Paint::Gradient(_) => summary.gradient_glyph_brush_runs += 1,
                         Paint::Image(_) => summary.image_glyph_brush_runs += 1,
-                        Paint::Resource(_) | Paint::Custom(_) => {}
+                        Paint::Resource(_) | Paint::Custom(_) | Paint::Pattern(_) => {}
                     }
                 }
-                RenderCommand::BoxShadow(_) => summary.box_shadow_commands += 1,
+                SerializableRenderCommand::BoxShadow(_) => summary.box_shadow_commands += 1,
             }
         }
 
@@ -841,7 +1084,7 @@ impl RecordedScene {
             commands: commands
                 .into_iter()
                 .map(|command| {
-                    command.into_render_command(|scene_font_id| {
+                    command.into_render_command(&mut |scene_font_id| {
                         font_receiver.resolve_font(&font_ids, scene_font_id)
                     })
                 })
@@ -850,7 +1093,51 @@ impl RecordedScene {
     }
 }
 
+fn validate_paint(paint: &Paint) -> Result<(), String> {
+    match paint {
+        Paint::Custom(_) => Err(String::from(
+            "scene wire format cannot represent an anyrender Paint::Custom",
+        )),
+        Paint::Pattern(_) => Err(String::from(
+            "scene wire format cannot represent an anyrender Paint::Pattern",
+        )),
+        Paint::Solid(_) | Paint::Gradient(_) | Paint::Image(_) | Paint::Resource(_) => Ok(()),
+    }
+}
+
+fn validate_filter(filter: &SerializableFilter) -> Result<(), String> {
+    for image in filter.images() {
+        for command in &image.commands {
+            validate_render_command(command)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_optional_filter(filter: &Option<Arc<SerializableFilter>>) -> Result<(), String> {
+    filter.as_deref().map(validate_filter).unwrap_or(Ok(()))
+}
+
+fn validate_render_command(command: &SerializableRenderCommand) -> Result<(), String> {
+    match command {
+        SerializableRenderCommand::PushLayer(command) => {
+            validate_optional_filter(&command.filter)?;
+            validate_optional_filter(&command.backdrop_filter)
+        }
+        SerializableRenderCommand::Stroke(command) => validate_paint(&command.brush),
+        SerializableRenderCommand::Fill(command) => validate_paint(&command.brush),
+        SerializableRenderCommand::GlyphRun(command) => validate_paint(&command.brush),
+        SerializableRenderCommand::PushClipLayer(_)
+        | SerializableRenderCommand::PushMaskLayer(_)
+        | SerializableRenderCommand::PopLayer
+        | SerializableRenderCommand::BoxShadow(_) => Ok(()),
+    }
+}
+
 pub fn serialize_scene_to_vec(scene: &RecordedScene) -> Result<Vec<u8>, String> {
+    for command in &scene.commands {
+        validate_render_command(command)?;
+    }
     postcard::to_allocvec(scene)
         .map_err(|error| format!("failed to serialize paint scene: {error}"))
 }
@@ -899,6 +1186,7 @@ impl PaintFrame {
     ///
     /// `next_shmem_key` is used to assign unique keys for the scene bytes and
     /// each font's data.  On return it is advanced past all assigned keys.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         traversable_id: WebviewId,
         frame_id: FrameId,
@@ -1041,12 +1329,12 @@ pub struct WorkerRequest {
     pub worker_type: String,
     /// The realm that created the worker: the owner document, or the
     /// worker global scope when a worker creates a nested worker.
-    /// <https://html.spec.whatwg.org/#the-worker-s-lifetime>
+    /// <https://html.spec.whatwg.org/#the-worker's-lifetime>
     pub owner: WorkerOwner,
 }
 
 /// The realm that created a worker (its relevant owner to add).
-/// <https://html.spec.whatwg.org/#the-worker-s-lifetime>
+/// <https://html.spec.whatwg.org/#the-worker's-lifetime>
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkerOwner {
     /// The worker was created by a window; its owner is that window's
@@ -1064,6 +1352,17 @@ pub enum ImageEvent {
     Load,
     /// <https://html.spec.whatwg.org/#event-error>
     Error,
+}
+
+/// An event fired by a media element task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MediaElementEvent {
+    /// <https://html.spec.whatwg.org/#event-media-durationchange>
+    DurationChange,
+    /// <https://html.spec.whatwg.org/#event-media-loadedmetadata>
+    LoadedMetadata,
+    /// <https://html.spec.whatwg.org/#event-media-resize>
+    Resize,
 }
 
 /// A message the user agent (or the net process) sends into a content
@@ -1205,7 +1504,7 @@ pub enum Command {
     /// <https://html.spec.whatwg.org/#queue-an-element-task>
     RunImageElementTask {
         document_id: DocumentId,
-        node_id: usize,
+        node_id: u64,
         event: ImageEvent,
         /// The current request URL the task sets before firing, when the
         /// algorithm's queued steps include it (steps 11.2.1 and 13.4.1).
@@ -1216,10 +1515,26 @@ pub enum Command {
     /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>
     RunImageEnvironmentUpdate {
         document_id: DocumentId,
-        node_id: usize,
+        node_id: u64,
         instance_id: u64,
         selected_source: String,
         selected_pixel_density: f64,
+    },
+    /// The pixel dimensions of a video pipeline's frames, routed from the
+    /// graphics process (which owns decoding) so the `<video>` element can be
+    /// laid out with its intrinsic size.
+    VideoIntrinsicSize {
+        paint_id: VideoPaintId,
+        width: u32,
+        height: u32,
+    },
+    /// A media element task queued on the media element event task source:
+    /// fire the named event at the `<video>` element.
+    /// <https://html.spec.whatwg.org/#queue-a-media-element-task>
+    RunMediaElementTask {
+        document_id: DocumentId,
+        paint_id: VideoPaintId,
+        event: MediaElementEvent,
     },
     /// The target-process half of the window post message steps (step 8 and
     /// its substeps): the user agent routes this to the target window's event
@@ -1396,7 +1711,7 @@ pub enum Event {
         /// The worker event loop of the new dedicated worker agent.
         event_loop_id: EventLoopId,
         /// The realm that created the worker.
-        /// <https://html.spec.whatwg.org/#the-worker-s-lifetime>
+        /// <https://html.spec.whatwg.org/#the-worker's-lifetime>
         owner: WorkerOwner,
         /// The user-agent end of the dedicated worker agent's own command
         /// channel: the user agent sends commands addressed to this agent's
@@ -1437,7 +1752,7 @@ mod tests {
         FrameId, LoadedDocumentResponse, NavigableId, PaintFrame, PaintTransportSummary,
         PreparedScene, SceneSummary, UserScript, WebviewId,
     };
-    use anyrender::{Glyph, PaintScene, Scene, recording::RenderCommand};
+    use anyrender::{AntiAliasing, Glyph, PaintScene, Scene, recording::RenderCommand};
     use peniko::{
         Color, Fill, FontData,
         kurbo::{Affine, Vec2},
@@ -1462,6 +1777,7 @@ mod tests {
                 y,
             }]
             .into_iter(),
+            AntiAliasing::Enabled,
         );
         scene
     }
@@ -1477,6 +1793,23 @@ mod tests {
             }
             other => panic!("expected glyph run, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn transport_commands_round_trip_directly() {
+        let font = FontData::new(vec![1_u8, 2, 3, 4].into(), 0);
+        let scene = scene_with_glyph(&font, 7, 12.0, 18.0);
+        let commands: Vec<super::SerializableRenderCommand> = scene
+            .commands
+            .into_iter()
+            .map(|command| {
+                super::SerializableRenderCommand::from_render_command(command, &mut |_| 0)
+            })
+            .collect();
+        let bytes = postcard::to_allocvec(&commands).expect("commands should serialize");
+        let roundtripped: Vec<super::SerializableRenderCommand> =
+            postcard::from_bytes(&bytes).expect("commands should deserialize directly");
+        assert_eq!(roundtripped, commands);
     }
 
     #[test]
@@ -1501,6 +1834,7 @@ mod tests {
                 stroke_commands: 0,
                 push_layer_commands: 0,
                 push_clip_layer_commands: 0,
+                push_mask_layer_commands: 0,
                 pop_layer_commands: 0,
                 box_shadow_commands: 0,
                 solid_glyph_brush_runs: 1,
@@ -1545,6 +1879,7 @@ mod tests {
                 y: 18.0,
             }]
             .into_iter(),
+            AntiAliasing::Enabled,
         );
 
         let mut sender = FontTransportSender::default();
@@ -1570,6 +1905,290 @@ mod tests {
     }
 
     #[test]
+    fn paint_frame_round_trips_layers_masks_and_filters() {
+        use anyrender::{MaskMode, filters::FilterEffect, filters::FilterImage};
+        use peniko::BlendMode;
+        use peniko::kurbo::{Rect, RoundedRect, Stroke};
+        use std::sync::Arc;
+
+        let mut scene = Scene::new();
+        let bounds = Rect::new(0.0, 0.0, 100.0, 40.0);
+        let shape = RoundedRect::from_rect(bounds, 4.0);
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::new([1.0, 0.0, 0.0, 1.0]),
+            None,
+            &shape,
+            AntiAliasing::Enabled,
+        );
+        scene.push_mask_layer(Fill::NonZero, MaskMode::Luminance, Affine::IDENTITY, &shape);
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::new([0.0, 0.0, 1.0, 1.0]),
+            None,
+            &shape,
+            AntiAliasing::Enabled,
+        );
+        scene.pop_layer();
+        let filter: anyrender::Filter<FilterImage> = anyrender::Filter::single(
+            FilterEffect::Flood(peniko::color::AlphaColor::new([0.0, 0.0, 0.0, 0.5])),
+            bounds,
+        );
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            Affine::IDENTITY,
+            &shape,
+            Some(Arc::new(filter)),
+            None,
+        );
+        scene.stroke(
+            &Stroke::new(2.0),
+            Affine::IDENTITY,
+            Color::new([0.0, 1.0, 0.0, 1.0]),
+            None,
+            &shape,
+            AntiAliasing::Enabled,
+        );
+        scene.pop_layer();
+
+        let mut sender = FontTransportSender::default();
+        let mut next_shmem_key = 0;
+        let prepared = sender.prepare_scene(29, scene, &mut next_shmem_key);
+        let expected_recorded = prepared.scene.clone();
+        let (paint_frame, shmem_regions) = PaintFrame::new(
+            WebviewId(NavigableId::from_u128(9)),
+            FrameId::from_u128(9),
+            320,
+            240,
+            FrameCompositionMetadata::default(),
+            prepared,
+            &mut next_shmem_key,
+            false,
+            0,
+        )
+        .expect("paint frame should serialize into shared memory");
+
+        let mut receiver = FontTransportReceiver::default();
+        let roundtripped = paint_frame
+            .into_recorded_scene(&mut receiver, &shmem_regions)
+            .expect("paint frame should deserialize scene bytes");
+
+        assert_eq!(roundtripped, expected_recorded);
+    }
+
+    #[test]
+    fn transport_round_trips_gradient_image_and_feimage_scenes() {
+        use anyrender::filters::{FilterEffect, FilterImage};
+        use peniko::{
+            BlendMode, Gradient, ImageAlphaType, ImageBrush, ImageData, ImageFormat,
+            kurbo::{Rect, Stroke},
+        };
+        use std::sync::Arc;
+
+        let bounds = Rect::new(0.0, 0.0, 64.0, 32.0);
+        let gradient = Gradient::new_linear((0.0, 0.0), (64.0, 0.0))
+            .with_stops([Color::from_rgb8(255, 0, 0), Color::from_rgb8(0, 0, 255)]);
+        let image = ImageBrush::new(ImageData {
+            data: peniko::Blob::from(vec![0_u8; 16]),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: 2,
+            height: 2,
+        });
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &gradient,
+            None,
+            &bounds,
+            AntiAliasing::Enabled,
+        );
+        scene.fill(
+            Fill::NonZero,
+            Affine::translate((4.0, 6.0)),
+            image.as_ref(),
+            Some(Affine::scale(2.0)),
+            &bounds,
+            AntiAliasing::Disabled,
+        );
+        let font = FontData::new(vec![5_u8, 6, 7, 8].into(), 0);
+        scene.draw_glyphs(
+            &font,
+            21.5,
+            false,
+            &[1, -2],
+            Vec2::new(1.0, 0.5),
+            Fill::EvenOdd,
+            &gradient,
+            0.75,
+            Affine::translate((3.0, 4.0)),
+            Some(Affine::scale(1.5)),
+            [Glyph {
+                id: 11,
+                x: 7.0,
+                y: 9.0,
+            }]
+            .into_iter(),
+            AntiAliasing::Disabled,
+        );
+        let fe_image_scene = {
+            let mut scene = Scene::new();
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                image.as_ref(),
+                None,
+                &bounds,
+                AntiAliasing::Enabled,
+            );
+            scene
+        };
+        let filter: anyrender::Filter<FilterImage> = anyrender::Filter::single(
+            FilterEffect::Image(FilterImage {
+                scene: fe_image_scene,
+            }),
+            bounds,
+        );
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            0.5,
+            Affine::IDENTITY,
+            &bounds,
+            Some(Arc::new(filter)),
+            None,
+        );
+        scene.stroke(
+            &Stroke::new(3.0),
+            Affine::IDENTITY,
+            image.as_ref(),
+            None,
+            &bounds,
+            AntiAliasing::Disabled,
+        );
+        scene.pop_layer();
+
+        let mut sender = FontTransportSender::default();
+        let mut next_shmem_key = 0;
+        let prepared = sender.prepare_scene(37, scene, &mut next_shmem_key);
+        let expected_recorded = prepared.scene.clone();
+        let bytes = super::serialize_scene_to_vec(&expected_recorded)
+            .expect("scene with gradient, image, glyph run and feImage should serialize");
+        let deserialized = super::deserialize_scene_from_slice(&bytes)
+            .expect("scene with gradient, image, glyph run and feImage should deserialize");
+        assert_eq!(deserialized.summary(), expected_recorded.summary());
+        assert_eq!(
+            super::serialize_scene_to_vec(&deserialized)
+                .expect("the deserialized scene should serialize again"),
+            bytes,
+            "the scene wire bytes must survive a round trip"
+        );
+
+        let PreparedScene {
+            registered_fonts,
+            font_shmem,
+            ..
+        } = prepared;
+        let font_data = font_shmem
+            .into_iter()
+            .map(|(key, region)| (key, region.as_slice().to_vec()))
+            .collect();
+        let mut receiver = FontTransportReceiver::default();
+        receiver.register_fonts(registered_fonts, &font_data);
+        let restored = deserialized.into_scene(&receiver);
+        assert_eq!(restored.commands.len(), 6);
+        match &restored.commands[0] {
+            RenderCommand::Fill(command) => {
+                assert!(matches!(command.brush, anyrender::Paint::Gradient(_)));
+            }
+            other => panic!("expected gradient fill, got {other:?}"),
+        }
+        match &restored.commands[1] {
+            RenderCommand::Fill(command) => {
+                assert!(matches!(command.brush, anyrender::Paint::Image(_)));
+            }
+            other => panic!("expected image fill, got {other:?}"),
+        }
+        match &restored.commands[2] {
+            RenderCommand::GlyphRun(command) => {
+                assert!(!command.hint);
+                assert_eq!(command.normalized_coords, [1, -2]);
+                assert_eq!(command.embolden, Vec2::new(1.0, 0.5));
+                assert_eq!(command.brush_alpha, 0.75);
+                assert!(command.glyph_transform.is_some());
+                assert_eq!(command.anti_aliasing, AntiAliasing::Disabled);
+                assert!(matches!(command.brush, anyrender::Paint::Gradient(_)));
+            }
+            other => panic!("expected glyph run, got {other:?}"),
+        }
+        match &restored.commands[3] {
+            RenderCommand::PushLayer(command) => {
+                let filter = command.filter.as_ref().expect("feImage filter");
+                assert!(
+                    filter
+                        .images()
+                        .any(|image| !image.scene.commands.is_empty()),
+                    "the feImage scene must survive record_filter and restore_filter"
+                );
+            }
+            other => panic!("expected feImage layer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn serialize_scene_rejects_a_custom_paint() {
+        let scene = super::RecordedScene {
+            tolerance: 0.1,
+            font_ids: Vec::new(),
+            commands: vec![super::SerializableRenderCommand::Fill(
+                super::SerializableFillCommand {
+                    fill: Fill::NonZero,
+                    transform: Affine::IDENTITY,
+                    brush: anyrender::Paint::Custom(std::sync::Arc::new(1_u8)),
+                    brush_transform: None,
+                    shape: peniko::kurbo::BezPath::new(),
+                    anti_aliasing: AntiAliasing::Enabled,
+                },
+            )],
+        };
+        let error = super::serialize_scene_to_vec(&scene)
+            .expect_err("a Custom paint must fail serialization by name");
+        assert!(error.contains("Paint::Custom"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn serialize_scene_rejects_a_pattern_paint() {
+        let scene = super::RecordedScene {
+            tolerance: 0.1,
+            font_ids: Vec::new(),
+            commands: vec![super::SerializableRenderCommand::Fill(
+                super::SerializableFillCommand {
+                    fill: Fill::NonZero,
+                    transform: Affine::IDENTITY,
+                    brush: anyrender::Paint::Pattern(anyrender::Pattern::new(
+                        Scene::new(),
+                        peniko::kurbo::Rect::new(0.0, 0.0, 4.0, 4.0),
+                    )),
+                    brush_transform: None,
+                    shape: peniko::kurbo::BezPath::new(),
+                    anti_aliasing: AntiAliasing::Enabled,
+                },
+            )],
+        };
+        let error = super::serialize_scene_to_vec(&scene)
+            .expect_err("a Pattern paint must fail serialization by name");
+        assert!(
+            error.contains("Paint::Pattern"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn paint_frame_round_trips_scene_through_shared_memory() {
         let font = FontData::new(vec![1_u8, 2, 3, 4].into(), 0);
         let scene = scene_with_glyph(&font, 7, 12.0, 18.0);
@@ -1590,6 +2209,12 @@ mod tests {
         )
         .expect("paint frame should serialize into shared memory");
 
+        let scene_key = paint_frame.scene_shmem_key;
+        let region = shmem_regions.get(&scene_key).expect("scene region");
+        let expected_len = super::serialize_scene_to_vec(&expected_recorded)
+            .expect("scene should serialize")
+            .len();
+        assert_eq!(region.size(), expected_len, "scene region size");
         let mut receiver = FontTransportReceiver::default();
         let roundtripped = paint_frame
             .into_recorded_scene(&mut receiver, &shmem_regions)

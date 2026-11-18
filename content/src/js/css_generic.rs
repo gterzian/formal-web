@@ -13,7 +13,7 @@ fn supports_impl(
         let property = ec.to_rust_string(args[0].clone()).unwrap_or_default();
         let value = ec.to_rust_string(args[1].clone()).unwrap_or_default();
         CSS::supports(&property, &value)
-    } else if args.len() >= 1 {
+    } else if !args.is_empty() {
         // Invoked as supports(conditionText) — 1 required argument.
         let condition_text = ec.to_rust_string(args[0].clone()).unwrap_or_default();
         CSS::supports_condition(&condition_text)

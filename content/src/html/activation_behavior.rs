@@ -8,6 +8,7 @@ use crate::js::{Engine, Types};
 
 /// <https://dom.spec.whatwg.org/#eventtarget-activation-behavior>
 pub(crate) trait ActivationBehavior {
+    #[allow(clippy::too_many_arguments)]
     fn activation_behavior(
         &self,
         source_navigable_id: NavigableId,

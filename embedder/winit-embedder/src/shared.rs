@@ -44,7 +44,7 @@ pub fn paste_shortcut_clipboard_text(event: &BlitzKeyEvent) -> Option<String> {
         return None;
     }
     let action_modifier = if cfg!(target_os = "macos") {
-        KeyboardModifiers::SUPER
+        KeyboardModifiers::META
     } else {
         KeyboardModifiers::CONTROL
     };
@@ -145,47 +145,53 @@ pub fn normalize_browser_destination(input: &str) -> Option<String> {
 pub fn apple_standard_keybinding_for_key_down(event: &BlitzKeyEvent) -> Option<&'static str> {
     #[cfg(target_os = "macos")]
     {
-        use keyboard_types::{Key, Modifiers as KeyboardModifiers};
+        use keyboard_types::{Key, Modifiers as KeyboardModifiers, NamedKey};
 
         if !event.state.is_pressed() {
             return None;
         }
 
-        let command_mod = event.modifiers.contains(KeyboardModifiers::SUPER);
+        let command_mod = event.modifiers.contains(KeyboardModifiers::META);
         let control_mod = event.modifiers.contains(KeyboardModifiers::CONTROL);
         let option_mod = event.modifiers.contains(KeyboardModifiers::ALT);
         let shift_mod = event.modifiers.contains(KeyboardModifiers::SHIFT);
 
         if command_mod {
             match &event.key {
-                Key::Backspace => return Some("deleteToBeginningOfLine:"),
-                Key::Delete => return Some("deleteToEndOfLine:"),
-                Key::ArrowLeft if shift_mod => {
+                Key::Named(NamedKey::Backspace) => return Some("deleteToBeginningOfLine:"),
+                Key::Named(NamedKey::Delete) => return Some("deleteToEndOfLine:"),
+                Key::Named(NamedKey::ArrowLeft) if shift_mod => {
                     return Some("moveToBeginningOfLineAndModifySelection:");
                 }
-                Key::ArrowLeft => return Some("moveToBeginningOfLine:"),
-                Key::ArrowRight if shift_mod => return Some("moveToEndOfLineAndModifySelection:"),
-                Key::ArrowRight => return Some("moveToEndOfLine:"),
-                Key::ArrowUp if shift_mod => {
+                Key::Named(NamedKey::ArrowLeft) => return Some("moveToBeginningOfLine:"),
+                Key::Named(NamedKey::ArrowRight) if shift_mod => {
+                    return Some("moveToEndOfLineAndModifySelection:");
+                }
+                Key::Named(NamedKey::ArrowRight) => return Some("moveToEndOfLine:"),
+                Key::Named(NamedKey::ArrowUp) if shift_mod => {
                     return Some("moveToBeginningOfDocumentAndModifySelection:");
                 }
-                Key::ArrowUp => return Some("moveToBeginningOfDocument:"),
-                Key::ArrowDown if shift_mod => {
+                Key::Named(NamedKey::ArrowUp) => return Some("moveToBeginningOfDocument:"),
+                Key::Named(NamedKey::ArrowDown) if shift_mod => {
                     return Some("moveToEndOfDocumentAndModifySelection:");
                 }
-                Key::ArrowDown => return Some("moveToEndOfDocument:"),
+                Key::Named(NamedKey::ArrowDown) => return Some("moveToEndOfDocument:"),
                 _ => {}
             }
         }
 
         if option_mod {
             match &event.key {
-                Key::Backspace => return Some("deleteWordBackward:"),
-                Key::Delete => return Some("deleteWordForward:"),
-                Key::ArrowLeft if shift_mod => return Some("moveWordLeftAndModifySelection:"),
-                Key::ArrowLeft => return Some("moveWordLeft:"),
-                Key::ArrowRight if shift_mod => return Some("moveWordRightAndModifySelection:"),
-                Key::ArrowRight => return Some("moveWordRight:"),
+                Key::Named(NamedKey::Backspace) => return Some("deleteWordBackward:"),
+                Key::Named(NamedKey::Delete) => return Some("deleteWordForward:"),
+                Key::Named(NamedKey::ArrowLeft) if shift_mod => {
+                    return Some("moveWordLeftAndModifySelection:");
+                }
+                Key::Named(NamedKey::ArrowLeft) => return Some("moveWordLeft:"),
+                Key::Named(NamedKey::ArrowRight) if shift_mod => {
+                    return Some("moveWordRightAndModifySelection:");
+                }
+                Key::Named(NamedKey::ArrowRight) => return Some("moveWordRight:"),
                 _ => {}
             }
         }
@@ -213,7 +219,7 @@ pub fn apple_standard_keybinding_for_key_down(event: &BlitzKeyEvent) -> Option<&
         }
 
         match &event.key {
-            Key::Backspace => Some("deleteBackward:"),
+            Key::Named(NamedKey::Backspace) => Some("deleteBackward:"),
             _ => None,
         }
     }

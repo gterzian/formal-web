@@ -1,6 +1,7 @@
 //! <https://html.spec.whatwg.org/#dom-trees>
 
 use blitz_dom::{ElementData, MutationHooks};
+use blitz_traits::NodeId;
 use html5ever::{local_name, ns};
 
 use crate::html::document_providers::DocumentProviders;
@@ -16,7 +17,7 @@ impl MutationHooks for DocumentProviders {
     /// <https://dom.spec.whatwg.org/#concept-element-attributes-change-ext>
     fn attribute_change_steps(
         &self,
-        node_id: usize,
+        node_id: NodeId,
         element: &ElementData,
         local_name: &str,
         old_value: Option<&str>,
@@ -30,13 +31,14 @@ impl MutationHooks for DocumentProviders {
         // and the element's box where they were. The presentation the decode
         // produces decides between a repaint (the image became available, or
         // the new intrinsic size moved the box) and a composition update.
-        // Note: blitz inserts restyle damage for every attribute change, so the
-        // damage this one recorded is dropped once the operation's hooks have
+        // Note: blitz inserts restyle damage for every attribute change and asks
+        // for a repaint for every mutation it performs, so this change's damage
+        // and that repaint request are dropped once the operation's hooks have
         // run (`ContentProcess::drain_dom_hook_steps`); otherwise the next
         // resolve pass would repaint the page for a change that cannot affect
         // it.
         let embed_only = is_html_element(element)
-            && element.name.local.as_ref() == "img"
+            && &*element.name.local == "img"
             && images_processing_model::is_relevant_attribute_change(
                 local_name, old_value, new_value, namespace,
             );
@@ -45,12 +47,12 @@ impl MutationHooks for DocumentProviders {
         } else {
             self.request_redraw();
         }
-        if is_html_element(element) && element.name.local.as_ref() == "img" {
+        if is_html_element(element) && &*element.name.local == "img" {
             images_processing_model::attribute_change_steps(
                 self, node_id, element, local_name, old_value, new_value, namespace,
             );
         }
-        if is_html_element(element) && element.name.local.as_ref() == "iframe" {
+        if is_html_element(element) && &*element.name.local == "iframe" {
             // <https://html.spec.whatwg.org/#the-iframe-element>
             // "Whenever an iframe element with a non-null content navigable has its
             // srcdoc attribute set, changed, or removed, the user agent must process
@@ -78,14 +80,14 @@ impl MutationHooks for DocumentProviders {
     }
 
     /// <https://html.spec.whatwg.org/#dom-trees:concept-node-insert-ext>
-    fn insertion_steps(&self, node_id: usize, element: Option<&ElementData>) {
+    fn insertion_steps(&self, node_id: NodeId, element: Option<&ElementData>) {
         self.request_redraw();
         // Step 1: "If insertedNode is an element whose namespace is the HTML namespace, and this
         // standard defines HTML element insertion steps for insertedNode's local name, then
         // run the corresponding HTML element insertion steps given insertedNode."
         if let Some(inserted_node) = element
             && is_html_element(inserted_node)
-            && inserted_node.name.local.as_ref() == "img"
+            && &*inserted_node.name.local == "img"
         {
             images_processing_model::insertion_steps(self, node_id, inserted_node);
         }
@@ -100,14 +102,14 @@ impl MutationHooks for DocumentProviders {
     }
 
     /// <https://html.spec.whatwg.org/#dom-trees:concept-node-post-connection-ext>
-    fn post_connection_steps(&self, node_id: usize, element: Option<&ElementData>) {
+    fn post_connection_steps(&self, node_id: NodeId, element: Option<&ElementData>) {
         self.request_redraw();
         // Step 1: "If insertedNode is an element whose namespace is the HTML namespace, and this
         // standard defines HTML element post-connection steps for insertedNode's local name, then
         // run the corresponding HTML element post-connection steps given insertedNode."
         if let Some(inserted_node) = element
             && is_html_element(inserted_node)
-            && inserted_node.name.local.as_ref() == "iframe"
+            && &*inserted_node.name.local == "iframe"
         {
             // Note: The iframe post-connection steps create a child navigable, which
             // needs the content process's document and navigable state; a DOM hook
@@ -122,7 +124,7 @@ impl MutationHooks for DocumentProviders {
     /// <https://html.spec.whatwg.org/#dom-trees:concept-node-remove-ext>
     fn removing_steps(
         &self,
-        node_id: usize,
+        node_id: NodeId,
         element: Option<&ElementData>,
         is_subtree_root: bool,
         old_ancestor: Option<&ElementData>,
@@ -140,7 +142,7 @@ impl MutationHooks for DocumentProviders {
         // oldAncestor."
         if let Some(removed_node) = element
             && is_html_element(removed_node)
-            && removed_node.name.local.as_ref() == "img"
+            && &*removed_node.name.local == "img"
         {
             images_processing_model::removing_steps(
                 self,
@@ -152,7 +154,7 @@ impl MutationHooks for DocumentProviders {
         }
         if let Some(removed_node) = element
             && is_html_element(removed_node)
-            && removed_node.name.local.as_ref() == "iframe"
+            && &*removed_node.name.local == "iframe"
         {
             self.record_iframe_removing_steps(node_id);
         }

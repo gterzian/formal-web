@@ -7,7 +7,9 @@ use ::winit::window::Window;
 use blitz_traits::events::{BlitzImeEvent, BlitzKeyEvent, KeyState, PointerDetails};
 use blitz_traits::shell::{ColorScheme, ShellProvider, Viewport};
 use cursor_icon::CursorIcon;
+use keyboard_types::NamedKey as KbtNamedKey;
 use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
+use log::error;
 use std::sync::Arc;
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::window::{Cursor, Window as WinitWindow};
@@ -60,7 +62,7 @@ pub fn winit_modifiers_to_kbt_modifiers(winit_modifiers: WinitModifiersState) ->
         modifiers.insert(KeyboardModifiers::SHIFT);
     }
     if winit_modifiers.contains(WinitModifiersState::SUPER) {
-        modifiers.insert(KeyboardModifiers::SUPER);
+        modifiers.insert(KeyboardModifiers::META);
     }
     modifiers
 }
@@ -78,28 +80,27 @@ pub fn winit_key_to_kbt_key(key: &WinitKey) -> Key {
     match key {
         WinitKey::Character(value) => Key::Character(value.to_string()),
         WinitKey::Named(named) => match named {
-            NamedKey::Alt => Key::Alt,
-            NamedKey::Backspace => Key::Backspace,
-            NamedKey::Control => Key::Control,
-            NamedKey::Delete => Key::Delete,
-            NamedKey::ArrowDown => Key::ArrowDown,
-            NamedKey::End => Key::End,
-            NamedKey::Enter => Key::Enter,
-            NamedKey::Escape => Key::Escape,
-            NamedKey::Home => Key::Home,
-            NamedKey::ArrowLeft => Key::ArrowLeft,
-            NamedKey::Meta => Key::Meta,
-            NamedKey::PageDown => Key::PageDown,
-            NamedKey::PageUp => Key::PageUp,
-            NamedKey::ArrowRight => Key::ArrowRight,
-            NamedKey::Shift => Key::Shift,
+            NamedKey::Alt => Key::Named(KbtNamedKey::Alt),
+            NamedKey::Backspace => Key::Named(KbtNamedKey::Backspace),
+            NamedKey::Control => Key::Named(KbtNamedKey::Control),
+            NamedKey::Delete => Key::Named(KbtNamedKey::Delete),
+            NamedKey::ArrowDown => Key::Named(KbtNamedKey::ArrowDown),
+            NamedKey::End => Key::Named(KbtNamedKey::End),
+            NamedKey::Enter => Key::Named(KbtNamedKey::Enter),
+            NamedKey::Escape => Key::Named(KbtNamedKey::Escape),
+            NamedKey::Home => Key::Named(KbtNamedKey::Home),
+            NamedKey::ArrowLeft => Key::Named(KbtNamedKey::ArrowLeft),
+            NamedKey::Meta => Key::Named(KbtNamedKey::Meta),
+            NamedKey::PageDown => Key::Named(KbtNamedKey::PageDown),
+            NamedKey::PageUp => Key::Named(KbtNamedKey::PageUp),
+            NamedKey::ArrowRight => Key::Named(KbtNamedKey::ArrowRight),
+            NamedKey::Shift => Key::Named(KbtNamedKey::Shift),
             NamedKey::Space => Key::Character(" ".to_owned()),
-            NamedKey::Tab => Key::Tab,
-            NamedKey::ArrowUp => Key::ArrowUp,
-            NamedKey::Super => Key::Super,
-            _ => Key::Unidentified,
+            NamedKey::Tab => Key::Named(KbtNamedKey::Tab),
+            NamedKey::ArrowUp => Key::Named(KbtNamedKey::ArrowUp),
+            _ => Key::Named(KbtNamedKey::Unidentified),
         },
-        _ => Key::Unidentified,
+        _ => Key::Character(String::new()),
     }
 }
 
@@ -157,8 +158,8 @@ pub fn winit_physical_key_to_kbt_code(physical_key: &PhysicalKey) -> Code {
             WinitKeyCode::KeyX => Code::KeyX,
             WinitKeyCode::KeyY => Code::KeyY,
             WinitKeyCode::KeyZ => Code::KeyZ,
-            WinitKeyCode::SuperLeft => Code::Super,
-            WinitKeyCode::SuperRight => Code::Super,
+            WinitKeyCode::SuperLeft => Code::MetaLeft,
+            WinitKeyCode::SuperRight => Code::MetaRight,
             WinitKeyCode::Minus => Code::Minus,
             WinitKeyCode::PageDown => Code::PageDown,
             WinitKeyCode::PageUp => Code::PageUp,
@@ -197,13 +198,21 @@ pub fn winit_key_event_to_blitz(event: &WinitKeyEvent, mods: WinitModifiersState
 
 // ── Shell provider for the chrome document ────────────────────────────────
 
+/// The clipboard text a paste request read, waiting for the chrome document's
+/// key event dispatch to return so the paste can be delivered to it.
+pub type PendingClipboardText = Arc<std::sync::Mutex<Option<String>>>;
+
 pub struct WinitShellProvider {
     window: Arc<WinitWindow>,
+    pending_clipboard_text: PendingClipboardText,
 }
 
 impl WinitShellProvider {
-    pub fn new(window: Arc<WinitWindow>) -> Self {
-        Self { window }
+    pub fn new(window: Arc<WinitWindow>, pending_clipboard_text: PendingClipboardText) -> Self {
+        Self {
+            window,
+            pending_clipboard_text,
+        }
     }
 }
 
@@ -223,8 +232,9 @@ impl ShellProvider for WinitShellProvider {
     fn request_redraw(&self) {
         self.window.request_redraw();
     }
-    fn set_cursor(&self, icon: CursorIcon) {
-        self.window.set_cursor(Cursor::Icon(icon));
+    fn set_cursor(&self, icon: Option<CursorIcon>) {
+        self.window
+            .set_cursor(icon.map_or(Cursor::default(), Cursor::Icon));
     }
     fn set_window_title(&self, title: String) {
         self.window.set_title(&title);
@@ -236,8 +246,19 @@ impl ShellProvider for WinitShellProvider {
         self.window
             .set_ime_cursor_area(LogicalPosition::new(x, y), LogicalSize::new(w, h));
     }
-    fn get_clipboard_text(&self) -> Result<String, blitz_traits::shell::ClipboardError> {
-        clipboard_read().map_err(|_| blitz_traits::shell::ClipboardError)
+    fn request_clipboard_text(&self) -> Result<(), blitz_traits::shell::ClipboardError> {
+        // The chrome document gets the text as a `UiEvent::Paste` once its key
+        // event dispatch returns (see `ChromeUi::handle_ui_event`).
+        match clipboard_read() {
+            Ok(text) => {
+                *self.pending_clipboard_text.lock().unwrap() = Some(text);
+                Ok(())
+            }
+            Err(error) => {
+                error!("clipboard read error: {error}");
+                Err(blitz_traits::shell::ClipboardError)
+            }
+        }
     }
     fn set_clipboard_text(&self, text: String) -> Result<(), blitz_traits::shell::ClipboardError> {
         clipboard_write(text).map_err(|_| blitz_traits::shell::ClipboardError)

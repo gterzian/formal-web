@@ -409,30 +409,27 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
 
         // pipeTo: JS wrapper that calls the native backstop.
         let wrapper_source = "(function pipeTo(dest, opts) { return this.__formalWebReadableStreamPipeToNative(dest, opts); })";
-        if let Ok(wrapper_val) = engine.evaluate_script(wrapper_source) {
-            if let Some(wrapper_obj) =
+        if let Ok(wrapper_val) = engine.evaluate_script(wrapper_source)
+            && let Some(wrapper_obj) =
                 <crate::js::Types as js_engine::JsTypes>::value_as_object(&wrapper_val)
-            {
-                let pipe_value =
-                    <crate::js::Types as js_engine::JsTypes>::value_from_object(wrapper_obj);
-                let pipe_to_desc = js_engine::records::PropertyDescriptor::<crate::js::Types> {
-                    value: Some(pipe_value),
-                    writable: Some(true),
-                    configurable: Some(true),
-                    enumerable: None,
-                    get: None,
-                    set: None,
-                };
-                engine
-                    .define_property_or_throw(
-                        rs_proto.clone(),
-                        engine.property_key_from_str("pipeTo"),
-                        pipe_to_desc,
-                    )
-                    .map_err(|error| {
-                        format!("failed to install ReadableStream.pipeTo: {error:?}")
-                    })?;
-            }
+        {
+            let pipe_value =
+                <crate::js::Types as js_engine::JsTypes>::value_from_object(wrapper_obj);
+            let pipe_to_desc = js_engine::records::PropertyDescriptor::<crate::js::Types> {
+                value: Some(pipe_value),
+                writable: Some(true),
+                configurable: Some(true),
+                enumerable: None,
+                get: None,
+                set: None,
+            };
+            engine
+                .define_property_or_throw(
+                    rs_proto.clone(),
+                    engine.property_key_from_str("pipeTo"),
+                    pipe_to_desc,
+                )
+                .map_err(|error| format!("failed to install ReadableStream.pipeTo: {error:?}"))?;
         }
     }
 

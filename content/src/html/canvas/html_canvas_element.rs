@@ -2,6 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use blitz_dom::BaseDocument;
+use blitz_traits::NodeId;
 use ipc_messages::content::{CanvasId, WebviewId};
 use ipc_messages::graphics::GraphicsCommand;
 use js_engine::gc::{GcCell, gc_cell_new};
@@ -44,7 +45,7 @@ pub struct HTMLCanvasElement {
 impl HTMLCanvasElement {
     pub fn new(
         document: Rc<RefCell<BaseDocument>>,
-        node_id: usize,
+        node_id: NodeId,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Self {
         Self {

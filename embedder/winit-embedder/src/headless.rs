@@ -17,8 +17,8 @@ use std::time::Duration;
 use webview::WebviewProvider;
 use webview::{
     BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, ColorScheme,
-    MouseEventButton, MouseEventButtons, NavigationCompleted, NavigationCompletion, PointerCoords,
-    PointerDetails, UiEvent, WebviewId,
+    MouseEventButton, MouseEventButtons, NavigationCompleted, NavigationCompletion, Point,
+    PointerCoords, PointerDetails, UiEvent, WebviewId,
 };
 
 const HEADLESS_VIEWPORT_WIDTH: u32 = 800;
@@ -213,6 +213,8 @@ impl AutomationHost for HeadlessEmbedderApp {
             buttons: self.buttons,
             mods,
             details: PointerDetails::default(),
+            element: Point { x: 0.0, y: 0.0 },
+            active_pointers: Default::default(),
         });
         self.send_ui_event(move_ev)?;
         let cur_bt = self.buttons | MouseEventButton::Main.into();
@@ -224,6 +226,8 @@ impl AutomationHost for HeadlessEmbedderApp {
             buttons: cur_bt,
             mods,
             details: PointerDetails::default(),
+            element: Point { x: 0.0, y: 0.0 },
+            active_pointers: Default::default(),
         });
         self.buttons = cur_bt;
         self.send_ui_event(down_ev)?;
@@ -236,6 +240,8 @@ impl AutomationHost for HeadlessEmbedderApp {
             buttons: self.buttons,
             mods,
             details: PointerDetails::default(),
+            element: Point { x: 0.0, y: 0.0 },
+            active_pointers: Default::default(),
         });
         self.send_ui_event(up_ev)
     }
@@ -260,6 +266,8 @@ impl AutomationHost for HeadlessEmbedderApp {
             buttons: self.buttons,
             mods,
             details: PointerDetails::default(),
+            element: Point { x: 0.0, y: 0.0 },
+            active_pointers: Default::default(),
         };
         self.send_ui_event(UiEvent::PointerMove(mk))?;
         self.send_ui_event(UiEvent::Wheel(BlitzWheelEvent {
@@ -267,6 +275,7 @@ impl AutomationHost for HeadlessEmbedderApp {
             coords: self.coords(x, y),
             buttons: self.buttons,
             mods,
+            element: Point { x: 0.0, y: 0.0 },
         }))
     }
 

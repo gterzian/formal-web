@@ -8,10 +8,10 @@ fn with_dom_exception_ref<R>(
 ) -> Completion<R, crate::js::Types> {
     let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("DOMException receiver is not an object"))?;
-    if let Some(data) = ec.with_object_any(&obj) {
-        if let Some(exception) = data.downcast_ref::<DOMException>() {
-            return Ok(f(exception));
-        }
+    if let Some(data) = ec.with_object_any(&obj)
+        && let Some(exception) = data.downcast_ref::<DOMException>()
+    {
+        return Ok(f(exception));
     }
     Err(ec.new_type_error("receiver is not a DOMException"))
 }

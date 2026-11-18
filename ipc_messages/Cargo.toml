@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-anyrender = { version = "0.11", features = ["serde"] }
+anyrender = { git = "https://github.com/DioxusLabs/anyrender", rev = "f749ad59226ddf0529eca739ad67c842a4f3bcb5", features = ["serde"] }
 ipc = { path = "../ipc" }
 ipc-channel = { git = "https://github.com/gterzian/ipc-channel", rev = "169da83" }
 peniko = "0.6.0"

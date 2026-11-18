@@ -1,9 +1,9 @@
 use blitz_traits::events::{
     BlitzImeEvent, BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta,
-    BlitzWheelEvent, KeyState, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails,
-    UiEvent,
+    BlitzWheelEvent, KeyState, MouseEventButton, MouseEventButtons, Point, PointerCoords,
+    PointerDetails, UiEvent,
 };
-use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
+use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers, NamedKey};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
@@ -11,11 +11,14 @@ enum SerializableUiEvent {
     PointerMove(SerializablePointerEvent),
     PointerUp(SerializablePointerEvent),
     PointerDown(SerializablePointerEvent),
+    PointerCancel(SerializablePointerEvent),
+    PointerLeave(SerializablePointerEvent),
     Wheel(SerializableWheelEvent),
     KeyUp(SerializableKeyEvent),
     KeyDown(SerializableKeyEvent),
     Ime(SerializableImeEvent),
     AppleStandardKeybinding(String),
+    Paste(String),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -137,8 +140,8 @@ fn modifiers_from_bits(bits: u32) -> KeyboardModifiers {
     if bits & KeyboardModifiers::SHIFT.bits() != 0 {
         modifiers.insert(KeyboardModifiers::SHIFT);
     }
-    if bits & KeyboardModifiers::SUPER.bits() != 0 {
-        modifiers.insert(KeyboardModifiers::SUPER);
+    if bits & KeyboardModifiers::META.bits() != 0 {
+        modifiers.insert(KeyboardModifiers::META);
     }
     modifiers
 }
@@ -180,57 +183,24 @@ fn key_state_from_name(name: &str) -> Result<KeyState, String> {
 fn key_to_serializable(key: &Key) -> SerializableKey {
     match key {
         Key::Character(value) => SerializableKey::Character(value.clone()),
-        Key::Alt => SerializableKey::Named(String::from("Alt")),
-        Key::Backspace => SerializableKey::Named(String::from("Backspace")),
-        Key::Control => SerializableKey::Named(String::from("Control")),
-        Key::Delete => SerializableKey::Named(String::from("Delete")),
-        Key::ArrowDown => SerializableKey::Named(String::from("ArrowDown")),
-        Key::End => SerializableKey::Named(String::from("End")),
-        Key::Enter => SerializableKey::Named(String::from("Enter")),
-        Key::Escape => SerializableKey::Named(String::from("Escape")),
-        Key::Home => SerializableKey::Named(String::from("Home")),
-        Key::ArrowLeft => SerializableKey::Named(String::from("ArrowLeft")),
-        Key::Meta => SerializableKey::Named(String::from("Meta")),
-        Key::PageDown => SerializableKey::Named(String::from("PageDown")),
-        Key::PageUp => SerializableKey::Named(String::from("PageUp")),
-        Key::ArrowRight => SerializableKey::Named(String::from("ArrowRight")),
-        Key::Shift => SerializableKey::Named(String::from("Shift")),
-        Key::Tab => SerializableKey::Named(String::from("Tab")),
-        Key::ArrowUp => SerializableKey::Named(String::from("ArrowUp")),
-        Key::Super => SerializableKey::Named(String::from("Super")),
-        Key::Unidentified => SerializableKey::Unidentified,
-        _ => SerializableKey::Unidentified,
+        Key::Named(named) => SerializableKey::Named(named.to_string()),
     }
 }
 
 fn key_from_serializable(key: SerializableKey) -> Result<Key, String> {
     match key {
         SerializableKey::Character(value) => Ok(Key::Character(value)),
-        SerializableKey::Named(name) => match name.as_str() {
-            "Alt" => Ok(Key::Alt),
-            "Backspace" => Ok(Key::Backspace),
-            "Control" => Ok(Key::Control),
-            "Delete" => Ok(Key::Delete),
-            "ArrowDown" => Ok(Key::ArrowDown),
-            "End" => Ok(Key::End),
-            "Enter" => Ok(Key::Enter),
-            "Escape" => Ok(Key::Escape),
-            "Home" => Ok(Key::Home),
-            "ArrowLeft" => Ok(Key::ArrowLeft),
-            "Meta" => Ok(Key::Meta),
-            "PageDown" => Ok(Key::PageDown),
-            "PageUp" => Ok(Key::PageUp),
-            "ArrowRight" => Ok(Key::ArrowRight),
-            "Shift" => Ok(Key::Shift),
-            "Tab" => Ok(Key::Tab),
-            "ArrowUp" => Ok(Key::ArrowUp),
-            "Super" => Ok(Key::Super),
-            _ => Err(format!("unknown key variant: {name}")),
-        },
-        SerializableKey::Unidentified => Ok(Key::Unidentified),
+        SerializableKey::Named(name) => name
+            .parse()
+            .map(Key::Named)
+            .map_err(|_| format!("unknown key variant: {name}")),
+        SerializableKey::Unidentified => Ok(Key::Named(NamedKey::Unidentified)),
     }
 }
 
+// `Code::Super` is the spec's legacy "Super" key value; keyboard-types
+// deprecates it in favour of a `Meta` variant that does not exist.
+#[allow(deprecated)]
 fn code_name(code: &Code) -> &'static str {
     match code {
         Code::Backquote => "Backquote",
@@ -304,6 +274,8 @@ fn code_name(code: &Code) -> &'static str {
     }
 }
 
+// See the note on `code_name`.
+#[allow(deprecated)]
 fn code_from_name(name: &str) -> Result<Code, String> {
     match name {
         "Backquote" => Ok(Code::Backquote),
@@ -441,6 +413,8 @@ impl TryFrom<SerializablePointerEvent> for BlitzPointerEvent {
                 altitude: event.details.altitude,
                 azimuth: event.details.azimuth,
             },
+            element: Point { x: 0.0, y: 0.0 },
+            active_pointers: Default::default(),
         })
     }
 }
@@ -483,6 +457,7 @@ impl From<SerializableWheelEvent> for BlitzWheelEvent {
             },
             buttons: MouseEventButtons::from_bits_retain(event.buttons),
             mods: modifiers_from_bits(event.modifiers),
+            element: Point { x: 0.0, y: 0.0 },
         }
     }
 }
@@ -558,6 +533,9 @@ impl From<&UiEvent> for SerializableUiEvent {
             UiEvent::AppleStandardKeybinding(data) => {
                 Self::AppleStandardKeybinding(data.to_string())
             }
+            UiEvent::PointerCancel(data) => Self::PointerCancel(data.into()),
+            UiEvent::PointerLeave(data) => Self::PointerLeave(data.into()),
+            UiEvent::Paste(text) => Self::Paste(text.clone()),
         }
     }
 }
@@ -577,6 +555,9 @@ impl TryFrom<SerializableUiEvent> for UiEvent {
             SerializableUiEvent::AppleStandardKeybinding(data) => {
                 Ok(Self::AppleStandardKeybinding(data.into()))
             }
+            SerializableUiEvent::PointerCancel(data) => Ok(Self::PointerCancel(data.try_into()?)),
+            SerializableUiEvent::PointerLeave(data) => Ok(Self::PointerLeave(data.try_into()?)),
+            SerializableUiEvent::Paste(text) => Ok(Self::Paste(text)),
         }
     }
 }

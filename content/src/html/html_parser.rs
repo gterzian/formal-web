@@ -6,6 +6,7 @@ use std::{
 
 use blitz_dom::node::Attribute;
 use blitz_dom::{BaseDocument, DocumentMutator, HtmlParserProvider, Node};
+use blitz_traits::NodeId;
 use html5ever::{
     ParseOpts, QualName,
     tendril::{StrTendril, TendrilSink},
@@ -30,7 +31,7 @@ impl HtmlParserProvider for JsHtmlParserProvider {
     fn parse_inner_html<'m2, 'doc2>(
         &self,
         mutr: &'m2 mut DocumentMutator<'doc2>,
-        element_id: usize,
+        element_id: NodeId,
         html: &str,
     ) {
         JsTreeSink::parse_inner_html_into_mutator(mutr, element_id, html);
@@ -77,7 +78,7 @@ impl<'m, 'doc> JsTreeSink<'m, 'doc> {
 
     pub fn parse_inner_html_into_mutator<'a, 'd>(
         mutr: &'a mut DocumentMutator<'d>,
-        element_id: usize,
+        element_id: NodeId,
         html: &str,
     ) {
         let sink = JsTreeSink::new(mutr);
@@ -96,7 +97,9 @@ impl<'m, 'doc> JsTreeSink<'m, 'doc> {
             .read_from(&mut html.as_bytes())
             .unwrap();
 
-        let fragment_root_id = mutr.last_child_id(0).unwrap();
+        let fragment_root_id = mutr
+            .last_child_id(crate::dom::document_node_id(mutr.doc))
+            .unwrap();
         let child_ids = mutr.child_ids(fragment_root_id);
         mutr.append_children(element_id, &child_ids);
         mutr.remove_node(fragment_root_id);
@@ -110,7 +113,7 @@ impl<'m, 'doc> JsTreeSink<'m, 'doc> {
 
 impl<'m, 'doc> TreeSink for JsTreeSink<'m, 'doc> {
     type Output = ();
-    type Handle = usize;
+    type Handle = NodeId;
     type ElemName<'a>
         = Ref<'a, QualName>
     where
@@ -123,7 +126,7 @@ impl<'m, 'doc> TreeSink for JsTreeSink<'m, 'doc> {
     }
 
     fn get_document(&self) -> Self::Handle {
-        0
+        crate::dom::document_node_id(self.mutr().doc)
     }
 
     fn elem_name<'a>(&'a self, target: &'a Self::Handle) -> Self::ElemName<'a> {
@@ -143,12 +146,12 @@ impl<'m, 'doc> TreeSink for JsTreeSink<'m, 'doc> {
         self.mutr().create_element(name, attrs)
     }
 
-    fn create_comment(&self, _text: StrTendril) -> Self::Handle {
-        self.mutr().create_comment_node()
+    fn create_comment(&self, text: StrTendril) -> Self::Handle {
+        self.mutr().create_comment_node(&text)
     }
 
     fn create_pi(&self, _target: StrTendril, _data: StrTendril) -> Self::Handle {
-        self.mutr().create_comment_node()
+        self.mutr().create_comment_node("")
     }
 
     fn append(&self, parent_id: &Self::Handle, child: NodeOrText<Self::Handle>) {
@@ -312,13 +315,9 @@ pub fn execute_parser_scripts(
     Ok(())
 }
 
-fn parser_script_for_node(document: &BaseDocument, node_id: usize) -> Option<PendingParserScript> {
-    let Some(node) = document.get_node(node_id) else {
-        return None;
-    };
-    let Some(element) = node.element_data() else {
-        return None;
-    };
+fn parser_script_for_node(document: &BaseDocument, node_id: NodeId) -> Option<PendingParserScript> {
+    let node = document.get_node(node_id)?;
+    let element = node.element_data()?;
     if let Some(script_type) = element.attr(blitz_dom::local_name!("type")) {
         let script_type = normalized_script_type(script_type);
         if script_type == "module" || !is_classic_javascript_type(&script_type) {

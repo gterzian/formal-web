@@ -162,13 +162,12 @@ where
     TParent: 'static,
 {
     let (child_proto, parent_proto) = {
-        let reg = with_registry_ref::<Ty, _>(ec, |registry| {
+        with_registry_ref::<Ty, _>(ec, |registry| {
             (
                 registry.get_prototype::<TChild>().cloned(),
                 registry.get_prototype::<TParent>().cloned(),
             )
-        });
-        reg
+        })
     };
     if let (Some(child), Some(parent)) = (child_proto, parent_proto) {
         let _ = ec.set_prototype(child, Some(parent));
@@ -185,13 +184,12 @@ where
     TParent: 'static,
 {
     let (child_ctor, parent_ctor) = {
-        let reg = with_registry_ref::<Ty, _>(ec, |registry| {
+        with_registry_ref::<Ty, _>(ec, |registry| {
             (
                 registry.get_constructor::<TChild>().cloned(),
                 registry.get_constructor::<TParent>().cloned(),
             )
-        });
-        reg
+        })
     };
     if let (Some(child), Some(parent)) = (child_ctor, parent_ctor) {
         let _ = ec.set_prototype(child, Some(parent));

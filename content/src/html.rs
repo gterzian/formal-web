@@ -58,6 +58,7 @@ pub use environment_settings_object::EnvironmentSettingsObject;
 pub use global_scope::GlobalScope;
 pub use global_scope::GlobalScopeKind;
 pub(crate) use global_scope::TimerHandler;
+pub(crate) use global_scope::{MediaPipelineRegistry, NewDocumentRegistry, VideoPaintRegistry};
 
 pub use html_anchor_element::HTMLAnchorElement;
 pub(crate) use html_dom_tree::{
@@ -97,6 +98,15 @@ pub(crate) use workers::{
 use blitz_dom::{BaseDocument, DocumentConfig};
 use std::{cell::RefCell, rc::Rc};
 use url::Url;
+
+/// The realm state `creating a new browsing context and document` returns: the
+/// realm's global object, its Window, its settings object, and its document.
+pub(crate) type NewRealmDocument = (
+    JsObject,
+    Window,
+    EnvironmentSettingsObject,
+    Rc<RefCell<BaseDocument>>,
+);
 
 /// <https://html.spec.whatwg.org/#queue-a-microtask>
 pub fn queue_a_microtask<F>(ec: &mut dyn ExecutionContext<crate::js::Types>, callback: F)
@@ -149,15 +159,7 @@ pub(crate) fn create_a_new_browsing_context_and_document(
     parent_engine: Option<&mut Engine>,
     creator_origin: Option<environment_settings_object::Origin>,
     wiring: RealmWiring,
-) -> Result<
-    (
-        JsObject,
-        Window,
-        EnvironmentSettingsObject,
-        Rc<RefCell<BaseDocument>>,
-    ),
-    String,
-> {
+) -> Result<NewRealmDocument, String> {
     // Step 1: Let browsingContext be a new browsing context.
     // Step 2: Let unsafeContextCreationTime be the unsafe shared current time.
     // Step 3: Let creatorOrigin be null.
@@ -335,6 +337,7 @@ pub(crate) fn create_a_new_realm(
 }
 
 /// <https://html.spec.whatwg.org/#navigate>
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn navigate(
     event_sender: &IpcSender<ContentEvent>,
     source_navigable_id: NavigableId,
@@ -376,6 +379,7 @@ pub(crate) struct ChosenNavigableResult {
 }
 
 /// <https://html.spec.whatwg.org/#the-rules-for-choosing-a-navigable>
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn the_rules_for_choosing_a_navigable(
     source_navigable_id: NavigableId,
     parent_navigable_id: Option<NavigableId>,

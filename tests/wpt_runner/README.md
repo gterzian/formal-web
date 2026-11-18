@@ -7,22 +7,22 @@ protocol and `wpt serve`.
 
 ```bash
 # Default selection (controlled by tests/wpt/include.ini and tests/formal/include.ini)
-rustup run 1.94.0 cargo run --release -- wpt
+rustup run 1.95.0 cargo run --release -- wpt
 
 # Single test by path
-rustup run 1.94.0 cargo run --release -- wpt dom/nodes/Element-hasAttribute.html
+rustup run 1.95.0 cargo run --release -- wpt dom/nodes/Element-hasAttribute.html
 
 # WPT-test-relative path
-rustup run 1.94.0 cargo run --release -- wpt vendor/wpt/dom/nodes/Element-hasAttribute.html
+rustup run 1.95.0 cargo run --release -- wpt vendor/wpt/dom/nodes/Element-hasAttribute.html
 
 # Formal test
-rustup run 1.94.0 cargo run --release -- wpt formal/load-event-fires.html
+rustup run 1.95.0 cargo run --release -- wpt formal/load-event-fires.html
 
 # List selected tests without executing them
-rustup run 1.94.0 cargo run --release -- wpt --list
+rustup run 1.95.0 cargo run --release -- wpt --list
 
 # Headed mode (show browser window)
-rustup run 1.94.0 cargo run --release -- wpt --headed
+rustup run 1.95.0 cargo run --release -- wpt --headed
 ```
 
 The WPT runner is also re-executable directly after the initial build:

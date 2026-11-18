@@ -1,6 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
+use blitz_traits::NodeId;
 use ipc::IpcSender;
 
 use ipc_messages::content::{Event as ContentEvent, NavigableId, UserNavigationInvolvement};
@@ -23,7 +24,7 @@ pub struct HTMLAnchorElement {
 impl HTMLAnchorElement {
     pub fn new(
         document: Rc<RefCell<BaseDocument>>,
-        node_id: usize,
+        node_id: NodeId,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Self {
         Self {

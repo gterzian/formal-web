@@ -173,7 +173,7 @@ impl AbortSignal {
         // written back under a borrow held only for the assignment.
         let mut event_target = self.shared.borrow(ec).event_target.clone();
         let result = f(&mut event_target, ec);
-        (*self.shared.borrow_mut(ec)).event_target = event_target;
+        self.shared.borrow_mut(ec).event_target = event_target;
         result
     }
 

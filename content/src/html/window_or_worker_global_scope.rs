@@ -120,12 +120,12 @@ fn timer_handler(
     value: &JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<TimerHandler, crate::js::Types> {
-    if let Some(object) = <crate::js::Types as JsTypes>::value_as_object(value) {
-        if ec.is_callable(value) {
-            return Ok(TimerHandler::Function {
-                callback: Callback::from_object(object, ec),
-            });
-        }
+    if let Some(object) = <crate::js::Types as JsTypes>::value_as_object(value)
+        && ec.is_callable(value)
+    {
+        return Ok(TimerHandler::Function {
+            callback: Callback::from_object(object, ec),
+        });
     }
 
     let source = ec.to_rust_string(value.clone())?;

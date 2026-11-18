@@ -207,6 +207,10 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
 
     let mut finished_videos: HashSet<VideoPaintId> = HashSet::new();
 
+    // The frame dimensions reported to the content process for each video
+    // paint id, so a report is sent once per size instead of per frame.
+    let mut reported_video_sizes: HashMap<VideoPaintId, (u32, u32)> = HashMap::new();
+
     // Media pipeline state.
     let mut pipelines: HashMap<MediaPipelineId, B::Pipeline> = HashMap::new();
     let mut pipeline_webview_map: HashMap<MediaPipelineId, PipelineWebview> = HashMap::new();
@@ -314,6 +318,7 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
                     &mut canvas_to_webview,
                     &mut image_owners,
                     &mut finished_videos,
+                    &mut reported_video_sizes,
                     &channels,
                     &event_sender,
                     &mut tla_tracer,
@@ -330,6 +335,7 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
                     &event_sender,
                     &child_webview_to_parent,
                     &mut finished_videos,
+                    &mut reported_video_sizes,
                     &mut tla_tracer,
                 );
             }
@@ -382,6 +388,7 @@ struct PipelineWebview {
     paint_id: VideoPaintId,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_media_event<R: SurfaceRenderer>(
     event: MediaBackendEvent,
     pipeline_webview_map: &HashMap<MediaPipelineId, PipelineWebview>,
@@ -389,6 +396,7 @@ fn handle_media_event<R: SurfaceRenderer>(
     composed_scene_sender: &ipc::IpcSender<GraphicsEvent>,
     child_webview_to_parent: &HashMap<WebviewId, (WebviewId, FrameId)>,
     finished_videos: &mut HashSet<VideoPaintId>,
+    reported_video_sizes: &mut HashMap<VideoPaintId, (u32, u32)>,
     tla_tracer: &mut TLATracer,
 ) {
     match event {
@@ -405,6 +413,14 @@ fn handle_media_event<R: SurfaceRenderer>(
                 pipeline_id, webview_id
             );
             let pixel_bytes: std::sync::Arc<[u8]> = std::mem::take(&mut video_frame.data).into();
+            let frame_size = (video_frame.width, video_frame.height);
+            report_video_intrinsic_size(
+                webview_id,
+                paint_id,
+                frame_size,
+                reported_video_sizes,
+                composed_scene_sender,
+            );
             let cf = CompositorVideoFrame {
                 video_paint_id: paint_id,
                 width: video_frame.width,
@@ -458,6 +474,13 @@ fn handle_media_event<R: SurfaceRenderer>(
                 );
                 return;
             };
+            report_video_intrinsic_size(
+                webview_id,
+                paint_id,
+                (frame.width, frame.height),
+                reported_video_sizes,
+                composed_scene_sender,
+            );
             let cf = CompositorVideoFrame {
                 video_paint_id: paint_id,
                 width: frame.width,
@@ -515,6 +538,7 @@ fn handle_media_event<R: SurfaceRenderer>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
     cmd: GraphicsCommand,
     webviews: &mut HashMap<WebviewId, WebviewState<R>>,
@@ -526,6 +550,7 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
     canvas_to_webview: &mut HashMap<CanvasId, WebviewId>,
     image_owners: &mut HashMap<ImageIdentifier, WebviewId>,
     finished_videos: &mut HashSet<VideoPaintId>,
+    reported_video_sizes: &mut HashMap<VideoPaintId, (u32, u32)>,
     channels: &ReadbackChannels<R::RenderData>,
     composed_scene_sender: &ipc::IpcSender<GraphicsEvent>,
     tla_tracer: &mut TLATracer,
@@ -847,6 +872,7 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
             if let Some(slot) = webviews.get_mut(&webview_id) {
                 slot.compositor.remove_video_frame(paint_id);
             }
+            reported_video_sizes.remove(&paint_id);
         }
         GraphicsCommand::RegisterChildNavigableHost {
             child_webview_id,
@@ -1025,7 +1051,8 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
             // The paint id will never produce more frames; drop it from the
             // expected set so a pending composition does not wait on it.
             if let Some(pipeline) = pipeline_webview_map.remove(&pipeline_id) {
-                finished_videos.insert(pipeline.paint_id);
+                finished_videos.remove(&pipeline.paint_id);
+                reported_video_sizes.remove(&pipeline.paint_id);
                 maybe_compose(
                     webviews,
                     pipeline.storage,
@@ -1146,6 +1173,36 @@ fn report_out_of_band_layer_change<R: SurfaceRenderer>(
         error!(
             "[graphics] failed to report an out-of-band layer change for {:?}: {send_error}",
             webview_id
+        );
+    }
+}
+
+/// Report a video pipeline's frame dimensions to the user agent the first time
+/// they are known, and again whenever they change. The content process needs
+/// them to lay out the `<video>` element (it has no intrinsic size of its own;
+/// the only process that decodes the video is this one).
+fn report_video_intrinsic_size(
+    webview_id: WebviewId,
+    paint_id: VideoPaintId,
+    size: (u32, u32),
+    reported_video_sizes: &mut HashMap<VideoPaintId, (u32, u32)>,
+    composed_scene_sender: &ipc::IpcSender<GraphicsEvent>,
+) {
+    if size.0 == 0 || size.1 == 0 {
+        return;
+    }
+    if reported_video_sizes.insert(paint_id, size) == Some(size) {
+        return;
+    }
+    if let Err(send_error) = composed_scene_sender.send(GraphicsEvent::VideoIntrinsicSize {
+        webview_id,
+        paint_id,
+        width: size.0,
+        height: size.1,
+    }) {
+        error!(
+            "[graphics] failed to report a video's intrinsic size for {:?}: {send_error}",
+            paint_id
         );
     }
 }

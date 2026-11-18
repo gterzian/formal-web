@@ -32,7 +32,7 @@ use std::collections::{HashMap, HashSet};
 use vello::Renderer as VelloRenderer;
 use wgpu::{
     ComputePipelineDescriptor, Extent3d, Texture, TextureDescriptor, TextureDimension,
-    TextureFormat, TextureUsages, TextureViewDescriptor,
+    TextureFormat, TextureUsages, TextureUses, TextureViewDescriptor,
 };
 
 const NV12_TO_RGBA_WGSL: &str = r#"
@@ -463,10 +463,12 @@ fn color_uniform_buffer(device: &wgpu::Device, uniform: ColorUniform) -> wgpu::B
         usage: wgpu::BufferUsages::UNIFORM,
         mapped_at_creation: true,
     });
-    buffer
-        .slice(..)
-        .get_mapped_range_mut()
-        .copy_from_slice(&bytes);
+    let Ok(mut view) = buffer.slice(..).get_mapped_range_mut() else {
+        error!("[gpu-renderer] failed to map the video color-matrix buffer");
+        return buffer;
+    };
+    view.copy_from_slice(&bytes);
+    drop(view);
     buffer.unmap();
     buffer
 }
@@ -538,10 +540,12 @@ fn plane_texture(
                 height,
                 depth: 1,
             },
+            None,
         )
     };
     // SAFETY: the hal texture was created on this device and declares the same
-    // format, extent, mip count and sample count as the descriptor.
+    // format, extent, mip count and sample count as the descriptor.  The cached
+    // Metal texture of a decoded frame carries its contents already.
     Some(unsafe {
         device.create_texture_from_hal::<wgpu::hal::metal::Api>(
             hal_texture,
@@ -559,6 +563,7 @@ fn plane_texture(
                 usage: TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             },
+            TextureUses::RESOURCE,
         )
     })
 }

@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::{BaseDocument, Node as BlitzNode};
+use blitz_traits::NodeId;
 use html5ever::{local_name, ns};
 
 use crate::dom::{Document, Element, EventPathItem, Node};
@@ -132,7 +133,7 @@ pub(crate) fn document_object(
 }
 
 pub(crate) fn queue_detached_candidates(
-    node_ids: &[usize],
+    node_ids: &[NodeId],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(), crate::js::Types> {
     if node_ids.is_empty() {
@@ -161,7 +162,7 @@ pub(crate) fn has_pending_animation_frame_callbacks(
 }
 
 pub(crate) fn resolve_element_object(
-    node_id: usize,
+    node_id: NodeId,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<<crate::js::Types as JsTypes>::JsObject, crate::js::Types> {
     // Read cache + document via immutable GlobalScope access.
@@ -196,7 +197,7 @@ pub(crate) fn resolve_element_object(
 
 pub(crate) fn object_for_existing_node(
     document: Rc<RefCell<BaseDocument>>,
-    node_id: usize,
+    node_id: NodeId,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<<crate::js::Types as JsTypes>::JsObject, crate::js::Types> {
     let global_object = ec.realm_global_object();
@@ -221,7 +222,7 @@ pub(crate) fn object_for_existing_node(
 
 pub(crate) fn resolve_or_create_text_node_object(
     document: Rc<RefCell<BaseDocument>>,
-    node_id: usize,
+    node_id: NodeId,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<<crate::js::Types as JsTypes>::JsObject, crate::js::Types> {
     let global_object = ec.realm_global_object();
@@ -249,7 +250,7 @@ pub(crate) fn resolve_or_create_text_node_object(
 /// html::event_handler::sync_event_handler_content_attribute.
 fn sync_event_handler_content_attributes(
     document: &Rc<RefCell<BaseDocument>>,
-    node_id: usize,
+    node_id: NodeId,
     object: &JsObject,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(), crate::js::Types> {
@@ -268,7 +269,7 @@ fn sync_event_handler_content_attributes(
                 .iter()
                 .filter(|attribute| attribute.name.ns.is_empty())
                 .filter_map(|attribute| {
-                    let event_type = attribute.name.local.as_ref().strip_prefix("on")?;
+                    let event_type = (*attribute.name.local).strip_prefix("on")?;
                     Some((event_type.to_owned(), attribute.value.clone()))
                 })
                 .collect()
@@ -289,7 +290,7 @@ fn sync_event_handler_content_attributes(
 /// embedded in a platform object JsObject.
 fn element_object_from_document(
     document: Rc<RefCell<BaseDocument>>,
-    node_id: usize,
+    node_id: NodeId,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<<crate::js::Types as JsTypes>::JsObject, crate::js::Types> {
     let kind = document
@@ -411,10 +412,9 @@ pub(crate) fn build_path_from_target_js_object(
             ))
         } else if let Some(node) = data.downcast_ref::<Node>() {
             Some((node.node_id, node.document.clone()))
-        } else if let Some(document) = data.downcast_ref::<Document>() {
-            Some((document.node.node_id, document.node.document.clone()))
         } else {
-            None
+            data.downcast_ref::<Document>()
+                .map(|document| (document.node.node_id, document.node.document.clone()))
         }
     });
 

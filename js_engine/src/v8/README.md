@@ -143,13 +143,13 @@ collectable (`realm_wrapper_captured_by_a_native_callback_is_collected`).
 
 ```bash
 # Build everything
-rustup run 1.94.0 cargo build --release
+rustup run 1.95.0 cargo build --release
 
 # Run WPT suite
-rustup run 1.94.0 cargo run --release -- wpt
+rustup run 1.95.0 cargo run --release -- wpt
 
 # Run the generic engine tests
-rustup run 1.94.0 cargo test -p content generic_js_test
+rustup run 1.95.0 cargo test -p content generic_js_test
 ```
 
 The first build downloads the pinned V8 150.1.0 archive. Set

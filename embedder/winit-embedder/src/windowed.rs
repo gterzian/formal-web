@@ -7,7 +7,7 @@ use crate::shared::{
     normalize_browser_destination, paste_shortcut_clipboard_text, startup_destination_url,
     update_window_viewport_snapshot, write_clipboard_text,
 };
-use crate::winit_integration::WinitShellProvider;
+use crate::winit_integration::{PendingClipboardText, WinitShellProvider};
 use crate::winit_integration::{
     touch_pointer_details, viewport_of_snapshot, viewport_snapshot_for_window, winit_ime_to_blitz,
     winit_key_event_to_blitz, winit_modifiers_to_kbt_modifiers,
@@ -20,7 +20,7 @@ use automation::{
 use blitz_traits::SmolStr;
 use blitz_traits::events::{
     BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, MouseEventButton,
-    MouseEventButtons, PointerCoords, PointerDetails, UiEvent,
+    MouseEventButtons, Point, PointerCoords, PointerDetails, UiEvent,
 };
 use blitz_traits::shell::ShellProvider;
 use kurbo::{Affine, RoundedRect};
@@ -601,10 +601,14 @@ impl WindowedApp {
             // other quad lands exactly on its clip rect under the quad
             // transform.
             if let Some((content, outer_clip, commands)) = draw_plan {
-                scene.push_clip_layer(content, &outer_clip);
+                scene.push_clip_layer(peniko::Fill::NonZero, content, &outer_clip);
                 for command in &commands {
                     if !command.is_root && command.needs_clip {
-                        scene.push_clip_layer(command.clip_transform, &command.clip);
+                        scene.push_clip_layer(
+                            peniko::Fill::NonZero,
+                            command.clip_transform,
+                            &command.clip,
+                        );
                     }
                     let texture_rect = kurbo::Rect::new(
                         0.0,
@@ -621,6 +625,7 @@ impl WindowedApp {
                         }),
                         None,
                         &texture_rect,
+                        anyrender::AntiAliasing::Enabled,
                     );
                     if !command.is_root && command.needs_clip {
                         scene.pop_layer();
@@ -1089,10 +1094,12 @@ impl WindowedApp {
                     height,
                     depth: 1,
                 },
+                None,
             )
         };
         // SAFETY: the hal texture was created on this device and declares the
-        // same format, extent, mip count and sample count as the descriptor.
+        // same format, extent, mip count and sample count as the descriptor.  A
+        // freshly created Metal texture has no GPU-side contents yet.
         let texture = unsafe {
             device.create_texture_from_hal::<wgpu::hal::metal::Api>(
                 hal_texture,
@@ -1110,6 +1117,7 @@ impl WindowedApp {
                     usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
                     view_formats: &[],
                 },
+                wgpu::TextureUses::UNINITIALIZED,
             )
         };
         Some(texture)
@@ -1190,9 +1198,12 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
             }
         };
         let viewport = viewport_of_snapshot(viewport_snapshot_for_window(&window));
-        let shell_provider: Arc<dyn ShellProvider> =
-            Arc::new(WinitShellProvider::new(window.clone()));
-        let chrome = match ChromeUi::new(viewport, shell_provider) {
+        let pending_clipboard_text: PendingClipboardText = Default::default();
+        let shell_provider: Arc<dyn ShellProvider> = Arc::new(WinitShellProvider::new(
+            window.clone(),
+            Arc::clone(&pending_clipboard_text),
+        ));
+        let chrome = match ChromeUi::new(viewport, shell_provider, pending_clipboard_text) {
             Ok(chrome) => chrome,
             Err(_) => {
                 event_loop.exit();
@@ -1393,6 +1404,8 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                                 state.keyboard_modifiers.state(),
                             ),
                             details: PointerDetails::default(),
+                            element: Point { x: 0.0, y: 0.0 },
+                            active_pointers: Default::default(),
                         });
                         Self::chrome_event(self, window_id, event);
                     }
@@ -1414,6 +1427,8 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                             buttons,
                             mods: modifiers,
                             details: PointerDetails::default(),
+                            element: Point { x: 0.0, y: 0.0 },
+                            active_pointers: Default::default(),
                         }),
                         None,
                     );
@@ -1444,6 +1459,8 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                                 state.keyboard_modifiers.state(),
                             ),
                             details: PointerDetails::default(),
+                            element: Point { x: 0.0, y: 0.0 },
+                            active_pointers: Default::default(),
                         };
                         Self::chrome_event(
                             self,
@@ -1472,6 +1489,8 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                                 state.keyboard_modifiers.state(),
                             ),
                             details: PointerDetails::default(),
+                            element: Point { x: 0.0, y: 0.0 },
+                            active_pointers: Default::default(),
                         };
                         let webview_id = state.active_tab;
                         if let Some(webview_id) = webview_id {
@@ -1514,6 +1533,8 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                         buttons: MouseEventButtons::None,
                         mods: winit_modifiers_to_kbt_modifiers(state.keyboard_modifiers.state()),
                         details: touch_pointer_details(force),
+                        element: Point { x: 0.0, y: 0.0 },
+                        active_pointers: Default::default(),
                     };
                     if in_chrome {
                         Self::chrome_event(
@@ -1581,6 +1602,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                             mods: winit_modifiers_to_kbt_modifiers(
                                 state.keyboard_modifiers.state(),
                             ),
+                            element: Point { x: 0.0, y: 0.0 },
                         });
                         Self::chrome_event(self, window_id, event);
                     }
@@ -1602,6 +1624,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                                     coords,
                                     buttons,
                                     mods: modifiers,
+                                    element: Point { x: 0.0, y: 0.0 },
                                 }),
                             ) {
                                 error!("wheel event error: {error}");
@@ -1780,9 +1803,12 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                     Err(_) => return,
                 };
                 let viewport = viewport_of_snapshot(viewport_snapshot_for_window(&window));
-                let shell_provider: Arc<dyn ShellProvider> =
-                    Arc::new(WinitShellProvider::new(window.clone()));
-                let chrome = match ChromeUi::new(viewport, shell_provider) {
+                let pending_clipboard_text: PendingClipboardText = Default::default();
+                let shell_provider: Arc<dyn ShellProvider> = Arc::new(WinitShellProvider::new(
+                    window.clone(),
+                    Arc::clone(&pending_clipboard_text),
+                ));
+                let chrome = match ChromeUi::new(viewport, shell_provider, pending_clipboard_text) {
                     Ok(chrome) => chrome,
                     Err(_) => return,
                 };
@@ -2108,6 +2134,8 @@ impl WindowedApp {
                 buttons: mouse_buttons,
                 mods: modifiers,
                 details: PointerDetails::default(),
+                element: Point { x: 0.0, y: 0.0 },
+                active_pointers: Default::default(),
             }
         };
         let Some(webview_id) = state.active_tab else {
@@ -2165,6 +2193,8 @@ impl WindowedApp {
             buttons: state.buttons,
             mods: modifiers,
             details: PointerDetails::default(),
+            element: Point { x: 0.0, y: 0.0 },
+            active_pointers: Default::default(),
         };
         let Some(webview_id) = state.active_tab else {
             return Ok(());
@@ -2180,6 +2210,7 @@ impl WindowedApp {
                     coords,
                     buttons: state.buttons,
                     mods: modifiers,
+                    element: Point { x: 0.0, y: 0.0 },
                 }),
             );
         }

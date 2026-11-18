@@ -1,6 +1,7 @@
 use std::{cell::Cell, cell::RefCell, collections::BTreeMap, rc::Rc};
 
 use blitz_dom::BaseDocument;
+use blitz_traits::NodeId;
 
 use crate::dom::event::EventTargetAccess;
 use crate::dom::{Element, Event, EventTarget, dispatch_with_path};
@@ -30,7 +31,7 @@ impl EventTargetAccess for HTMLElement {
 impl HTMLElement {
     pub fn new(
         document: Rc<RefCell<BaseDocument>>,
-        node_id: usize,
+        node_id: NodeId,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Self {
         Self {

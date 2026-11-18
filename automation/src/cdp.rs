@@ -151,10 +151,10 @@ impl Drop for CdpServerHandle {
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
         }
-        if let Some(listener_thread) = self.listener_thread.take() {
-            if let Err(error) = listener_thread.join() {
-                error!("[cdp] failed to join listener thread: {error:?}");
-            }
+        if let Some(listener_thread) = self.listener_thread.take()
+            && let Err(error) = listener_thread.join()
+        {
+            error!("[cdp] failed to join listener thread: {error:?}");
         }
     }
 }
@@ -360,11 +360,10 @@ impl CdpConnectionState {
                     .get("autoAttach")
                     .and_then(Value::as_bool)
                     .unwrap_or(false)
+                    && self.session_id.is_none()
                 {
-                    if self.session_id.is_none() {
-                        let session_id = self.session_id.get_or_insert_with(new_cdp_id).clone();
-                        events.push(attached_to_target_event(state, &session_id));
-                    }
+                    let session_id = self.session_id.get_or_insert_with(new_cdp_id).clone();
+                    events.push(attached_to_target_event(state, &session_id));
                 }
                 Ok(json!({}))
             }
@@ -1256,7 +1255,7 @@ async fn send_cdp_message(
 ) -> Result<(), String> {
     let payload = serde_json::to_string(message)
         .map_err(|error| format!("failed to serialize CDP message: {error}"))?;
-    send_ws_message(websocket, Message::Text(payload.into())).await
+    send_ws_message(websocket, Message::Text(payload)).await
 }
 
 async fn write_json_response(
@@ -2410,7 +2409,7 @@ mod tests {
             request["sessionId"] = json!(session_id);
         }
         socket
-            .send(Message::Text(request.to_string().into()))
+            .send(Message::Text(request.to_string()))
             .expect("CDP request should send successfully");
 
         let mut events = Vec::new();

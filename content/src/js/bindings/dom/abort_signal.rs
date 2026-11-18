@@ -138,7 +138,7 @@ pub(crate) fn abort_static(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    let reason = abort_reason_from_argument(args.get(0), ec)?;
+    let reason = abort_reason_from_argument(args.first(), ec)?;
     let signal = create_abort_signal(AbortSignal::aborted_with_reason(reason, ec), ec)?;
     Ok(<Types as JsTypes>::value_from_object(
         signal.object(ec).ok_or_else(|| ec.value_undefined())?,
@@ -151,7 +151,7 @@ pub(crate) fn timeout_static(
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
     let value_undefined = ec.value_undefined();
-    let milliseconds = ec.to_length(args.get(0).cloned().unwrap_or(value_undefined))?;
+    let milliseconds = ec.to_length(args.first().cloned().unwrap_or(value_undefined))?;
     let signal = create_abort_signal(AbortSignal::new(ec), ec)?;
 
     // Create the timeout callback as a builtin function.
@@ -204,7 +204,7 @@ pub(crate) fn any_static(
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
     let value_undefined = ec.value_undefined();
-    let signals = sequence_abort_signals(args.get(0).unwrap_or(&value_undefined), ec)?;
+    let signals = sequence_abort_signals(args.first().unwrap_or(&value_undefined), ec)?;
     let result_signal = create_abort_signal(AbortSignal::new(ec), ec)?;
     initialize_dependent_abort_signal(&result_signal, &signals, ec);
     Ok(<Types as JsTypes>::value_from_object(
@@ -299,7 +299,7 @@ fn set_onabort(
     let _signal_object = <Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("AbortSignal receiver is not an object"))?;
     let callback = nullable_value(
-        args.get(0).unwrap_or(&ec.value_undefined()),
+        args.first().unwrap_or(&ec.value_undefined()),
         ec,
         callback_function_value,
     )?;

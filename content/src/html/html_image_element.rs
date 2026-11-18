@@ -1,6 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
+use blitz_traits::NodeId;
 use js_engine::{Completion, ExecutionContext, JsTypes, gc_struct};
 use url::Url;
 
@@ -21,7 +22,7 @@ pub struct HTMLImageElement {
 impl HTMLImageElement {
     pub fn new(
         document: Rc<RefCell<BaseDocument>>,
-        node_id: usize,
+        node_id: NodeId,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Self {
         Self {

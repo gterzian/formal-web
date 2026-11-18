@@ -342,8 +342,9 @@ fn get_parent_node(
     let (document, node_id) = try_with_node_ref(this, ec, |node| {
         (Rc::clone(&node.document), node.parent_node())
     })?;
+    let document_node_id = crate::dom::document_node_id(&document.borrow());
     match node_id {
-        Some(0) => {
+        Some(node_id) if node_id == document_node_id => {
             let obj = document_object(ec)?;
             Ok(crate::js::Types::value_from_object(obj))
         }
@@ -429,13 +430,14 @@ fn get_owner_document(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let owner_document = try_with_node_ref(this, ec, Node::owner_document_node_id)?;
+    let document = try_with_node_ref(this, ec, |node| Rc::clone(&node.document))?;
+    let document_node_id = crate::dom::document_node_id(&document.borrow());
     match owner_document {
-        Some(0) => {
+        Some(node_id) if node_id == document_node_id => {
             let obj = document_object(ec)?;
             Ok(crate::js::Types::value_from_object(obj))
         }
         Some(node_id) => {
-            let document = try_with_node_ref(this, ec, |node| Rc::clone(&node.document))?;
             let obj = object_for_existing_node(document, node_id, ec)?;
             Ok(crate::js::Types::value_from_object(obj))
         }
@@ -460,7 +462,7 @@ fn set_node_value(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let first = args.first();
-    let value = if first.map_or(true, |v| crate::js::Types::value_is_null(v)) {
+    let value = if first.is_none_or(crate::js::Types::value_is_null) {
         None
     } else {
         Some(ec.to_rust_string(first.unwrap().clone())?)
@@ -475,7 +477,7 @@ fn set_text_content(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let first = args.first();
-    let text = if first.map_or(true, |v| crate::js::Types::value_is_null(v)) {
+    let text = if first.is_none_or(crate::js::Types::value_is_null) {
         None
     } else {
         Some(ec.to_rust_string(first.unwrap().clone())?)
@@ -649,6 +651,6 @@ fn dom_exception_error(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> JsValue {
     create_interface_instance::<crate::js::Types, DOMException>(exception, ec)
-        .map(|obj| crate::js::Types::value_from_object(obj))
+        .map(crate::js::Types::value_from_object)
         .unwrap_or_else(|err| err)
 }

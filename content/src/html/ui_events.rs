@@ -4,11 +4,12 @@ use std::{
 };
 
 use blitz_dom::{BaseDocument, Document as BlitzDocument, EventDriver, EventHandler};
+use blitz_traits::NodeId;
 use blitz_traits::SmolStr;
 use blitz_traits::events::{BlitzKeyEvent, DomEvent, DomEventData, EventState, UiEvent};
 use js_engine::ExecutionContext;
 #[cfg(target_os = "macos")]
-use keyboard_types::{Key, Modifiers as KeyboardModifiers};
+use keyboard_types::{Key, Modifiers as KeyboardModifiers, NamedKey};
 use log::error;
 
 use crate::dom::event::{Event, EventTarget};
@@ -30,7 +31,7 @@ fn apple_standard_keybinding_for_key_down(event: &BlitzKeyEvent) -> Option<&'sta
         if !event.state.is_pressed() {
             return None;
         }
-        let command_mod = event.modifiers.contains(KeyboardModifiers::SUPER);
+        let command_mod = event.modifiers.contains(KeyboardModifiers::META);
         let control_mod = event.modifiers.contains(KeyboardModifiers::CONTROL);
         let option_mod = event.modifiers.contains(KeyboardModifiers::ALT);
         let shift_mod = event.modifiers.contains(KeyboardModifiers::SHIFT);
@@ -38,35 +39,39 @@ fn apple_standard_keybinding_for_key_down(event: &BlitzKeyEvent) -> Option<&'sta
 
         if command_mod {
             match &event.key {
-                Key::Backspace => return Some("deleteToBeginningOfLine:"),
-                Key::Delete => return Some("deleteToEndOfLine:"),
-                Key::ArrowLeft if shift_mod => {
+                Key::Named(NamedKey::Backspace) => return Some("deleteToBeginningOfLine:"),
+                Key::Named(NamedKey::Delete) => return Some("deleteToEndOfLine:"),
+                Key::Named(NamedKey::ArrowLeft) if shift_mod => {
                     return Some("moveToBeginningOfLineAndModifySelection:");
                 }
-                Key::ArrowLeft => return Some("moveToBeginningOfLine:"),
-                Key::ArrowRight if shift_mod => {
+                Key::Named(NamedKey::ArrowLeft) => return Some("moveToBeginningOfLine:"),
+                Key::Named(NamedKey::ArrowRight) if shift_mod => {
                     return Some("moveToEndOfLineAndModifySelection:");
                 }
-                Key::ArrowRight => return Some("moveToEndOfLine:"),
-                Key::ArrowUp if shift_mod => {
+                Key::Named(NamedKey::ArrowRight) => return Some("moveToEndOfLine:"),
+                Key::Named(NamedKey::ArrowUp) if shift_mod => {
                     return Some("moveToBeginningOfDocumentAndModifySelection:");
                 }
-                Key::ArrowUp => return Some("moveToBeginningOfDocument:"),
-                Key::ArrowDown if shift_mod => {
+                Key::Named(NamedKey::ArrowUp) => return Some("moveToBeginningOfDocument:"),
+                Key::Named(NamedKey::ArrowDown) if shift_mod => {
                     return Some("moveToEndOfDocumentAndModifySelection:");
                 }
-                Key::ArrowDown => return Some("moveToEndOfDocument:"),
+                Key::Named(NamedKey::ArrowDown) => return Some("moveToEndOfDocument:"),
                 _ => {}
             }
         }
         if option_mod {
             match &event.key {
-                Key::Backspace => return Some("deleteWordBackward:"),
-                Key::Delete => return Some("deleteWordForward:"),
-                Key::ArrowLeft if shift_mod => return Some("moveWordLeftAndModifySelection:"),
-                Key::ArrowLeft => return Some("moveWordLeft:"),
-                Key::ArrowRight if shift_mod => return Some("moveWordRightAndModifySelection:"),
-                Key::ArrowRight => return Some("moveWordRight:"),
+                Key::Named(NamedKey::Backspace) => return Some("deleteWordBackward:"),
+                Key::Named(NamedKey::Delete) => return Some("deleteWordForward:"),
+                Key::Named(NamedKey::ArrowLeft) if shift_mod => {
+                    return Some("moveWordLeftAndModifySelection:");
+                }
+                Key::Named(NamedKey::ArrowLeft) => return Some("moveWordLeft:"),
+                Key::Named(NamedKey::ArrowRight) if shift_mod => {
+                    return Some("moveWordRightAndModifySelection:");
+                }
+                Key::Named(NamedKey::ArrowRight) => return Some("moveWordRight:"),
                 _ => {}
             }
         }
@@ -92,7 +97,7 @@ fn apple_standard_keybinding_for_key_down(event: &BlitzKeyEvent) -> Option<&'sta
             };
         }
         match &event.key {
-            Key::Backspace => Some("deleteBackward:"),
+            Key::Named(NamedKey::Backspace) => Some("deleteBackward:"),
             _ => None,
         }
     }
@@ -119,6 +124,12 @@ fn localize_ui_event_for_document(
             e.coords.page_x = e.coords.client_x + scroll_x;
             e.coords.page_y = e.coords.client_y + scroll_y;
         }
+        UiEvent::PointerCancel(e) | UiEvent::PointerLeave(e) => {
+            e.coords.client_x -= viewport_offset_x;
+            e.coords.client_y -= viewport_offset_y;
+            e.coords.page_x = e.coords.client_x + scroll_x;
+            e.coords.page_y = e.coords.client_y + scroll_y;
+        }
         UiEvent::Wheel(e) => {
             e.coords.client_x -= viewport_offset_x;
             e.coords.client_y -= viewport_offset_y;
@@ -128,7 +139,8 @@ fn localize_ui_event_for_document(
         UiEvent::KeyUp(_)
         | UiEvent::KeyDown(_)
         | UiEvent::Ime(_)
-        | UiEvent::AppleStandardKeybinding(_) => {}
+        | UiEvent::AppleStandardKeybinding(_)
+        | UiEvent::Paste(_) => {}
     }
 }
 
@@ -139,7 +151,7 @@ fn localize_ui_event_for_document(
 // step 6.9.6.2 while walking "get the parent" (step 6.9.9); the document
 // and window event targets close the path.
 fn build_event_path(
-    chain: &[usize],
+    chain: &[NodeId],
     document_event_target: EventTarget,
     global_event_target: Option<EventTarget>,
     ec: &mut dyn ExecutionContext<Types>,
@@ -149,29 +161,28 @@ fn build_event_path(
         // Step 6.3 / Step 6.9.6.2: Append to an event path with the event
         // target, then each ancestor, in target-to-root order.
         // <https://dom.spec.whatwg.org/#concept-event-dispatch>
-        if let Ok(object) = crate::js::platform_objects::resolve_element_object(*node_id, ec) {
-            if let Some(event_target) =
+        if let Ok(object) = crate::js::platform_objects::resolve_element_object(*node_id, ec)
+            && let Some(event_target) =
                 crate::js::downcast::event_target_from_js_object(ec, &object)
-            {
-                // Step 6.9.6.1: If isActivationEvent is true, event's bubbles
-                //               attribute is true, activationTarget is null,
-                //               and parent has activation behavior, then set
-                //               activationTarget to parent.
-                // <https://dom.spec.whatwg.org/#concept-event-dispatch>
-                // <https://html.spec.whatwg.org/#links-created-by-a-and-area-elements:activation-behaviour-2>
-                let has_activation_behavior = ec
-                    .with_object_any(&object)
-                    .and_then(|data| {
-                        data.downcast_ref::<HTMLAnchorElement>()
-                            .map(|anchor| anchor.href_attribute().is_some())
-                    })
-                    .unwrap_or(false);
-                path.push(EventPathItem {
-                    invocation_target: event_target.clone(),
-                    shadow_adjusted_target: (index == 0).then_some(event_target),
-                    has_activation_behavior,
-                });
-            }
+        {
+            // Step 6.9.6.1: If isActivationEvent is true, event's bubbles
+            //               attribute is true, activationTarget is null,
+            //               and parent has activation behavior, then set
+            //               activationTarget to parent.
+            // <https://dom.spec.whatwg.org/#concept-event-dispatch>
+            // <https://html.spec.whatwg.org/#links-created-by-a-and-area-elements:activation-behaviour-2>
+            let has_activation_behavior = ec
+                .with_object_any(&object)
+                .and_then(|data| {
+                    data.downcast_ref::<HTMLAnchorElement>()
+                        .map(|anchor| anchor.href_attribute().is_some())
+                })
+                .unwrap_or(false);
+            path.push(EventPathItem {
+                invocation_target: event_target.clone(),
+                shadow_adjusted_target: (index == 0).then_some(event_target),
+                has_activation_behavior,
+            });
         }
     }
     // Step 6.9.9: If parent is non-null, then set parent to the result of
@@ -218,7 +229,7 @@ impl<'a> BlitzJSEventHandler<'a> {
 impl EventHandler for BlitzJSEventHandler<'_> {
     fn handle_event(
         &mut self,
-        chain: &[usize],
+        chain: &[NodeId],
         event: &mut DomEvent,
         _doc: &mut dyn BlitzDocument,
         event_state: &mut EventState,
@@ -334,7 +345,7 @@ fn path_reaches_a_listener(
 
 pub(crate) fn dispatch_trusted_click_event(
     settings: &mut EnvironmentSettingsObject,
-    target_node_id: usize,
+    target_node_id: NodeId,
 ) -> Result<(), String> {
     let deferred = Rc::new(RefCell::new(DeferredAppleStandardKeybinding::default()));
     let handler = BlitzJSEventHandler::new(settings, deferred, Rc::new(Cell::new(false)));

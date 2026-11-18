@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use blitz_dom::ElementData;
+use blitz_traits::NodeId;
 use html5ever::local_name;
 use ipc_messages::content::{
     DocumentFetchId, DocumentId, ImageElementId, ImageEvent, ImageIdentifier, ResourcePartitionKey,
@@ -126,7 +127,11 @@ pub(crate) struct LoadedImage {
 pub(crate) struct ImageElement {
     /// The document the element belongs to, and its DOM node id.
     pub(crate) document_id: DocumentId,
-    pub(crate) node_id: usize,
+    pub(crate) node_id: NodeId,
+    /// Whether the element is in a document, from the DOM insertion and
+    /// removal hooks. A detached element's image attributes change nothing the
+    /// document paints, and blitz requests no repaint for the change.
+    pub(crate) is_connected: bool,
     /// <https://html.spec.whatwg.org/#current-request>
     pub(crate) current_request: ImageRequest,
     /// <https://html.spec.whatwg.org/#pending-request>
@@ -145,7 +150,7 @@ pub(crate) struct ImageElement {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ImagePresentation {
     pub(crate) document_id: DocumentId,
-    pub(crate) node_id: usize,
+    pub(crate) node_id: NodeId,
     pub(crate) width: u32,
     pub(crate) height: u32,
 }
@@ -193,7 +198,7 @@ pub(crate) struct ImageRegistry {
     pub(crate) elements: HashMap<ImageElementId, ImageElement>,
     /// The element identity for a DOM node, allocated the first time the
     /// processing model sees the element.
-    pub(crate) element_ids: HashMap<(DocumentId, usize), ImageElementId>,
+    pub(crate) element_ids: HashMap<(DocumentId, NodeId), ImageElementId>,
     /// <https://html.spec.whatwg.org/#list-of-available-images>
     pub(crate) available_images: HashMap<(DocumentId, String), LoadedImage>,
     /// Identifies the next fetched image resource within this process.
@@ -223,7 +228,7 @@ pub(crate) trait ImageFetchSink {
     fn queue_image_element_task(
         &self,
         document_id: DocumentId,
-        node_id: usize,
+        node_id: NodeId,
         event: ImageEvent,
         current_url: Option<String>,
     );
@@ -233,7 +238,7 @@ pub(crate) trait ImageFetchSink {
     fn queue_finish_environment_update(
         &self,
         document_id: DocumentId,
-        node_id: usize,
+        node_id: NodeId,
         instance_id: u64,
         selected_source: String,
         selected_pixel_density: f64,
@@ -277,7 +282,7 @@ impl ImageAttributes {
 }
 
 /// <https://html.spec.whatwg.org/#when-to-obtain-images>
-pub(crate) fn obtain_images(document: &DocumentProviders, node_id: usize, element: &ElementData) {
+pub(crate) fn obtain_images(document: &DocumentProviders, node_id: NodeId, element: &ElementData) {
     // "When obtaining images immediately, the user agent must synchronously
     // update the image data of the img element, with the restart animation
     // flag set if so stated, whenever that element is created or has
@@ -339,9 +344,13 @@ pub(crate) fn obtain_images(document: &DocumentProviders, node_id: usize, elemen
 /// <https://html.spec.whatwg.org/#the-img-element:html-element-insertion-steps>
 pub(crate) fn insertion_steps(
     document: &DocumentProviders,
-    node_id: usize,
+    node_id: NodeId,
     inserted_node: &ElementData,
 ) {
+    document
+        .image_registry()
+        .borrow_mut()
+        .set_element_connected(document.document_id(), node_id, true);
     // Step 1: "If insertedNode's parent is a picture element, then, count this as a relevant mutation for insertedNode."
     // This counts the mutation as a relevant mutation.  When obtaining
     // images immediately, that synchronously updates the image data
@@ -353,15 +362,19 @@ pub(crate) fn insertion_steps(
 /// <https://html.spec.whatwg.org/#the-img-element:html-element-removing-steps>
 pub(crate) fn removing_steps(
     document: &DocumentProviders,
-    node_id: usize,
+    node_id: NodeId,
     removed_node: &ElementData,
     is_subtree_root: bool,
     old_ancestor: Option<&ElementData>,
 ) {
+    document
+        .image_registry()
+        .borrow_mut()
+        .set_element_connected(document.document_id(), node_id, false);
     // Step 1: "If isSubtreeRoot is true and oldAncestor is a picture element, then count this as a relevant mutation for removedNode."
     // Note: Only a removal from a `<picture>` parent re-runs the algorithm: it is the case where the selected source could change (picture selection itself is not tracked), while any other removal would re-run the algorithm only to fire a redundant `load` for an available image.
     let removed_from_picture =
-        old_ancestor.is_some_and(|ancestor| ancestor.name.local.as_ref() == "picture");
+        old_ancestor.is_some_and(|ancestor| &*ancestor.name.local == "picture");
     if !is_subtree_root || !removed_from_picture {
         return;
     }
@@ -376,7 +389,7 @@ pub(crate) fn removing_steps(
 /// <https://html.spec.whatwg.org/#reacting-to-dom-mutations:relevant-mutations>
 pub(crate) fn attribute_change_steps(
     document: &DocumentProviders,
-    node_id: usize,
+    node_id: NodeId,
     element: &ElementData,
     local_name: &str,
     old_value: Option<&str>,
@@ -461,7 +474,11 @@ impl ImageRegistry {
     /// processing model sees it.  Every later input for this element (a DOM
     /// hook, the step-8 continuation, the image fetch's response) carries this
     /// value, so the state machine never has to search for the element.
-    pub(crate) fn element_id(&mut self, document_id: DocumentId, node_id: usize) -> ImageElementId {
+    pub(crate) fn element_id(
+        &mut self,
+        document_id: DocumentId,
+        node_id: NodeId,
+    ) -> ImageElementId {
         *self.element_ids.entry((document_id, node_id)).or_default()
     }
 
@@ -469,7 +486,7 @@ impl ImageRegistry {
     pub(crate) fn existing_element_id(
         &self,
         document_id: DocumentId,
-        node_id: usize,
+        node_id: NodeId,
     ) -> Option<ImageElementId> {
         self.element_ids.get(&(document_id, node_id)).copied()
     }
@@ -478,14 +495,14 @@ impl ImageRegistry {
     pub(crate) fn element_location(
         &self,
         element_id: ImageElementId,
-    ) -> Option<(DocumentId, usize)> {
+    ) -> Option<(DocumentId, NodeId)> {
         self.elements
             .get(&element_id)
             .map(|element| (element.document_id, element.node_id))
     }
 
     /// The processing model state for one element, created on first use.
-    pub(crate) fn element(&self, document_id: DocumentId, node_id: usize) -> ImageElement {
+    pub(crate) fn element(&self, document_id: DocumentId, node_id: NodeId) -> ImageElement {
         self.existing_element_id(document_id, node_id)
             .and_then(|element_id| self.elements.get(&element_id).cloned())
             .unwrap_or_default()
@@ -494,7 +511,7 @@ impl ImageRegistry {
     pub(crate) fn element_mut(
         &mut self,
         document_id: DocumentId,
-        node_id: usize,
+        node_id: NodeId,
     ) -> &mut ImageElement {
         let element_id = self.element_id(document_id, node_id);
         self.elements
@@ -506,13 +523,22 @@ impl ImageRegistry {
             })
     }
 
+    pub(crate) fn set_element_connected(
+        &mut self,
+        document_id: DocumentId,
+        node_id: NodeId,
+        is_connected: bool,
+    ) {
+        self.element_mut(document_id, node_id).is_connected = is_connected;
+    }
+
     pub(crate) fn take_pending_presentation(&mut self) -> Vec<ImagePresentation> {
         std::mem::take(&mut self.pending_presentation)
     }
 
     /// Forget the element at `node_id`: its DOM node is being freed, so the
     /// id may address a different element later.
-    pub(crate) fn forget_element(&mut self, document_id: DocumentId, node_id: usize) {
+    pub(crate) fn forget_element(&mut self, document_id: DocumentId, node_id: NodeId) {
         let Some(element_id) = self.element_ids.remove(&(document_id, node_id)) else {
             return;
         };
@@ -588,7 +614,7 @@ pub(crate) fn update_the_image_data(
     registry: &mut ImageRegistry,
     sink: &dyn ImageFetchSink,
     document_id: DocumentId,
-    node_id: usize,
+    node_id: NodeId,
     attributes: &ImageAttributes,
     base_url: Option<&Url>,
     origin: &str,
@@ -706,7 +732,7 @@ pub(crate) fn update_the_image_data(
 fn prepare_an_image_for_presentation(
     registry: &mut ImageRegistry,
     document_id: DocumentId,
-    node_id: usize,
+    node_id: NodeId,
     width: u32,
     height: u32,
 ) {
@@ -1007,7 +1033,7 @@ fn process_update_the_image_data_response(
     registry: &mut ImageRegistry,
     sink: &dyn ImageFetchSink,
     document_id: DocumentId,
-    node_id: usize,
+    node_id: NodeId,
     handler_id: DocumentFetchId,
     dimensions: Option<(u32, u32)>,
 ) -> ImageFetchOutcome {
@@ -1089,7 +1115,7 @@ fn process_reacting_to_environment_changes_response(
     registry: &mut ImageRegistry,
     sink: &dyn ImageFetchSink,
     document_id: DocumentId,
-    node_id: usize,
+    node_id: NodeId,
     handler_id: DocumentFetchId,
     dimensions: Option<(u32, u32)>,
 ) -> ImageFetchOutcome {
@@ -1151,7 +1177,7 @@ fn process_reacting_to_environment_changes_response(
 /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>
 pub(crate) fn reacting_to_environment_changes(
     document: &DocumentProviders,
-    node_id: usize,
+    node_id: NodeId,
     attributes: &ImageAttributes,
 ) {
     // Step 1: Await a stable state. The synchronous section consists of all the remaining steps of this algorithm until the algorithm says the synchronous section has ended. (Steps in synchronous sections are marked with ⌛.)
@@ -1274,7 +1300,7 @@ pub(crate) fn reacting_to_environment_changes(
 pub(crate) fn finish_environment_update(
     registry: &mut ImageRegistry,
     document_id: DocumentId,
-    node_id: usize,
+    node_id: NodeId,
     instance_id: u64,
     selected_source: &str,
     selected_pixel_density: f64,
@@ -1341,7 +1367,7 @@ pub(crate) fn finish_environment_update(
 pub(crate) fn image_element(
     registry: &ImageRegistry,
     document_id: DocumentId,
-    node_id: usize,
+    node_id: NodeId,
 ) -> ImageElement {
     registry.element(document_id, node_id)
 }
@@ -1388,6 +1414,14 @@ pub(crate) fn current_image_id(element: &ImageElement) -> Option<ImageIdentifier
         .image_data
         .as_ref()
         .map(|image| image.image_id.clone())
+}
+
+/// Whether an image attribute change is drawn only by the element's embed
+/// layer: the element is in the document and already shows an image, so blitz
+/// requests the repaint the change would otherwise mark, and the document's
+/// own scene draws nothing for the element.
+pub(crate) fn draws_an_embed_layer(element: &ImageElement) -> bool {
+    element.is_connected && current_image_id(element).is_some()
 }
 
 /// The `ImageIdentifier` the request that started `handler_id`'s fetch will
@@ -1481,7 +1515,7 @@ fn record_decode(
 pub(crate) fn decode_settlement(
     registry: &ImageRegistry,
     document_id: DocumentId,
-    node_id: usize,
+    node_id: NodeId,
     request_id: u64,
 ) -> DecodeSettlement {
     let element = registry.element(document_id, node_id);
@@ -1503,5 +1537,46 @@ pub(crate) fn decode_settlement(
         ImageRequestState::Unavailable | ImageRequestState::PartiallyAvailable => {
             DecodeSettlement::Wait
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ImageElement, LoadedImage, draws_an_embed_layer};
+    use ipc_messages::content::{ImageIdentifier, NavigableId, ResourcePartitionKey};
+
+    fn image_id() -> ImageIdentifier {
+        ImageIdentifier {
+            partition: ResourcePartitionKey {
+                top_level_traversable: NavigableId::from_u128(1),
+                origin: String::from("https://example.test"),
+            },
+            blob_id: 1,
+        }
+    }
+
+    fn element_with_image(is_connected: bool) -> ImageElement {
+        let mut element = ImageElement {
+            is_connected,
+            ..ImageElement::default()
+        };
+        element.current_request.image_data = Some(LoadedImage {
+            image_id: image_id(),
+            width: 1,
+            height: 1,
+            decode: None,
+        });
+        element
+    }
+
+    #[test]
+    fn only_a_connected_element_with_an_image_arms_repaint_suppression() {
+        assert!(!draws_an_embed_layer(&ImageElement::default()));
+        assert!(!draws_an_embed_layer(&ImageElement {
+            is_connected: true,
+            ..ImageElement::default()
+        }));
+        assert!(draws_an_embed_layer(&element_with_image(true)));
+        assert!(!draws_an_embed_layer(&element_with_image(false)));
     }
 }

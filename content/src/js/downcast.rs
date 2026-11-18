@@ -398,10 +398,8 @@ pub(crate) fn event_target_from_js_object(
             Some(dedicated_scope.worker_global_scope.event_target.clone())
         } else if let Some(worker_global_scope) = data.downcast_ref::<WorkerGlobalScope>() {
             Some(worker_global_scope.event_target.clone())
-        } else if let Some(event_target) = data.downcast_ref::<EventTarget>() {
-            Some(event_target.clone())
         } else {
-            None
+            data.downcast_ref::<EventTarget>().cloned()
         }
     })
 }

@@ -41,10 +41,10 @@ where
 {
     for constant in constants {
         // Step 1.1: "If const is not exposed in realm, then continue."
-        if let Some(exposed_globals) = constant.exposed {
-            if exposed_globals != "Window" {
-                continue;
-            }
+        if let Some(exposed_globals) = constant.exposed
+            && exposed_globals != "Window"
+        {
+            continue;
         }
         let key = ec.property_key_from_str(constant.id);
         let value = match &constant.value {

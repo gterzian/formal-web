@@ -243,7 +243,7 @@ fn set_hidden(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let hidden = args.first().map_or(false, |v| ec.to_boolean(v));
+    let hidden = args.first().is_some_and(|v| ec.to_boolean(v));
     try_with_html_element_ref(this, ec, |html_element| html_element.set_hidden(hidden))?;
     Ok(ec.value_undefined())
 }
@@ -455,10 +455,9 @@ fn element_style_attribute(
         )
     } else if let Some(el) = data.downcast_ref::<HTMLElement>() {
         Some(el.element.get_attribute("style").unwrap_or_default())
-    } else if let Some(el) = data.downcast_ref::<Element>() {
-        Some(el.get_attribute("style").unwrap_or_default())
     } else {
-        None
+        data.downcast_ref::<Element>()
+            .map(|el| el.get_attribute("style").unwrap_or_default())
     }
 }
 
