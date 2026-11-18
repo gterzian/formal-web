@@ -4820,11 +4820,29 @@ impl ContentProcess {
         };
         content_document.paint_dirty.note_paint();
         self.note_ui_state_update(traversable_id);
+        if events.durationchange {
+            self.queue_media_element_task(
+                document_id,
+                node_id,
+                paint_id,
+                MediaElementEvent::DurationChange,
+            );
+        }
         if events.resize {
-            self.queue_media_element_task(document_id, node_id, MediaElementEvent::Resize);
+            self.queue_media_element_task(
+                document_id,
+                node_id,
+                paint_id,
+                MediaElementEvent::Resize,
+            );
         }
         if events.loaded_metadata {
-            self.queue_media_element_task(document_id, node_id, MediaElementEvent::LoadedMetadata);
+            self.queue_media_element_task(
+                document_id,
+                node_id,
+                paint_id,
+                MediaElementEvent::LoadedMetadata,
+            );
         }
         Ok(())
     }
@@ -4833,11 +4851,13 @@ impl ContentProcess {
         &self,
         document_id: DocumentId,
         node_id: usize,
+        paint_id: VideoPaintId,
         event: MediaElementEvent,
     ) {
         let command = Command::RunMediaElementTask {
             document_id,
             node_id,
+            paint_id,
             event,
         };
         if let Err(error) = self.content_command_sender.send(command) {
@@ -4849,15 +4869,31 @@ impl ContentProcess {
         &mut self,
         document_id: DocumentId,
         node_id: usize,
+        paint_id: VideoPaintId,
         event: MediaElementEvent,
     ) -> Result<(), String> {
         let Some(content_document) = self.documents.get_mut(&document_id) else {
             return Ok(());
         };
+        let video_node_id = NodeId::from_u64(node_id as u64);
+        let is_current_video = content_document
+            .document
+            .borrow()
+            .get_node(video_node_id)
+            .and_then(|node| node.element_data())
+            .is_some_and(|element| element.name.local == local_name!("video"));
+        if !is_current_video
+            || self
+                .video_paint_registry
+                .borrow()
+                .get(&(document_id, node_id))
+                != Some(&paint_id)
+        {
+            return Ok(());
+        }
         let time_millis = content_document.settings.current_time_millis();
         let traversable_id = content_document.traversable_id;
         let ec = content_document.settings.ec();
-        let video_node_id = NodeId::from_u64(node_id as u64);
         let Ok(object) = resolve_element_object(video_node_id, ec) else {
             return Ok(());
         };
@@ -4865,6 +4901,7 @@ impl ContentProcess {
             return Ok(());
         };
         let event_type = match event {
+            MediaElementEvent::DurationChange => "durationchange",
             MediaElementEvent::LoadedMetadata => "loadedmetadata",
             MediaElementEvent::Resize => "resize",
         };
@@ -5336,9 +5373,10 @@ impl ContentProcess {
             RunMediaElementTask {
                 document_id,
                 node_id,
+                paint_id,
                 event,
             } => {
-                self.run_media_element_event(document_id, node_id, event)?;
+                self.run_media_element_event(document_id, node_id, paint_id, event)?;
                 Ok(true)
             }
             ContentBootstrap { .. } => {

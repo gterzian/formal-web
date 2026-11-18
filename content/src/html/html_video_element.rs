@@ -11,6 +11,7 @@ use js_engine::{ExecutionContext, gc_struct};
 /// The media element tasks a newly reported video intrinsic size queues.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct VideoIntrinsicSizeEvents {
+    pub(crate) durationchange: bool,
     pub(crate) resize: bool,
     pub(crate) loaded_metadata: bool,
 }
@@ -57,6 +58,7 @@ impl HTMLVideoElement {
             self.media_element.ready_state = HTMLMediaElement::HAVE_METADATA;
         }
         VideoIntrinsicSizeEvents {
+            durationchange: became_have_metadata,
             resize: became_have_metadata || size_changed,
             loaded_metadata: became_have_metadata,
         }

@@ -1357,6 +1357,8 @@ pub enum ImageEvent {
 /// An event fired by a media element task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MediaElementEvent {
+    /// <https://html.spec.whatwg.org/#event-media-durationchange>
+    DurationChange,
     /// <https://html.spec.whatwg.org/#event-media-loadedmetadata>
     LoadedMetadata,
     /// <https://html.spec.whatwg.org/#event-media-resize>
@@ -1532,6 +1534,7 @@ pub enum Command {
     RunMediaElementTask {
         document_id: DocumentId,
         node_id: usize,
+        paint_id: VideoPaintId,
         event: MediaElementEvent,
     },
     /// The target-process half of the window post message steps (step 8 and
