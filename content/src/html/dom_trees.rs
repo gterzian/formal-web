@@ -49,13 +49,7 @@ impl MutationHooks for DocumentProviders {
         }
         if is_html_element(element) && &*element.name.local == "img" {
             images_processing_model::attribute_change_steps(
-                self,
-                node_id.as_u64() as usize,
-                element,
-                local_name,
-                old_value,
-                new_value,
-                namespace,
+                self, node_id, element, local_name, old_value, new_value, namespace,
             );
         }
         if is_html_element(element) && &*element.name.local == "iframe" {
@@ -95,11 +89,7 @@ impl MutationHooks for DocumentProviders {
             && is_html_element(inserted_node)
             && &*inserted_node.name.local == "img"
         {
-            images_processing_model::insertion_steps(
-                self,
-                node_id.as_u64() as usize,
-                inserted_node,
-            );
+            images_processing_model::insertion_steps(self, node_id, inserted_node);
         }
         // Step 2: "If insertedNode is a form-associated element or the ancestor of a
         // form-associated element:"
@@ -156,7 +146,7 @@ impl MutationHooks for DocumentProviders {
         {
             images_processing_model::removing_steps(
                 self,
-                node_id.as_u64() as usize,
+                node_id,
                 removed_node,
                 is_subtree_root,
                 old_ancestor,

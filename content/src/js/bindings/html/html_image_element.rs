@@ -136,7 +136,7 @@ fn image_element_for(
         image_element(
             &registry,
             document_id,
-            image.html_element.element.node.node_id.as_u64() as usize,
+            image.html_element.element.node.node_id,
         )
     })
 }

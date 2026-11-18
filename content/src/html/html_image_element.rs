@@ -365,7 +365,7 @@ impl HTMLImageElement {
         // element's current request by the microtask itself, and both carry the
         // element's identity rather than its DOM node.
         let element_id = with_global_scope(ec, |global_scope, _ec| {
-            Ok(global_scope.image_element_id(node_id.as_u64() as usize))
+            Ok(global_scope.image_element_id(node_id))
         })?;
         let Some(element_id) = element_id else {
             // No processing model to wait on: the request can never be

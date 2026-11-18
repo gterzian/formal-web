@@ -373,11 +373,7 @@ impl HTMLMediaElement {
         // metadata builder can find the same UUID for this video element.
         if let Some(document_id) = document_id {
             let _ = with_global_scope(ec, |global_scope, _ec| {
-                global_scope.register_video_paint_id(
-                    document_id,
-                    node_id.as_u64() as usize,
-                    video_paint_id,
-                );
+                global_scope.register_video_paint_id(document_id, node_id, video_paint_id);
                 Ok(())
             });
         }

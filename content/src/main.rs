@@ -568,7 +568,7 @@ pub(crate) struct ContentProcess {
     /// Shared registry mapping (document_id, node_id) → CanvasId, set on each
     /// realm's GlobalScope so `transferControlToOffscreen` can register canvas
     /// ids and `build_frame_composition_metadata` can read them back.
-    canvas_registry: Rc<RefCell<HashMap<(DocumentId, usize), CanvasId>>>,
+    canvas_registry: Rc<RefCell<HashMap<(DocumentId, NodeId), CanvasId>>>,
     /// Direct sender to the net extension. Set during DirectChannelsSetup.
     network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
     /// Direct sender to the graphics process (composition + media). Set during ContentBootstrap.
@@ -869,7 +869,7 @@ impl ContentProcess {
         // <https://html.spec.whatwg.org/#reacting-to-environment-changes>
         // The viewport change is a stable state: let every `<img>` in the
         // document react to the new environment.
-        let image_node_ids: Vec<usize> = {
+        let image_node_ids: Vec<NodeId> = {
             let registry = self.image_registry.borrow_mut();
             registry
                 .elements
@@ -885,7 +885,7 @@ impl ContentProcess {
                 let document_guard = document.document.borrow();
                 for node_id in image_node_ids {
                     if let Some(element) = document_guard
-                        .get_node(NodeId::from_u64(node_id as u64))
+                        .get_node(node_id)
                         .and_then(|node| node.element_data())
                     {
                         images.push((node_id, ImageAttributes::from_element(element)));
@@ -3157,8 +3157,8 @@ impl ContentProcess {
         document: &BaseDocument,
         container_states: &HashMap<NodeId, NavigableContainerState>,
         scale: f64,
-        video_paint_registry: &mut HashMap<(DocumentId, usize), VideoPaintId>,
-        canvas_registry: &HashMap<(DocumentId, usize), CanvasId>,
+        video_paint_registry: &mut HashMap<(DocumentId, NodeId), VideoPaintId>,
+        canvas_registry: &HashMap<(DocumentId, NodeId), CanvasId>,
         image_registry: &ImageRegistry,
     ) -> FrameCompositionMetadata {
         let mut iframe_node_ids = container_states
@@ -3283,7 +3283,7 @@ impl ContentProcess {
                 .unwrap_or(0.0);
 
             let paint_id = video_paint_registry
-                .entry((document_id, video_node_id.as_u64() as usize))
+                .entry((document_id, video_node_id))
                 .or_default();
 
             let (object_fit, object_position) = document
@@ -3331,15 +3331,14 @@ impl ContentProcess {
         for (canvas_offset, ((_, canvas_node_id), canvas_id)) in
             canvas_entries.into_iter().enumerate()
         {
-            let Some((x, y, width, height)) =
-                Self::canvas_box(document, NodeId::from_u64(*canvas_node_id as u64), scale)
+            let Some((x, y, width, height)) = Self::canvas_box(document, *canvas_node_id, scale)
             else {
                 debug!("[layout] canvas node {canvas_node_id} skipped: no box");
                 continue;
             };
             let clip_svg_path = format!("M0,0 L{width},0 L{width},{height} L0,{height} Z");
             embed_sites.push(EmbedSite::Canvas(CanvasEmbedSite {
-                embed_site_id: EmbedSiteId((*canvas_node_id as u64).wrapping_add(1)),
+                embed_site_id: EmbedSiteId(canvas_node_id.as_u64().wrapping_add(1)),
                 canvas_id: *canvas_id,
                 background_policy: EmbedBackgroundPolicy::Transparent,
                 clip_svg_path,
@@ -3361,11 +3360,8 @@ impl ContentProcess {
             else {
                 continue;
             };
-            let element = images_processing_model::image_element(
-                image_registry,
-                document_id,
-                image_node_id.as_u64() as usize,
-            );
+            let element =
+                images_processing_model::image_element(image_registry, document_id, image_node_id);
             if !images_processing_model::is_available(&element) {
                 continue;
             }
@@ -3375,7 +3371,7 @@ impl ContentProcess {
             let clip_svg_path = format!("M0,0 L{width},0 L{width},{height} L0,{height} Z");
             embed_sites.push(EmbedSite::Image(ImageEmbedData {
                 embed_site_id: EmbedSiteId(image_node_id.as_u64().wrapping_add(1)),
-                paint_id: ImagePaintId::for_node(navigable_id, image_node_id.as_u64() as usize),
+                paint_id: ImagePaintId::for_node(navigable_id, image_node_id.as_u64()),
                 image_id,
                 background_policy: EmbedBackgroundPolicy::Transparent,
                 clip_svg_path,
@@ -3841,13 +3837,11 @@ impl ContentProcess {
             let mut released_canvas_ids = Vec::new();
             for (_, node_ids) in &droppable {
                 for node_id in node_ids.iter().copied() {
-                    image_registry.forget_element(document_id, node_id.as_u64() as usize);
-                    if let Some(canvas_id) =
-                        canvas_registry.remove(&(document_id, node_id.as_u64() as usize))
-                    {
+                    image_registry.forget_element(document_id, node_id);
+                    if let Some(canvas_id) = canvas_registry.remove(&(document_id, node_id)) {
                         released_canvas_ids.push(canvas_id);
                     }
-                    video_paint_registry.remove(&(document_id, node_id.as_u64() as usize));
+                    video_paint_registry.remove(&(document_id, node_id));
                 }
             }
             released_canvas_ids
@@ -3925,7 +3919,7 @@ impl ContentProcess {
                 continue;
             };
             let traversable_id = content_document.traversable_id;
-            let paint_id = ImagePaintId::for_node(traversable_id, presentation.node_id);
+            let paint_id = ImagePaintId::for_node(traversable_id, presentation.node_id.as_u64());
             // The document's own scene draws nothing for an available `<img>`
             // (the graphics process draws the image on its own layer), so a
             // presentation reaches it only when the element becomes available
@@ -3945,7 +3939,7 @@ impl ContentProcess {
                             matches!(site, EmbedSite::Image(image) if image.paint_id == paint_id)
                         })
                         });
-                let image_node_id = NodeId::from_u64(presentation.node_id as u64);
+                let image_node_id = presentation.node_id;
                 let fixed_box =
                     Self::image_box_is_independent_of_intrinsic_size(&document, image_node_id);
                 let composition_only = had_embed_site && fixed_box;
@@ -4800,7 +4794,7 @@ impl ContentProcess {
             return Ok(());
         };
         let traversable_id = content_document.traversable_id;
-        let video_node_id = NodeId::from_u64(node_id as u64);
+        let video_node_id = node_id;
         {
             let mut document = content_document.document.borrow_mut();
             // The dimensions are the element's intrinsic size, so they are
@@ -4821,28 +4815,13 @@ impl ContentProcess {
         content_document.paint_dirty.note_paint();
         self.note_ui_state_update(traversable_id);
         if events.durationchange {
-            self.queue_media_element_task(
-                document_id,
-                node_id,
-                paint_id,
-                MediaElementEvent::DurationChange,
-            );
+            self.queue_media_element_task(document_id, paint_id, MediaElementEvent::DurationChange);
         }
         if events.resize {
-            self.queue_media_element_task(
-                document_id,
-                node_id,
-                paint_id,
-                MediaElementEvent::Resize,
-            );
+            self.queue_media_element_task(document_id, paint_id, MediaElementEvent::Resize);
         }
         if events.loaded_metadata {
-            self.queue_media_element_task(
-                document_id,
-                node_id,
-                paint_id,
-                MediaElementEvent::LoadedMetadata,
-            );
+            self.queue_media_element_task(document_id, paint_id, MediaElementEvent::LoadedMetadata);
         }
         Ok(())
     }
@@ -4850,13 +4829,11 @@ impl ContentProcess {
     fn queue_media_element_task(
         &self,
         document_id: DocumentId,
-        node_id: usize,
         paint_id: VideoPaintId,
         event: MediaElementEvent,
     ) {
         let command = Command::RunMediaElementTask {
             document_id,
-            node_id,
             paint_id,
             event,
         };
@@ -4868,27 +4845,31 @@ impl ContentProcess {
     fn run_media_element_event(
         &mut self,
         document_id: DocumentId,
-        node_id: usize,
         paint_id: VideoPaintId,
         event: MediaElementEvent,
     ) -> Result<(), String> {
+        let video_node_id = {
+            let registry = self.video_paint_registry.borrow();
+            registry
+                .iter()
+                .find(|((registered_document_id, _), registered_paint_id)| {
+                    *registered_document_id == document_id && **registered_paint_id == paint_id
+                })
+                .map(|((_, node_id), _)| *node_id)
+        };
+        let Some(video_node_id) = video_node_id else {
+            return Ok(());
+        };
         let Some(content_document) = self.documents.get_mut(&document_id) else {
             return Ok(());
         };
-        let video_node_id = NodeId::from_u64(node_id as u64);
         let is_current_video = content_document
             .document
             .borrow()
             .get_node(video_node_id)
             .and_then(|node| node.element_data())
             .is_some_and(|element| element.name.local == local_name!("video"));
-        if !is_current_video
-            || self
-                .video_paint_registry
-                .borrow()
-                .get(&(document_id, node_id))
-                != Some(&paint_id)
-        {
+        if !is_current_video {
             return Ok(());
         }
         let time_millis = content_document.settings.current_time_millis();
@@ -4924,7 +4905,7 @@ impl ContentProcess {
     fn run_image_event(
         &mut self,
         document_id: DocumentId,
-        node_id: usize,
+        node_id: NodeId,
         event: ImageEvent,
         current_url: Option<String>,
     ) -> Result<(), String> {
@@ -4940,7 +4921,7 @@ impl ContentProcess {
         };
         let time_millis = content_document.settings.current_time_millis();
         let ec = content_document.settings.ec();
-        let Ok(object) = resolve_element_object(NodeId::from_u64(node_id as u64), ec) else {
+        let Ok(object) = resolve_element_object(node_id, ec) else {
             return Ok(());
         };
         let event_target = ec.with_object_any(&object).and_then(|data| {
@@ -4973,7 +4954,7 @@ impl ContentProcess {
     fn run_image_environment_update(
         &mut self,
         document_id: DocumentId,
-        node_id: usize,
+        node_id: NodeId,
         instance_id: u64,
         selected_source: &str,
         selected_pixel_density: f64,
@@ -5343,7 +5324,7 @@ impl ContentProcess {
                 event,
                 current_url,
             } => {
-                self.run_image_event(document_id, node_id, event, current_url)?;
+                self.run_image_event(document_id, NodeId::from_u64(node_id), event, current_url)?;
                 Ok(true)
             }
             RunImageEnvironmentUpdate {
@@ -5355,7 +5336,7 @@ impl ContentProcess {
             } => {
                 self.run_image_environment_update(
                     document_id,
-                    node_id,
+                    NodeId::from_u64(node_id),
                     instance_id,
                     &selected_source,
                     selected_pixel_density,
@@ -5372,11 +5353,10 @@ impl ContentProcess {
             }
             RunMediaElementTask {
                 document_id,
-                node_id,
                 paint_id,
                 event,
             } => {
-                self.run_media_element_event(document_id, node_id, paint_id, event)?;
+                self.run_media_element_event(document_id, paint_id, event)?;
                 Ok(true)
             }
             ContentBootstrap { .. } => {

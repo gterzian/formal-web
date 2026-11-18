@@ -88,7 +88,7 @@ impl ImagePaintId {
     /// frame-composition builder recomputes it without a side table.
     ///
     /// <https://html.spec.whatwg.org/#htmlimageelement>
-    pub fn for_node(navigable_id: NavigableId, node_id: usize) -> Self {
+    pub fn for_node(navigable_id: NavigableId, node_id: u64) -> Self {
         let name = format!("{}:{node_id}", navigable_id.0);
         Self(Uuid::new_v5(&Self::LAYER_NAMESPACE, name.as_bytes()))
     }
@@ -1504,7 +1504,7 @@ pub enum Command {
     /// <https://html.spec.whatwg.org/#queue-an-element-task>
     RunImageElementTask {
         document_id: DocumentId,
-        node_id: usize,
+        node_id: u64,
         event: ImageEvent,
         /// The current request URL the task sets before firing, when the
         /// algorithm's queued steps include it (steps 11.2.1 and 13.4.1).
@@ -1515,7 +1515,7 @@ pub enum Command {
     /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>
     RunImageEnvironmentUpdate {
         document_id: DocumentId,
-        node_id: usize,
+        node_id: u64,
         instance_id: u64,
         selected_source: String,
         selected_pixel_density: f64,
@@ -1533,7 +1533,6 @@ pub enum Command {
     /// <https://html.spec.whatwg.org/#queue-a-media-element-task>
     RunMediaElementTask {
         document_id: DocumentId,
-        node_id: usize,
         paint_id: VideoPaintId,
         event: MediaElementEvent,
     },

@@ -311,7 +311,7 @@ impl DocumentProviders {
         // drop an unrelated repaint.
         let is_embed_layer_change = {
             let registry = self.image_registry.borrow();
-            let element = registry.element(self.document_id, img_node_id.as_u64() as usize);
+            let element = registry.element(self.document_id, img_node_id);
             draws_an_embed_layer(&element)
         };
         if is_embed_layer_change {
@@ -374,13 +374,13 @@ impl ImageFetchSink for DocumentProviders {
     fn queue_image_element_task(
         &self,
         document_id: DocumentId,
-        node_id: usize,
+        node_id: NodeId,
         event: ImageEvent,
         current_url: Option<String>,
     ) {
         let command = Command::RunImageElementTask {
             document_id,
-            node_id,
+            node_id: node_id.as_u64(),
             event,
             current_url,
         };
@@ -392,14 +392,14 @@ impl ImageFetchSink for DocumentProviders {
     fn queue_finish_environment_update(
         &self,
         document_id: DocumentId,
-        node_id: usize,
+        node_id: NodeId,
         instance_id: u64,
         selected_source: String,
         selected_pixel_density: f64,
     ) {
         let command = Command::RunImageEnvironmentUpdate {
             document_id,
-            node_id,
+            node_id: node_id.as_u64(),
             instance_id,
             selected_source,
             selected_pixel_density,

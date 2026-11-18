@@ -245,7 +245,7 @@ impl HTMLCanvasElement {
         // canvas registry (so the element gets an embed site) and with the
         // graphics process (so the context's committed scenes route to the
         // owning webview's compositor).
-        let node_id = self.html_element.element.node.node_id.as_u64() as usize;
+        let node_id = self.html_element.element.node.node_id;
         with_global_scope(ec, |global_scope, ec| {
             let document_id = global_scope
                 .document_id()

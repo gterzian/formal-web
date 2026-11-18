@@ -56,10 +56,10 @@ type NodeReflector = JsObject;
 
 /// The shared (document_id, node_id) → CanvasId registry held by both
 /// GlobalScope and ContentProcess.
-pub(crate) type CanvasRegistry = Rc<RefCell<HashMap<(DocumentId, usize), CanvasId>>>;
+pub(crate) type CanvasRegistry = Rc<RefCell<HashMap<(DocumentId, NodeId), CanvasId>>>;
 
 /// The shared (document_id, node_id) → VideoPaintId registry.
-pub(crate) type VideoPaintRegistry = HashMap<(DocumentId, usize), VideoPaintId>;
+pub(crate) type VideoPaintRegistry = HashMap<(DocumentId, NodeId), VideoPaintId>;
 
 /// The media pipelines each document's `<video>` elements created.
 pub(crate) type MediaPipelineRegistry = HashMap<DocumentId, Vec<MediaPipelineId>>;
@@ -1594,7 +1594,7 @@ impl GlobalScope {
 
     /// The identity the processing model uses for the `<img>` element at
     /// `node_id`, allocated on first use.
-    pub(crate) fn image_element_id(&self, node_id: usize) -> Option<ImageElementId> {
+    pub(crate) fn image_element_id(&self, node_id: NodeId) -> Option<ImageElementId> {
         let registry = self.image_registry()?;
         let document_id = self.document_id()?;
         let mut registry = registry.borrow_mut();
@@ -1721,7 +1721,7 @@ impl GlobalScope {
             let document = self.document();
             let document = document.borrow();
             let Some(element) = document
-                .get_node(NodeId::from_u64(node_id as u64))
+                .get_node(node_id)
                 .and_then(|node| node.element_data())
             else {
                 return Ok(());
@@ -1799,7 +1799,7 @@ impl GlobalScope {
     /// creation so media resources can register paint IDs.
     pub(crate) fn set_video_paint_registry(
         &self,
-        registry: Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>,
+        registry: Rc<RefCell<HashMap<(DocumentId, NodeId), VideoPaintId>>>,
     ) {
         *self.video_paint_registry.borrow_mut() = Some(registry);
     }
@@ -1810,7 +1810,7 @@ impl GlobalScope {
     pub(crate) fn register_video_paint_id(
         &self,
         document_id: DocumentId,
-        node_id: usize,
+        node_id: NodeId,
         paint_id: VideoPaintId,
     ) {
         if let Some(registry) = self.video_paint_registry.borrow().as_ref() {
