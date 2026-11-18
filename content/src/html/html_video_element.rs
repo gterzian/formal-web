@@ -34,9 +34,20 @@ impl HTMLVideoElement {
         }
     }
 
+    /// Applies the natural size the graphics process reported for the video
+    /// stream, and moves the element to `HAVE_METADATA` once that size is
+    /// known.
+    pub(crate) fn set_video_intrinsic_size(&mut self, width: u32, height: u32) {
+        self.video_width = width;
+        self.video_height = height;
+        if self.media_element.ready_state == HTMLMediaElement::HAVE_NOTHING {
+            self.media_element.ready_state = HTMLMediaElement::HAVE_METADATA;
+        }
+    }
+
     /// <https://html.spec.whatwg.org/#dom-video-videowidth>
     pub(crate) fn video_width(&self) -> u32 {
-        // Step 1: If readyState is HAVE_NOTHING, return 0.
+        // Step 1: If this's readyState attribute is HAVE_NOTHING, then return 0.
         if self.media_element.ready_state == HTMLMediaElement::HAVE_NOTHING {
             return 0;
         }
@@ -47,7 +58,7 @@ impl HTMLVideoElement {
 
     /// <https://html.spec.whatwg.org/#dom-video-videoheight>
     pub(crate) fn video_height(&self) -> u32 {
-        // Step 1: If readyState is HAVE_NOTHING, return 0.
+        // Step 1: If this's readyState attribute is HAVE_NOTHING, then return 0.
         if self.media_element.ready_state == HTMLMediaElement::HAVE_NOTHING {
             return 0;
         }

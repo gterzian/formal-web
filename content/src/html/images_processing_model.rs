@@ -127,6 +127,10 @@ pub(crate) struct ImageElement {
     /// The document the element belongs to, and its DOM node id.
     pub(crate) document_id: DocumentId,
     pub(crate) node_id: usize,
+    /// Whether the element is in a document, from the DOM insertion and
+    /// removal hooks. A detached element's image attributes change nothing the
+    /// document paints, and blitz requests no repaint for the change.
+    pub(crate) is_connected: bool,
     /// <https://html.spec.whatwg.org/#current-request>
     pub(crate) current_request: ImageRequest,
     /// <https://html.spec.whatwg.org/#pending-request>
@@ -342,6 +346,10 @@ pub(crate) fn insertion_steps(
     node_id: usize,
     inserted_node: &ElementData,
 ) {
+    document
+        .image_registry()
+        .borrow_mut()
+        .set_element_connected(document.document_id(), node_id, true);
     // Step 1: "If insertedNode's parent is a picture element, then, count this as a relevant mutation for insertedNode."
     // This counts the mutation as a relevant mutation.  When obtaining
     // images immediately, that synchronously updates the image data
@@ -358,6 +366,10 @@ pub(crate) fn removing_steps(
     is_subtree_root: bool,
     old_ancestor: Option<&ElementData>,
 ) {
+    document
+        .image_registry()
+        .borrow_mut()
+        .set_element_connected(document.document_id(), node_id, false);
     // Step 1: "If isSubtreeRoot is true and oldAncestor is a picture element, then count this as a relevant mutation for removedNode."
     // Note: Only a removal from a `<picture>` parent re-runs the algorithm: it is the case where the selected source could change (picture selection itself is not tracked), while any other removal would re-run the algorithm only to fire a redundant `load` for an available image.
     let removed_from_picture =
@@ -504,6 +516,15 @@ impl ImageRegistry {
                 node_id,
                 ..ImageElement::default()
             })
+    }
+
+    pub(crate) fn set_element_connected(
+        &mut self,
+        document_id: DocumentId,
+        node_id: usize,
+        is_connected: bool,
+    ) {
+        self.element_mut(document_id, node_id).is_connected = is_connected;
     }
 
     pub(crate) fn take_pending_presentation(&mut self) -> Vec<ImagePresentation> {
@@ -1390,6 +1411,14 @@ pub(crate) fn current_image_id(element: &ImageElement) -> Option<ImageIdentifier
         .map(|image| image.image_id.clone())
 }
 
+/// Whether an image attribute change is drawn only by the element's embed
+/// layer: the element is in the document and already shows an image, so blitz
+/// requests the repaint the change would otherwise mark, and the document's
+/// own scene draws nothing for the element.
+pub(crate) fn draws_an_embed_layer(element: &ImageElement) -> bool {
+    element.is_connected && current_image_id(element).is_some()
+}
+
 /// The `ImageIdentifier` the request that started `handler_id`'s fetch will
 /// present, if that request is still the element's current or pending one: what
 /// step 27 of <https://html.spec.whatwg.org/#update-the-image-data> (and steps
@@ -1503,5 +1532,46 @@ pub(crate) fn decode_settlement(
         ImageRequestState::Unavailable | ImageRequestState::PartiallyAvailable => {
             DecodeSettlement::Wait
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ImageElement, LoadedImage, draws_an_embed_layer};
+    use ipc_messages::content::{ImageIdentifier, NavigableId, ResourcePartitionKey};
+
+    fn image_id() -> ImageIdentifier {
+        ImageIdentifier {
+            partition: ResourcePartitionKey {
+                top_level_traversable: NavigableId::from_u128(1),
+                origin: String::from("https://example.test"),
+            },
+            blob_id: 1,
+        }
+    }
+
+    fn element_with_image(is_connected: bool) -> ImageElement {
+        let mut element = ImageElement {
+            is_connected,
+            ..ImageElement::default()
+        };
+        element.current_request.image_data = Some(LoadedImage {
+            image_id: image_id(),
+            width: 1,
+            height: 1,
+            decode: None,
+        });
+        element
+    }
+
+    #[test]
+    fn only_a_connected_element_with_an_image_arms_repaint_suppression() {
+        assert!(!draws_an_embed_layer(&ImageElement::default()));
+        assert!(!draws_an_embed_layer(&ImageElement {
+            is_connected: true,
+            ..ImageElement::default()
+        }));
+        assert!(draws_an_embed_layer(&element_with_image(true)));
+        assert!(!draws_an_embed_layer(&element_with_image(false)));
     }
 }

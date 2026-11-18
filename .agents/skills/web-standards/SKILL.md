@@ -76,7 +76,9 @@ and `// Step N:` step comments. It checks that each anchor exists and that
 each step comment matches the first words of the numbered spec step. Anchors
 defined in prose (an IDL attribute or method, a concept) have no numbered
 steps; they are only checked for existence. It exits non-zero when it finds a
-mismatch.
+mismatch. An anchor may own several numbered algorithms — an IDL attribute has
+getter and setter steps under one anchor — and a step comment matches if any of
+the algorithms in that definition item contains it.
 
 ```
 node scripts/spec.mjs verify content/src/dom/event.rs

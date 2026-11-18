@@ -37,8 +37,8 @@ use crate::html::workers::dedicated_worker_agent::{
     WorkerChannelMessage, WorkerEvent, WorkerHandle, WorkerInbound, fire_worker_posted_message,
 };
 use crate::html::{
-    EnvironmentSettingsObject, HTMLImageElement, JsHtmlParserProvider, MessageEvent,
-    PendingParserScript, Window, execute_parser_scripts, parse_html_into_document,
+    EnvironmentSettingsObject, HTMLImageElement, HTMLVideoElement, JsHtmlParserProvider,
+    MessageEvent, PendingParserScript, Window, execute_parser_scripts, parse_html_into_document,
     process_iframe_attributes, run_dom_post_connection_steps_for_document,
     run_dom_removing_steps_for_document, run_iframe_load_event_steps_for_traversable,
     run_iframe_post_connection_steps, run_iframe_removing_steps,
@@ -50,7 +50,7 @@ use crate::html::{
 };
 use crate::infra::strip_and_collapse_ascii_whitespace;
 use crate::js::Engine;
-use crate::js::downcast::try_with_event_target_mut;
+use crate::js::downcast::{try_with_event_target_mut, with_cloned_platform_mut};
 use crate::js::platform_objects::{resolve_element_object, with_global_scope};
 use crate::ui_event::deserialize_ui_event;
 #[cfg(all(boa_backend, feature = "wasm"))]
@@ -85,7 +85,9 @@ use ipc_messages::content::{
     ViewportSnapshot, WebviewId, WindowTimerKey, WorkerId, WorkerOwner,
 };
 use ipc_messages::graphics::{DecodedImage, GraphicsCommand, ImageFormat};
-use ipc_messages::media::{VideoEmbedData, VideoPaintId};
+use ipc_messages::media::{
+    VideoEmbedData, VideoObjectFit, VideoObjectPosition, VideoObjectPositionComponent, VideoPaintId,
+};
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
 use log::{debug, error, info, warn};
 use std::{
@@ -96,7 +98,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use style::values::computed::Size as ComputedSize;
+use style::values::computed::{LengthPercentage, ObjectFit, Position, Size as ComputedSize};
 use url::Url;
 use verification::{TLATracer, TraceSender};
 
@@ -425,6 +427,38 @@ struct DocumentViewportState {
     snapshot: ViewportSnapshot,
     offset_x: f32,
     offset_y: f32,
+}
+
+fn video_object_fit(object_fit: ObjectFit) -> VideoObjectFit {
+    match object_fit {
+        ObjectFit::Fill => VideoObjectFit::Fill,
+        ObjectFit::Contain => VideoObjectFit::Contain,
+        ObjectFit::Cover => VideoObjectFit::Cover,
+        ObjectFit::None => VideoObjectFit::None,
+        ObjectFit::ScaleDown => VideoObjectFit::ScaleDown,
+    }
+}
+
+fn video_object_position_component(
+    component: &LengthPercentage,
+    scale: f64,
+) -> VideoObjectPositionComponent {
+    if let Some(percentage) = component.to_percentage() {
+        VideoObjectPositionComponent::Percentage(f64::from(percentage.0))
+    } else if let Some(length) = component.to_length() {
+        VideoObjectPositionComponent::Length(f64::from(length.px()) * scale)
+    } else {
+        // A calc() component mixes lengths and percentages; it is not
+        // decomposed here, so the initial value's center is used instead.
+        VideoObjectPositionComponent::Percentage(0.5)
+    }
+}
+
+fn video_object_position(position: &Position, scale: f64) -> VideoObjectPosition {
+    VideoObjectPosition {
+        horizontal: video_object_position_component(&position.horizontal, scale),
+        vertical: video_object_position_component(&position.vertical, scale),
+    }
 }
 
 /// The content process: this implementation's realization of one agent
@@ -2215,6 +2249,10 @@ impl ContentProcess {
             // it makes while handling the event (a hover, a click), and an
             // `<img>` source swap is left to the presentation the image's
             // decode produces.
+            // Only a request made while this event dispatches belongs to it: an
+            // earlier event whose dispatch returned before the paste was taken
+            // must not make this one paste.
+            self.clipboard_request.set(false);
             dispatch_ui_event(
                 Rc::clone(&document.document),
                 &mut document.settings,
@@ -3245,6 +3283,24 @@ impl ContentProcess {
                 .entry((document_id, video_node_id.as_u64() as usize))
                 .or_default();
 
+            let (object_fit, object_position) = document
+                .get_node(video_node_id)
+                .and_then(|node| node.primary_styles())
+                .map(|style| {
+                    let position_style = style.get_position();
+                    (
+                        video_object_fit(position_style.object_fit),
+                        video_object_position(&position_style.object_position, scale),
+                    )
+                })
+                .unwrap_or((
+                    VideoObjectFit::Contain,
+                    VideoObjectPosition {
+                        horizontal: VideoObjectPositionComponent::Percentage(0.5),
+                        vertical: VideoObjectPositionComponent::Percentage(0.5),
+                    },
+                ));
+
             embed_sites.push(EmbedSite::Video(VideoEmbedData {
                 paint_id: *paint_id,
                 layout: EmbedLayout {
@@ -3254,6 +3310,8 @@ impl ContentProcess {
                     clip_bounds: [x, y, x + width, y + height],
                 },
                 clip_radius,
+                object_fit,
+                object_position,
             }));
         }
 
@@ -4746,6 +4804,12 @@ impl ContentProcess {
             // replaced element's intrinsic size, with no paint source (the
             // frame is drawn by the graphics process on its own layer).
             document.set_image_intrinsic_size(video_node_id, width, height);
+        }
+        let ec = content_document.settings.ec();
+        if let Ok(object) = resolve_element_object(video_node_id, ec) {
+            with_cloned_platform_mut::<HTMLVideoElement, _>(&object, ec, |video, _ec| {
+                video.set_video_intrinsic_size(width, height);
+            });
         }
         content_document.paint_dirty.note_paint();
         self.note_ui_state_update(traversable_id);

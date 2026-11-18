@@ -318,6 +318,7 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
                     &mut canvas_to_webview,
                     &mut image_owners,
                     &mut finished_videos,
+                    &mut reported_video_sizes,
                     &channels,
                     &event_sender,
                     &mut tla_tracer,
@@ -549,6 +550,7 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
     canvas_to_webview: &mut HashMap<CanvasId, WebviewId>,
     image_owners: &mut HashMap<ImageIdentifier, WebviewId>,
     finished_videos: &mut HashSet<VideoPaintId>,
+    reported_video_sizes: &mut HashMap<VideoPaintId, (u32, u32)>,
     channels: &ReadbackChannels<R::RenderData>,
     composed_scene_sender: &ipc::IpcSender<GraphicsEvent>,
     tla_tracer: &mut TLATracer,
@@ -870,6 +872,7 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
             if let Some(slot) = webviews.get_mut(&webview_id) {
                 slot.compositor.remove_video_frame(paint_id);
             }
+            reported_video_sizes.remove(&paint_id);
         }
         GraphicsCommand::RegisterChildNavigableHost {
             child_webview_id,
@@ -1048,7 +1051,8 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
             // The paint id will never produce more frames; drop it from the
             // expected set so a pending composition does not wait on it.
             if let Some(pipeline) = pipeline_webview_map.remove(&pipeline_id) {
-                finished_videos.insert(pipeline.paint_id);
+                finished_videos.remove(&pipeline.paint_id);
+                reported_video_sizes.remove(&pipeline.paint_id);
                 maybe_compose(
                     webviews,
                     pipeline.storage,

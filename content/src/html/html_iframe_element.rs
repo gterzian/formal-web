@@ -806,6 +806,17 @@ pub(crate) fn process_iframe_attributes(
         return Ok(());
     };
 
+    // blitz attaches its own sub-document when an iframe's srcdoc attribute is
+    // set (its parser provider returns an empty document). Every iframe here is
+    // a document and frame of its own, so drop the empty sub-document: the
+    // iframe's content is the child navigable this process navigates below.
+    if let Some(content_document) = process.documents.get(&parent_document_id) {
+        content_document
+            .document
+            .borrow_mut()
+            .remove_sub_document(iframe_node_id);
+    }
+
     // Step 1: "If element's srcdoc attribute is specified:"
     let srcdoc_html = {
         let Some(content_document) = process.documents.get(&parent_document_id) else {

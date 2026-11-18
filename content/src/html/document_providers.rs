@@ -21,7 +21,7 @@ use style::stylesheets::Origin;
 use url::Url;
 
 use crate::fetch::{FetchContext, InternalFetchRequest, fetch};
-use crate::html::images_processing_model::{ImageFetchSink, ImageRegistry};
+use crate::html::images_processing_model::{ImageFetchSink, ImageRegistry, draws_an_embed_layer};
 use crate::js::{RealmJob, RealmJobQueue};
 use crate::{LocalContentStateRef, PendingNetworkHandler};
 
@@ -304,7 +304,19 @@ impl DocumentProviders {
     /// changes is decided by the presentation the image's decode produces, not
     /// by the attribute write.
     pub(crate) fn record_embed_only_attribute_change(&self, img_node_id: NodeId) {
-        self.paint_dirty.note_embed_only_mutation();
+        // Arm the repaint suppression only for a connected element that already
+        // has an image: blitz requests a repaint for a mutation of a node in the
+        // document, so that request is the one the suppression consumes. For a
+        // detached element blitz requests nothing, and a token left behind would
+        // drop an unrelated repaint.
+        let is_embed_layer_change = {
+            let registry = self.image_registry.borrow();
+            let element = registry.element(self.document_id, img_node_id.as_u64() as usize);
+            draws_an_embed_layer(&element)
+        };
+        if is_embed_layer_change {
+            self.paint_dirty.note_embed_only_mutation();
+        }
         self.local_state
             .borrow_mut()
             .pending_embed_only_attribute_changes

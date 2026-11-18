@@ -51,6 +51,32 @@ pub struct VideoFrame {
     pub data: Vec<u8>,
 }
 
+/// The used value of the CSS `object-fit` property for a video element.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VideoObjectFit {
+    Fill,
+    Contain,
+    Cover,
+    None,
+    ScaleDown,
+}
+
+/// One axis of the used value of the CSS `object-position` property.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum VideoObjectPositionComponent {
+    /// A percentage of the free space between the element's box and the video.
+    Percentage(f64),
+    /// A CSS-pixel offset from the element's box edge.
+    Length(f64),
+}
+
+/// The used value of the CSS `object-position` property for a video element.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct VideoObjectPosition {
+    pub horizontal: VideoObjectPositionComponent,
+    pub vertical: VideoObjectPositionComponent,
+}
+
 /// Embed-site data for video content, carried inside `EmbedSite::Video`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoEmbedData {
@@ -60,4 +86,8 @@ pub struct VideoEmbedData {
     /// Corner radius for clipping the video frame to match the element's CSS border-radius.
     /// 0.0 means rectangular (no rounding).
     pub clip_radius: f64,
+    /// How the frame is fitted into the element's box.
+    pub object_fit: VideoObjectFit,
+    /// Where the fitted frame sits inside the element's box.
+    pub object_position: VideoObjectPosition,
 }

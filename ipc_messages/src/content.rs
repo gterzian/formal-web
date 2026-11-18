@@ -279,7 +279,7 @@ pub struct NavigateRequest {
     /// The document source of a navigation to the `srcdoc` resource of an
     /// iframe. The user agent answers the navigation with this body instead of
     /// fetching `about:srcdoc`.
-    /// <https://html.spec.whatwg.org/#navigate-to-the-srcdoc-resource>
+    /// <https://html.spec.whatwg.org/#about:srcdoc>
     #[serde(default)]
     pub srcdoc_html: Option<String>,
 }
@@ -1093,7 +1093,51 @@ impl RecordedScene {
     }
 }
 
+fn validate_paint(paint: &Paint) -> Result<(), String> {
+    match paint {
+        Paint::Custom(_) => Err(String::from(
+            "scene wire format cannot represent an anyrender Paint::Custom",
+        )),
+        Paint::Pattern(_) => Err(String::from(
+            "scene wire format cannot represent an anyrender Paint::Pattern",
+        )),
+        Paint::Solid(_) | Paint::Gradient(_) | Paint::Image(_) | Paint::Resource(_) => Ok(()),
+    }
+}
+
+fn validate_filter(filter: &SerializableFilter) -> Result<(), String> {
+    for image in filter.images() {
+        for command in &image.commands {
+            validate_render_command(command)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_optional_filter(filter: &Option<Arc<SerializableFilter>>) -> Result<(), String> {
+    filter.as_deref().map(validate_filter).unwrap_or(Ok(()))
+}
+
+fn validate_render_command(command: &SerializableRenderCommand) -> Result<(), String> {
+    match command {
+        SerializableRenderCommand::PushLayer(command) => {
+            validate_optional_filter(&command.filter)?;
+            validate_optional_filter(&command.backdrop_filter)
+        }
+        SerializableRenderCommand::Stroke(command) => validate_paint(&command.brush),
+        SerializableRenderCommand::Fill(command) => validate_paint(&command.brush),
+        SerializableRenderCommand::GlyphRun(command) => validate_paint(&command.brush),
+        SerializableRenderCommand::PushClipLayer(_)
+        | SerializableRenderCommand::PushMaskLayer(_)
+        | SerializableRenderCommand::PopLayer
+        | SerializableRenderCommand::BoxShadow(_) => Ok(()),
+    }
+}
+
 pub fn serialize_scene_to_vec(scene: &RecordedScene) -> Result<Vec<u8>, String> {
+    for command in &scene.commands {
+        validate_render_command(command)?;
+    }
     postcard::to_allocvec(scene)
         .map_err(|error| format!("failed to serialize paint scene: {error}"))
 }
@@ -1285,12 +1329,12 @@ pub struct WorkerRequest {
     pub worker_type: String,
     /// The realm that created the worker: the owner document, or the
     /// worker global scope when a worker creates a nested worker.
-    /// <https://html.spec.whatwg.org/#the-worker-s-lifetime>
+    /// <https://html.spec.whatwg.org/#the-worker's-lifetime>
     pub owner: WorkerOwner,
 }
 
 /// The realm that created a worker (its relevant owner to add).
-/// <https://html.spec.whatwg.org/#the-worker-s-lifetime>
+/// <https://html.spec.whatwg.org/#the-worker's-lifetime>
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkerOwner {
     /// The worker was created by a window; its owner is that window's
@@ -1648,7 +1692,7 @@ pub enum Event {
         /// The worker event loop of the new dedicated worker agent.
         event_loop_id: EventLoopId,
         /// The realm that created the worker.
-        /// <https://html.spec.whatwg.org/#the-worker-s-lifetime>
+        /// <https://html.spec.whatwg.org/#the-worker's-lifetime>
         owner: WorkerOwner,
         /// The user-agent end of the dedicated worker agent's own command
         /// channel: the user agent sends commands addressed to this agent's
@@ -1915,6 +1959,187 @@ mod tests {
             .expect("paint frame should deserialize scene bytes");
 
         assert_eq!(roundtripped, expected_recorded);
+    }
+
+    #[test]
+    fn transport_round_trips_gradient_image_and_feimage_scenes() {
+        use anyrender::filters::{FilterEffect, FilterImage};
+        use peniko::{
+            BlendMode, Gradient, ImageAlphaType, ImageBrush, ImageData, ImageFormat,
+            kurbo::{Rect, Stroke},
+        };
+        use std::sync::Arc;
+
+        let bounds = Rect::new(0.0, 0.0, 64.0, 32.0);
+        let gradient = Gradient::new_linear((0.0, 0.0), (64.0, 0.0))
+            .with_stops([Color::from_rgb8(255, 0, 0), Color::from_rgb8(0, 0, 255)]);
+        let image = ImageBrush::new(ImageData {
+            data: peniko::Blob::from(vec![0_u8; 16]),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: 2,
+            height: 2,
+        });
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &gradient,
+            None,
+            &bounds,
+            AntiAliasing::Enabled,
+        );
+        scene.fill(
+            Fill::NonZero,
+            Affine::translate((4.0, 6.0)),
+            image.as_ref(),
+            Some(Affine::scale(2.0)),
+            &bounds,
+            AntiAliasing::Disabled,
+        );
+        let font = FontData::new(vec![5_u8, 6, 7, 8].into(), 0);
+        scene.draw_glyphs(
+            &font,
+            21.5,
+            false,
+            &[1, -2],
+            Vec2::new(1.0, 0.5),
+            Fill::EvenOdd,
+            &gradient,
+            0.75,
+            Affine::translate((3.0, 4.0)),
+            Some(Affine::scale(1.5)),
+            [Glyph {
+                id: 11,
+                x: 7.0,
+                y: 9.0,
+            }]
+            .into_iter(),
+            AntiAliasing::Disabled,
+        );
+        let fe_image_scene = {
+            let mut scene = Scene::new();
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                image.as_ref(),
+                None,
+                &bounds,
+                AntiAliasing::Enabled,
+            );
+            scene
+        };
+        let filter: anyrender::Filter<FilterImage> = anyrender::Filter::single(
+            FilterEffect::Image(FilterImage {
+                scene: fe_image_scene,
+            }),
+            bounds,
+        );
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            0.5,
+            Affine::IDENTITY,
+            &bounds,
+            Some(Arc::new(filter)),
+            None,
+        );
+        scene.stroke(
+            &Stroke::new(3.0),
+            Affine::IDENTITY,
+            image.as_ref(),
+            None,
+            &bounds,
+            AntiAliasing::Disabled,
+        );
+        scene.pop_layer();
+
+        let mut sender = FontTransportSender::default();
+        let mut next_shmem_key = 0;
+        let prepared = sender.prepare_scene(37, scene, &mut next_shmem_key);
+        let expected_recorded = prepared.scene.clone();
+        let bytes = super::serialize_scene_to_vec(&expected_recorded)
+            .expect("scene with gradient, image, glyph run and feImage should serialize");
+        let deserialized = super::deserialize_scene_from_slice(&bytes)
+            .expect("scene with gradient, image, glyph run and feImage should deserialize");
+        assert_eq!(deserialized.summary(), expected_recorded.summary());
+        assert_eq!(
+            super::serialize_scene_to_vec(&deserialized)
+                .expect("the deserialized scene should serialize again"),
+            bytes,
+            "the scene wire bytes must survive a round trip"
+        );
+
+        let PreparedScene {
+            registered_fonts,
+            font_shmem,
+            ..
+        } = prepared;
+        let font_data = font_shmem
+            .into_iter()
+            .map(|(key, region)| (key, region.as_slice().to_vec()))
+            .collect();
+        let mut receiver = FontTransportReceiver::default();
+        receiver.register_fonts(registered_fonts, &font_data);
+        let restored = deserialized.into_scene(&receiver);
+        assert_eq!(restored.commands.len(), 6);
+        match &restored.commands[0] {
+            RenderCommand::Fill(command) => {
+                assert!(matches!(command.brush, anyrender::Paint::Gradient(_)));
+            }
+            other => panic!("expected gradient fill, got {other:?}"),
+        }
+        match &restored.commands[1] {
+            RenderCommand::Fill(command) => {
+                assert!(matches!(command.brush, anyrender::Paint::Image(_)));
+            }
+            other => panic!("expected image fill, got {other:?}"),
+        }
+        match &restored.commands[2] {
+            RenderCommand::GlyphRun(command) => {
+                assert!(!command.hint);
+                assert_eq!(command.normalized_coords, [1, -2]);
+                assert_eq!(command.embolden, Vec2::new(1.0, 0.5));
+                assert_eq!(command.brush_alpha, 0.75);
+                assert!(command.glyph_transform.is_some());
+                assert_eq!(command.anti_aliasing, AntiAliasing::Disabled);
+                assert!(matches!(command.brush, anyrender::Paint::Gradient(_)));
+            }
+            other => panic!("expected glyph run, got {other:?}"),
+        }
+        match &restored.commands[3] {
+            RenderCommand::PushLayer(command) => {
+                let filter = command.filter.as_ref().expect("feImage filter");
+                assert!(
+                    filter
+                        .images()
+                        .any(|image| !image.scene.commands.is_empty()),
+                    "the feImage scene must survive record_filter and restore_filter"
+                );
+            }
+            other => panic!("expected feImage layer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn serialize_scene_rejects_a_custom_paint() {
+        let scene = super::RecordedScene {
+            tolerance: 0.1,
+            font_ids: Vec::new(),
+            commands: vec![super::SerializableRenderCommand::Fill(
+                super::SerializableFillCommand {
+                    fill: Fill::NonZero,
+                    transform: Affine::IDENTITY,
+                    brush: anyrender::Paint::Custom(std::sync::Arc::new(1_u8)),
+                    brush_transform: None,
+                    shape: peniko::kurbo::BezPath::new(),
+                    anti_aliasing: AntiAliasing::Enabled,
+                },
+            )],
+        };
+        let error = super::serialize_scene_to_vec(&scene)
+            .expect_err("a Custom paint must fail serialization by name");
+        assert!(error.contains("Paint::Custom"), "unexpected error: {error}");
     }
 
     #[test]

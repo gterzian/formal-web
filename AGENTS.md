@@ -480,21 +480,21 @@ Blitz crates (blitz-traits, blitz-dom, blitz-paint, blitz-html) come from the
 of <https://github.com/DioxusLabs/blitz> rebased onto upstream `main`.  It
 carries the `DocumentConfig::embedded_images` edit that keeps `<img>` out of
 the document's own scene, and the split `MutationHooks`/`ResourceHooks` that
-make the embedder load subresources and observe DOM tree mutations.  Do not
-pin a revision: the fork's `main` is the contract, and `Cargo.lock` records
-the commit it resolved to.
+make the embedder load subresources and observe DOM tree mutations.  The
+fork's `main` is the contract, and `Cargo.lock` records the commit it resolved
+to.
 
 Stylo is `0.24.0`.  The AnyRender crates (anyrender, anyrender_vello,
-anyrender_svg, wgpu_context) come from the same Git revision the blitz
-workspace pins (`DioxusLabs/anyrender` `f749ad59226ddf0529eca739ad67c842a4f3bcb5`),
-not from crates.io: the scenes `blitz-paint` returns cross the IPC boundary, so
-both the content and graphics processes must use the identical `anyrender`
-package instance.  That revision is anyrender `0.14.0`, anyrender_vello
-`0.15.0` and wgpu_context `0.10.0`, and it fixes the `vello` (`0.12`) and
-`wgpu` (`30`) versions the graphics process builds against.
+anyrender_svg, wgpu_context) come from the Git revision the blitz workspace
+pins (`DioxusLabs/anyrender` `f749ad59226ddf0529eca739ad67c842a4f3bcb5`).
+The scenes `blitz-paint` returns cross the IPC boundary, so both the content
+and graphics processes must use the identical `anyrender` package instance.
+That revision is anyrender `0.14.0`, anyrender_vello `0.15.0` and
+wgpu_context `0.10.0`, and it fixes the `vello` (`0.12`) and `wgpu` (`30`)
+versions the graphics process builds against.
 
-The scene wire format is ours, not anyrender's: `ipc_messages` spells out
-every render-command field (`SerializableRenderCommand` and its per-command
+`ipc_messages` defines the scene wire format and spells out every
+render-command field (`SerializableRenderCommand` and its per-command
 structs).  anyrender's own `Serialize` impls `skip_serializing_if` a
 defaulted field (the anti-aliasing flag), which a self-describing format reads
 back but postcard cannot — the omitted field leaves the reader misframed, so a

@@ -16,7 +16,7 @@ use crate::ComposedScene;
 use ipc_messages::graphics::DecodedImage;
 
 use crate::renderer::image::StoredImage;
-use ipc_messages::media::VideoPaintId;
+use ipc_messages::media::{VideoObjectFit, VideoObjectPositionComponent, VideoPaintId};
 use kurbo::{Affine, Rect, Shape};
 use log::{error, info, trace};
 use peniko::{ImageAlphaType, ImageBrushRef, ImageData, ImageFormat};
@@ -1146,23 +1146,37 @@ impl Compositor {
                     );
                     let local_w = clip_rect.width();
                     let local_h = clip_rect.height();
-                    // Fit the frame inside the element's box the way
-                    // `object-fit: contain` does: keep the frame's aspect ratio
-                    // and centre it, letterboxing to fill the rest of the box.
-                    // (The default `object-fit` for a video is `contain`.)
                     let (draw_w, draw_h) = if video_frame.width > 0 && video_frame.height > 0 {
-                        let scale_x = local_w / video_frame.width as f64;
-                        let scale_y = local_h / video_frame.height as f64;
-                        let scale = scale_x.min(scale_y);
-                        (
-                            video_frame.width as f64 * scale,
-                            video_frame.height as f64 * scale,
-                        )
+                        let frame_w = f64::from(video_frame.width);
+                        let frame_h = f64::from(video_frame.height);
+                        let contain_scale = (local_w / frame_w).min(local_h / frame_h);
+                        let scale = match video_data.object_fit {
+                            VideoObjectFit::Fill => None,
+                            VideoObjectFit::Contain => Some(contain_scale),
+                            VideoObjectFit::Cover => {
+                                Some((local_w / frame_w).max(local_h / frame_h))
+                            }
+                            VideoObjectFit::None => Some(1.0),
+                            VideoObjectFit::ScaleDown => Some(contain_scale.min(1.0)),
+                        };
+                        match scale {
+                            Some(scale) => (frame_w * scale, frame_h * scale),
+                            None => (local_w, local_h),
+                        }
                     } else {
                         (local_w, local_h)
                     };
-                    let offset_x = tx + (local_w - draw_w) / 2.0;
-                    let offset_y = ty + (local_h - draw_h) / 2.0;
+                    let position_offset =
+                        |component: VideoObjectPositionComponent, free_space: f64| match component {
+                            VideoObjectPositionComponent::Percentage(percentage) => {
+                                free_space * percentage
+                            }
+                            VideoObjectPositionComponent::Length(length) => length,
+                        };
+                    let offset_x = tx
+                        + position_offset(video_data.object_position.horizontal, local_w - draw_w);
+                    let offset_y =
+                        ty + position_offset(video_data.object_position.vertical, local_h - draw_h);
                     let scale_x = if video_frame.width > 0 {
                         draw_w / video_frame.width as f64
                     } else {
