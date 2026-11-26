@@ -39,6 +39,19 @@ impl WebIdlInterface<crate::js::Types> for HTMLInputElement {
             legacy_lenient_setter: false,
             exposed: None,
         });
+        def.add_attribute(AttributeDef {
+            id: "checked",
+            getter: get_checked,
+            setter: Some(set_checked),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+            exposed: None,
+        });
         def.add_operation(OperationDef {
             id: "focus",
             length: 0,
@@ -109,6 +122,44 @@ fn get_value(
         })
         .ok_or(err)?;
     Ok(ec.value_from_string(ec.js_string_from_str(&value)))
+}
+
+fn get_checked(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("expected object"))?;
+    let err = ec.new_type_error("expected HTMLInputElement");
+    let checked = ec
+        .with_object_any(&obj)
+        .and_then(|data| {
+            data.downcast_ref::<HTMLInputElement>()
+                .map(|input| input.checked())
+        })
+        .ok_or(err)?;
+    Ok(ec.value_from_bool(checked))
+}
+
+fn set_checked(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let checked = args.first().is_some_and(|value| ec.to_boolean(value));
+    let obj = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("expected object"))?;
+    let err = ec.new_type_error("expected HTMLInputElement");
+    let undefined = ec.value_undefined();
+    let Some(data) = ec.with_object_any(&obj) else {
+        return Err(err);
+    };
+    let Some(input) = data.downcast_ref::<HTMLInputElement>() else {
+        return Err(err);
+    };
+    input.set_checked(checked);
+    Ok(undefined)
 }
 
 fn focus_method(

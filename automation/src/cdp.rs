@@ -85,6 +85,8 @@ struct CdpConnectionState {
     runtime_enabled: bool,
     utility_world_name: Option<String>,
     utility_execution_context_id: Option<u64>,
+    console_enabled: bool,
+    last_console_poll: std::time::Instant,
     dom_nodes: HashMap<u64, CdpDomNode>,
     locator_node_ids: HashMap<CdpNodeLocator, u64>,
     search_results: HashMap<String, Vec<u64>>,
@@ -243,6 +245,8 @@ impl CdpConnectionState {
             runtime_enabled: false,
             utility_world_name: None,
             utility_execution_context_id: None,
+            console_enabled: false,
+            last_console_poll: std::time::Instant::now(),
             dom_nodes: HashMap::new(),
             locator_node_ids: HashMap::new(),
             search_results: HashMap::new(),
@@ -454,6 +458,8 @@ impl CdpConnectionState {
             }
             "Runtime.enable" => {
                 self.runtime_enabled = true;
+                self.console_enabled = true;
+                let _ = state.runtime.evaluate_script(CONSOLE_INSTALL_SCRIPT.to_owned(), SCRIPT_TIMEOUT);
                 if let Some(event) = self.current_execution_context_created_event(state) {
                     events.push(event);
                 }
@@ -471,18 +477,88 @@ impl CdpConnectionState {
                         String::from("`Runtime.evaluate` requires a string `expression` parameter"),
                     )]);
                 };
+                let wrapped = format!(
+                    "(() => {{ const __formalWebCdpValue = ({expression}); const __formalWebCdpObjects = (globalThis.__formalWebCdpObjects || (globalThis.__formalWebCdpObjects = {{}})); const __formalWebCdpId = 'fwobj-' + (++globalThis.__formalWebCdpObjectCounter); __formalWebCdpObjects[__formalWebCdpId] = __formalWebCdpValue; return {{ __formalWebCdpValue: __formalWebCdpValue, __formalWebCdpObjectId: __formalWebCdpId }}; }})()"
+                );
                 let value = state
                     .runtime
-                    .evaluate_script(expression.to_owned(), SCRIPT_TIMEOUT)
+                    .evaluate_script(wrapped, SCRIPT_TIMEOUT)
                     .map_err(|error| format!("script evaluation failed: {error}"))?;
-                let result = remote_object_payload(value);
+                let (object_value, object_id) = value
+                    .as_object()
+                    .and_then(|object| {
+                        Some((
+                            object.get("__formalWebCdpValue")?.clone(),
+                            object.get("__formalWebCdpObjectId")?.as_str()?.to_owned(),
+                        ))
+                    })
+                    .unwrap_or((value.clone(), String::new()));
+                let mut result = remote_object_payload(object_value);
+                if !object_id.is_empty() {
+                    result["objectId"] = json!(object_id);
+                }
                 Ok(json!({
                     "result": result
                 }))
             }
-            "Runtime.callFunctionOn" => Err(String::from(
-                "Runtime.callFunctionOn is not supported by formal-web yet",
-            )),
+            "Runtime.callFunctionOn" => {
+                let function = request
+                    .params
+                    .get("functionDeclaration")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        String::from("`Runtime.callFunctionOn` requires `functionDeclaration`")
+                    })?;
+                let object_id = request
+                    .params
+                    .get("objectId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("globalThis");
+                let arguments = request
+                    .params
+                    .get("arguments")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                let arguments_js = arguments
+                    .iter()
+                    .map(|argument| {
+                        if let Some(object) = argument.get("objectId").and_then(Value::as_str) {
+                            format!("globalThis.__formalWebCdpObjects[{}]", serde_json::to_string(object).unwrap_or_else(|_| String::from("undefined")))
+                        } else {
+                            serde_json::to_string(argument.get("value").unwrap_or(&Value::Null))
+                                .unwrap_or_else(|_| String::from("undefined"))
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let receiver = if object_id == "globalThis" {
+                    String::from("globalThis")
+                } else {
+                    format!("globalThis.__formalWebCdpObjects[{object_id_json}]", object_id_json = serde_json::to_string(object_id).unwrap_or_else(|_| String::from("undefined")))
+                };
+                let wrapped = format!(
+                    "(() => {{ const __formalWebCdpFunction = ({function}); const __formalWebCdpResult = __formalWebCdpFunction.call({receiver}, {arguments_js}); const __formalWebCdpObjects = (globalThis.__formalWebCdpObjects || (globalThis.__formalWebCdpObjects = {{}})); const __formalWebCdpId = 'fwobj-' + (++globalThis.__formalWebCdpObjectCounter); __formalWebCdpObjects[__formalWebCdpId] = __formalWebCdpResult; return {{ __formalWebCdpValue: __formalWebCdpResult, __formalWebCdpObjectId: __formalWebCdpId }}; }})()"
+                );
+                let value = state
+                    .runtime
+                    .evaluate_script(wrapped, SCRIPT_TIMEOUT)
+                    .map_err(|error| format!("script evaluation failed: {error}"))?;
+                let (object_value, new_object_id) = value
+                    .as_object()
+                    .and_then(|object| {
+                        Some((
+                            object.get("__formalWebCdpValue")?.clone(),
+                            object.get("__formalWebCdpObjectId")?.as_str()?.to_owned(),
+                        ))
+                    })
+                    .unwrap_or((value.clone(), String::new()));
+                let mut result = remote_object_payload(object_value);
+                if !new_object_id.is_empty() {
+                    result["objectId"] = json!(new_object_id);
+                }
+                Ok(json!({ "result": result }))
+            }
             "Runtime.releaseObject" => Ok(json!({})),
             "Input.dispatchMouseEvent" => {
                 let event_type = request
@@ -539,7 +615,41 @@ impl CdpConnectionState {
                 }
                 Ok(json!({}))
             }
-            "Input.dispatchKeyEvent" => Ok(json!({})),
+            "Input.dispatchKeyEvent" => {
+                let event_type = request
+                    .params
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let key = request
+                    .params
+                    .get("key")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let code = request
+                    .params
+                    .get("code")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let text = request.params.get("text").and_then(Value::as_str);
+                let modifiers = request
+                    .params
+                    .get("modifiers")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as u32;
+                if event_type == "char" && text.is_some() {
+                    state
+                        .runtime
+                        .insert_text(text.unwrap_or_default(), AUTOMATION_TIMEOUT)
+                        .map_err(|error| format!("text insertion failed: {error}"))?;
+                } else if !key.is_empty() {
+                    state
+                        .runtime
+                        .key(event_type, key, code, text, modifiers, AUTOMATION_TIMEOUT)
+                        .map_err(|error| format!("key dispatch failed: {error}"))?;
+                }
+                Ok(json!({}))
+            }
             "DOM.getDocument" => {
                 let snapshot = state.page_snapshot();
                 Ok(json!({
@@ -659,10 +769,8 @@ impl CdpConnectionState {
                     .get("nodeId")
                     .and_then(Value::as_u64)
                     .ok_or_else(|| String::from("`DOM.getBoxModel` requires `nodeId`"))?;
-                let _ = self.node_locator(node_id)?;
-                Err(String::from(
-                    "DOM.getBoxModel is not supported by formal-web yet",
-                ))
+                let locator = self.node_locator(node_id)?;
+                Ok(dom_box_model(state, &locator)?)
             }
             "DOM.getContentQuads" => {
                 let node_id = request
@@ -670,10 +778,8 @@ impl CdpConnectionState {
                     .get("nodeId")
                     .and_then(Value::as_u64)
                     .ok_or_else(|| String::from("`DOM.getContentQuads` requires `nodeId`"))?;
-                let _ = self.node_locator(node_id)?;
-                Err(String::from(
-                    "DOM.getContentQuads is not supported by formal-web yet",
-                ))
+                let locator = self.node_locator(node_id)?;
+                Ok(json!({ "quads": dom_content_quads(state, &locator)? }))
             }
             "DOM.scrollIntoViewIfNeeded" => {
                 let node_id = request
@@ -702,6 +808,18 @@ impl CdpConnectionState {
             "Accessibility.getFullAXTree" => Ok(json!({
                 "nodes": accessibility_full_tree(state)?
             })),
+            method if method.contains('.') => {
+                let domain = method.split('.').next().unwrap_or_default();
+                if matches!(
+                    domain,
+                    "Browser" | "Target" | "Page" | "Runtime" | "Input" | "DOM"
+                        | "Accessibility" | "Log"
+                ) {
+                    Ok(json!({}))
+                } else {
+                    state.runtime.handle_cdp_domain_call(method, request.params.clone())
+                }
+            }
             _ => Ok(json!({})),
         };
 
@@ -722,6 +840,43 @@ impl CdpConnectionState {
         }
         outgoing.extend(events);
         Ok(outgoing)
+    }
+
+    fn poll_console(&mut self, state: &CdpState) -> Vec<Value> {
+        if !self.console_enabled {
+            return Vec::new();
+        }
+        if self.last_console_poll.elapsed() < Duration::from_millis(500) {
+            return Vec::new();
+        }
+        self.last_console_poll = std::time::Instant::now();
+        let Ok(value) = state
+            .runtime
+            .evaluate_script(CONSOLE_DRAIN_SCRIPT.to_owned(), SCRIPT_TIMEOUT)
+        else {
+            return Vec::new();
+        };
+        let Some(entries) = value.as_array() else {
+            return Vec::new();
+        };
+        let session_id = self.event_session_id();
+        entries
+            .iter()
+            .filter_map(|entry| {
+                let level = entry.get("type")?.as_str()?;
+                let args = entry.get("args")?.as_array()?.clone();
+                Some(event_message(
+                    "Runtime.consoleAPICalled",
+                    json!({
+                        "type": level,
+                        "args": args,
+                        "executionContextId": CDP_EXECUTION_CONTEXT_ID,
+                        "timestamp": crate::cdp_timestamp_now(),
+                    }),
+                    session_id,
+                ))
+            })
+            .collect()
     }
 
     fn translate_event(&self, state: &CdpState, event: CdpEvent) -> Vec<Value> {
@@ -797,6 +952,11 @@ impl CdpConnectionState {
                 }
                 outgoing
             }
+            CdpEvent::Custom { method, params } => vec![event_message(
+                &method,
+                params,
+                self.event_session_id(),
+            )],
         }
     }
 
@@ -1157,6 +1317,9 @@ async fn handle_websocket_connection(
     let mut connection = CdpConnectionState::new(route);
     let result = async {
         loop {
+            for message in connection.poll_console(&state) {
+                send_cdp_message(&mut websocket, &message).await?;
+            }
             for message in collect_cdp_event_messages(&connection, &event_receiver, &state) {
                 send_cdp_message(&mut websocket, &message).await?;
             }
@@ -1334,6 +1497,9 @@ fn cdp_error_response(id: Option<Value>, session_id: Option<&str>, message: Stri
     }
     response
 }
+
+const CONSOLE_INSTALL_SCRIPT: &str = "(() => { if (globalThis.__formalWebConsoleInstalled) return; globalThis.__formalWebConsoleQueue = []; for (const level of ['log','info','warn','error','debug']) { const original = console[level]; console[level] = (...args) => { globalThis.__formalWebConsoleQueue.push({ type: level, args: args.map((value) => ({ type: typeof value, value: typeof value === 'string' ? value : undefined, description: String(value) })) }); if (original) original.apply(console, args); }; } globalThis.__formalWebConsoleInstalled = true; })()";
+const CONSOLE_DRAIN_SCRIPT: &str = "(() => { const queue = globalThis.__formalWebConsoleQueue || []; globalThis.__formalWebConsoleQueue = []; return queue; })()";
 
 fn event_message(method: &str, params: Value, session_id: Option<&str>) -> Value {
     let mut event = json!({
@@ -1560,6 +1726,44 @@ fn locator_resolution_expression(locator: &CdpNodeLocator) -> String {
             )
         }
     }
+}
+
+fn dom_box_model(state: &CdpState, locator: &CdpNodeLocator) -> Result<Value, String> {
+    let value = evaluate_cdp_script(state, dom_rect_script(locator))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| String::from("element rectangle did not evaluate to an object"))?;
+    let quad = |key: &str| -> Vec<f64> {
+        let rect = object.get(key).and_then(Value::as_object);
+        let number = |name: &str| rect.and_then(|r| r.get(name)).and_then(Value::as_f64).unwrap_or(0.0);
+        let (x, y, w, h) = (number("x"), number("y"), number("width"), number("height"));
+        vec![x, y, x + w, y, x + w, y + h, x, y + h]
+    };
+    Ok(json!({
+        "model": {
+            "content": quad("content"),
+            "padding": quad("padding"),
+            "border": quad("border"),
+            "margin": quad("margin"),
+            "width": value.pointer("/border/width").and_then(Value::as_f64).unwrap_or(0.0),
+            "height": value.pointer("/border/height").and_then(Value::as_f64).unwrap_or(0.0),
+        }
+    }))
+}
+
+fn dom_content_quads(state: &CdpState, locator: &CdpNodeLocator) -> Result<Vec<Vec<f64>>, String> {
+    let value = evaluate_cdp_script(state, dom_rect_script(locator))?;
+    let content = value.pointer("/content").and_then(Value::as_object);
+    let number = |name: &str| content.and_then(|r| r.get(name)).and_then(Value::as_f64).unwrap_or(0.0);
+    let (x, y, w, h) = (number("x"), number("y"), number("width"), number("height"));
+    Ok(vec![vec![x, y, x + w, y, x + w, y + h, x, y + h]])
+}
+
+fn dom_rect_script(locator: &CdpNodeLocator) -> String {
+    let locator = locator_resolution_expression(locator);
+    format!(
+        "(() => {{ const __formalWebCdpRectNode = {locator}; if (!__formalWebCdpRectNode || !__formalWebCdpRectNode.getBoundingClientRect) return null; const __formalWebCdpRect = __formalWebCdpRectNode.getBoundingClientRect(); const __formalWebCdpRectOut = (r) => ({{ x: r.x, y: r.y, width: r.width, height: r.height }}); return {{ content: __formalWebCdpRectOut(__formalWebCdpRect), padding: __formalWebCdpRectOut(__formalWebCdpRect), border: __formalWebCdpRectOut(__formalWebCdpRect), margin: __formalWebCdpRectOut(__formalWebCdpRect) }}; }})()"
+    )
 }
 
 fn url_origin(url: &str) -> String {
