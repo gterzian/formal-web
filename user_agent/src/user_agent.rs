@@ -254,6 +254,7 @@ pub trait Embedder: Send + Sync {
         webview_id: WebviewId,
         layers: Vec<ipc_messages::graphics::LayerFrame>,
         animating: bool,
+        composition_kind: ipc_messages::graphics::CompositionKind,
     ) -> Result<(), String>;
 }
 
@@ -6063,7 +6064,7 @@ impl UserAgentWorker {
                     .insert(*webview_id, child_frame_to_webview.clone());
                 if let Err(e) =
                     self.host
-                        .new_web_content_layers(*webview_id, layer_frames, *animating)
+                        .new_web_content_layers(*webview_id, layer_frames, *animating, *composition_kind)
                 {
                     error!("[graphics] forward layers: {e}");
                 }

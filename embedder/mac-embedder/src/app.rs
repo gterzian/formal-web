@@ -2941,8 +2941,9 @@ impl MacApp {
                 webview_id,
                 layers,
                 animating,
+                composition_kind,
             } => {
-                self.handle_new_layers(webview_id, layers, animating);
+                self.handle_new_layers(webview_id, layers, animating, composition_kind);
             }
             FormalWebUserEvent::Automation(command) => {
                 self.with_automation(|automation, app| {
@@ -3245,6 +3246,7 @@ impl MacApp {
         webview_id: WebviewId,
         layers: Vec<LayerFrame>,
         animating: bool,
+        _composition_kind: webview::CompositionKind,
     ) {
         let Some(window_id) = self.window_for_webview(webview_id) else {
             info!("[mac-embedder] no window for webview={webview_id:?}");

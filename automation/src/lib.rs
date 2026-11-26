@@ -42,6 +42,21 @@ pub enum CdpEvent {
         frame_id: String,
         timestamp: f64,
     },
+    /// An event emitted by a domain the embedder registered. The server
+    /// forwards it to every attached CDP connection as `method` with
+    /// `params`.
+    Custom {
+        method: String,
+        params: Value,
+    },
+}
+
+/// A CDP domain supplied by the embedder. The automation server routes every
+/// method whose domain prefix the handler claims to `handle_cdp_call`, and
+/// the embedder emits events for the domain through
+/// `AutomationRuntime::emit_cdp_event`.
+pub trait CdpDomainHandler: Send + Sync {
+    fn handle_cdp_call(&self, method: &str, params: Value) -> Result<Value, String>;
 }
 
 pub enum AutomationCommand {
@@ -79,9 +94,35 @@ pub enum AutomationCommand {
         timeout: Duration,
         reply: mpsc::Sender<Result<Value, String>>,
     },
+    Key {
+        event_type: String,
+        key: String,
+        code: String,
+        text: Option<String>,
+        modifiers: u32,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    InsertText {
+        text: String,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
     SetCdpEventSink {
         sink: Option<mpsc::Sender<CdpEvent>>,
         reply: mpsc::Sender<Result<(), String>>,
+    },
+    EmitCdpEvent {
+        event: CdpEvent,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    /// A navigation the embedder started has committed. The controller
+    /// completes the pending automation navigation, if one matches.
+    NavigationCommitted {
+        url: String,
+    },
+    /// The embedder's active automation target changed. The host remembers
+    /// which webview CDP commands operate on.
+    SetWebview {
+        webview_id: WebviewId,
     },
     /// Abort any currently pending navigation.  No-op if none is pending.
     AbortNavigation {
@@ -110,6 +151,33 @@ pub trait AutomationHost {
         source: String,
         timeout: Duration,
     ) -> Result<Value, String>;
+
+    /// Remember the active automation target when the embedder names one.
+    fn automation_set_webview(&mut self, _webview_id: WebviewId) {}
+
+    /// Remember the URL of the navigation the embedder just completed.
+    fn automation_navigation_committed(&mut self, _url: String) {}
+
+    /// Deliver one key event to the active tab. `event_type` is
+    /// `keyDown`, `keyUp` or `char`. `key` is a `keyboard_types` key value
+    /// (`Enter`, `ArrowDown`, or a single character), `code` a physical key
+    /// code name, and `text` the text a `char` event inserts.
+    fn automation_key(
+        &mut self,
+        _event_type: &str,
+        _key: &str,
+        _code: &str,
+        _text: Option<&str>,
+        _modifiers: u32,
+    ) -> Result<(), String> {
+        Err(String::from("key events are not supported by this automation host"))
+    }
+
+    /// Insert text through the IME commit path, which is what a paste or an
+    /// input method produces.
+    fn automation_insert_text(&mut self, _text: &str) -> Result<(), String> {
+        Err(String::from("text insertion is not supported by this automation host"))
+    }
 }
 
 #[derive(Default)]
@@ -173,6 +241,25 @@ impl AutomationController {
             } => {
                 let _ = reply.send(host.automation_evaluate_script(source, timeout));
             }
+            AutomationCommand::Key {
+                event_type,
+                key,
+                code,
+                text,
+                modifiers,
+                reply,
+            } => {
+                let _ = reply.send(host.automation_key(
+                    &event_type,
+                    &key,
+                    &code,
+                    text.as_deref(),
+                    modifiers,
+                ));
+            }
+            AutomationCommand::InsertText { text, reply } => {
+                let _ = reply.send(host.automation_insert_text(&text));
+            }
             AutomationCommand::AbortNavigation { reply } => {
                 self.abort_pending_navigation(String::from("aborted by CDP client"));
                 let _ = reply.send(Ok(()));
@@ -180,6 +267,21 @@ impl AutomationController {
             AutomationCommand::SetCdpEventSink { sink, reply } => {
                 self.cdp_event_sink = sink;
                 let _ = reply.send(Ok(()));
+            }
+            AutomationCommand::EmitCdpEvent { event, reply } => {
+                // No attached client is not an error: the embedder emits
+                // whenever its task advances, with or without a listener.
+                if let Some(sink) = self.cdp_event_sink.as_ref() {
+                    let _ = sink.send(event);
+                }
+                let _ = reply.send(Ok(()));
+            }
+            AutomationCommand::NavigationCommitted { url } => {
+                host.automation_navigation_committed(url);
+                self.note_navigation_committed(host);
+            }
+            AutomationCommand::SetWebview { webview_id } => {
+                host.automation_set_webview(webview_id);
             }
         }
     }
@@ -255,6 +357,7 @@ pub struct AutomationRuntime {
     send_command: Arc<dyn Fn(AutomationCommand) -> Result<(), String> + Send + Sync>,
     request_exit: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
     is_ready: Arc<dyn Fn() -> bool + Send + Sync>,
+    cdp_domain_handler: Option<Arc<dyn CdpDomainHandler>>,
 }
 
 impl AutomationRuntime {
@@ -272,6 +375,7 @@ impl AutomationRuntime {
             send_command: Arc::new(send_command),
             request_exit: Arc::new(request_exit),
             is_ready: Arc::new(is_ready),
+            cdp_domain_handler: None,
         }
     }
 
@@ -387,6 +491,46 @@ impl AutomationRuntime {
             .map_err(|error| format!("failed to reset navigation state: {error}"))?
     }
 
+    pub fn key(
+        &self,
+        event_type: &str,
+        key: &str,
+        code: &str,
+        text: Option<&str>,
+        modifiers: u32,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        let (reply, receiver) = mpsc::channel();
+        (self.send_command)(AutomationCommand::Key {
+            event_type: event_type.to_owned(),
+            key: key.to_owned(),
+            code: code.to_owned(),
+            text: text.map(ToOwned::to_owned),
+            modifiers,
+            reply,
+        })?;
+        receiver.recv_timeout(timeout).map_err(|error| {
+            format!(
+                "timed out after {} ms waiting for key delivery: {error}",
+                timeout.as_millis()
+            )
+        })?
+    }
+
+    pub fn insert_text(&self, text: &str, timeout: Duration) -> Result<(), String> {
+        let (reply, receiver) = mpsc::channel();
+        (self.send_command)(AutomationCommand::InsertText {
+            text: text.to_owned(),
+            reply,
+        })?;
+        receiver.recv_timeout(timeout).map_err(|error| {
+            format!(
+                "timed out after {} ms waiting for text insertion: {error}",
+                timeout.as_millis()
+            )
+        })?
+    }
+
     pub fn evaluate_script(&self, source: String, timeout: Duration) -> Result<Value, String> {
         let (reply, receiver) = mpsc::channel();
         (self.send_command)(AutomationCommand::EvaluateScript {
@@ -400,6 +544,46 @@ impl AutomationRuntime {
                 timeout.as_millis()
             )
         })?
+    }
+
+    /// Attach the embedder's CDP domain handler. The runtime is built once
+    /// before the server starts, so the handler is fixed for the server's
+    /// lifetime.
+    pub fn with_cdp_domain_handler(mut self, handler: Arc<dyn CdpDomainHandler>) -> Self {
+        self.cdp_domain_handler = Some(handler);
+        self
+    }
+
+    /// Route a domain method to the embedder handler, if one is attached.
+    pub fn handle_cdp_domain_call(&self, method: &str, params: Value) -> Result<Value, String> {
+        match self.cdp_domain_handler.as_ref() {
+            Some(handler) => handler.handle_cdp_call(method, params),
+            None => Ok(Value::Object(Default::default())),
+        }
+    }
+
+    /// Emit a CDP event to every attached client.
+    pub fn emit_cdp_event(&self, event: CdpEvent, timeout: Duration) -> Result<(), String> {
+        let (reply, receiver) = mpsc::channel();
+        (self.send_command)(AutomationCommand::EmitCdpEvent { event, reply })?;
+        receiver.recv_timeout(timeout).map_err(|error| {
+            format!(
+                "timed out after {} ms waiting to emit a CDP event: {error}",
+                timeout.as_millis()
+            )
+        })?
+    }
+
+    /// Tell the automation controller that a navigation has committed.
+    pub fn note_navigation_committed(&self, url: &str) -> Result<(), String> {
+        (self.send_command)(AutomationCommand::NavigationCommitted {
+            url: url.to_owned(),
+        })
+    }
+
+    /// Tell the automation controller which webview CDP commands operate on.
+    pub fn set_webview(&self, webview_id: WebviewId) -> Result<(), String> {
+        (self.send_command)(AutomationCommand::SetWebview { webview_id })
     }
 
     pub fn set_cdp_event_sink(

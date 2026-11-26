@@ -6,7 +6,7 @@ use automation::AutomationCommand;
 use log::error;
 use std::sync::{Arc, LazyLock, Mutex};
 use webview::{
-    ColorScheme, Embedder, EmbedderSchemeRequest, LayerFrame, NavigationCompleted, WebviewId,
+    ColorScheme, CompositionKind, Embedder, EmbedderSchemeRequest, LayerFrame, NavigationCompleted, WebviewId,
 };
 use winit::event_loop::EventLoopProxy;
 
@@ -78,6 +78,7 @@ pub enum FormalWebUserEvent {
         /// Whether the composed scene contains animated content (video, CSS
         /// animations) that needs the next frame at display cadence.
         animating: bool,
+        composition_kind: CompositionKind,
     },
     NavigationRequested {
         webview_id: WebviewId,
@@ -184,12 +185,14 @@ impl Embedder for EventLoopEmbedder {
         webview_id: WebviewId,
         layers: Vec<LayerFrame>,
         animating: bool,
+        composition_kind: CompositionKind,
     ) -> Result<(), String> {
         self.sink
             .send(FormalWebUserEvent::NewWebContentLayers {
                 webview_id,
                 layers,
                 animating,
+                composition_kind,
             })
             .map_err(|error| format!("failed to send surface event: {error}"))
     }

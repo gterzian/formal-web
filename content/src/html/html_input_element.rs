@@ -2,6 +2,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
 use blitz_traits::NodeId;
+use style_dom::ElementState;
 
 use crate::html::HTMLElement;
 use crate::js::Types;
@@ -107,6 +108,59 @@ impl HTMLInputElement {
         } else {
             self.html_element.element.set_attribute("value", &sanitized);
         }
+    }
+
+    /// <https://html.spec.whatwg.org/#dom-input-checked>
+    pub(crate) fn checked(&self) -> bool {
+        // Step 1: Return the element's checkedness.
+        //
+        // Blitz keeps the checkedness in the checkbox input's special data
+        // once the control has been constructed. Before that, the `checked`
+        // content attribute provides the initial state.
+        let live = {
+            let document = self.html_element.element.node.document.borrow();
+            document
+                .get_node(self.html_element.element.node.node_id)
+                .and_then(|node| node.element_data())
+                .and_then(|element| element.checkbox_input_checked())
+        };
+        live.unwrap_or_else(|| self.html_element.element.has_attribute("checked"))
+    }
+
+    /// <https://html.spec.whatwg.org/#dom-input-checked>
+    pub(crate) fn set_checked(&self, checked: bool) {
+        // Step 1: Set the element's checkedness to the given value.
+        //
+        // The checkedness lives in the checkbox input's special data, which
+        // the rendering and the form entry list read. Setting it through
+        // Blitz keeps the `:checked` element state in sync, and the snapshot
+        // makes the control repaint.
+        let node_id = self.html_element.element.node.node_id;
+        let has_state = {
+            let document = self.html_element.element.node.document.borrow();
+            document
+                .get_node(node_id)
+                .and_then(|node| node.element_data())
+                .and_then(|element| element.checkbox_input_checked())
+                .is_some()
+        };
+        if !has_state {
+            // The control has no checkedness yet, so seed the content
+            // attribute. Blitz constructs the state from it on layout.
+            if checked {
+                self.html_element.element.set_attribute("checked", "true");
+            } else {
+                self.html_element.element.remove_attribute("checked");
+            }
+            return;
+        }
+        let mut document = self.html_element.element.node.document.borrow_mut();
+        document.snapshot_node_and(node_id, ElementState::CHECKED, |node| {
+            if let Some(element) = node.element_data_mut() {
+                element.set_checkbox_input_checked(checked);
+            }
+            node.mark_ancestors_dirty();
+        });
     }
 
     /// <https://html.spec.whatwg.org/#concept-input-value-stringification>
